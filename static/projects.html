@@ -9,6 +9,13 @@
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .small2 { font-size: 12px; }
       .cursor { cursor: pointer; }
+
+      /* 让浏览器头部信息与操作按钮保持同一行 */
+      .browser-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .browser-trigger { flex: 1 1 auto; min-width: 0; }
+      .browser-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .browser-lan { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .browser-actions { flex: 0 0 auto; display: flex; gap: 6px; }
     </style>
   </head>
   <body class="bg-light">
@@ -148,6 +155,7 @@
       const spaceModal = new bootstrap.Modal("#spaceModal");
 
       let state = { projects: [], tree: [] };
+      const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
 
       function currentProjectId() {
         const v = projectSelect.value;
@@ -159,8 +167,21 @@
         if (!r) return;
         const d = await r.json();
         state.projects = d.projects || [];
-        projectSelect.innerHTML = state.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
-        if (!projectSelect.value && state.projects[0]) projectSelect.value = String(state.projects[0].id);
+        projectSelect.innerHTML = state.projects
+          .map(p => `<option value="${p.id}">#${p.id} ${escapeHtml(p.name)}</option>`)
+          .join("");
+
+        const saved = localStorage.getItem(LS_LAST_PROJECT_ID);
+        if (saved && state.projects.some(p => String(p.id) === saved)) {
+          projectSelect.value = saved;
+        } else if (state.projects[0]) {
+          projectSelect.value = String(state.projects[0].id);
+        } else {
+          projectSelect.value = "";
+          localStorage.removeItem(LS_LAST_PROJECT_ID);
+        }
+
+        if (projectSelect.value) localStorage.setItem(LS_LAST_PROJECT_ID, projectSelect.value);
       }
 
       async function loadTree() {
@@ -204,17 +225,21 @@
         return `
           <div class="accordion-item mb-2 shadow-sm">
             <h2 class="accordion-header" id="${headingId}">
-              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
-                <div class="w-100 d-flex flex-wrap gap-2 align-items-center">
-                  <div class="fw-semibold">${escapeHtml(b.name)}</div>
-                  <span class="badge text-bg-secondary">${escapeHtml(b.vendor || "generic")}</span>
-                  <span class="text-muted small mono">${escapeHtml(b.lan_addr || "")}</span>
-                  <span class="ms-auto"></span>
+              <div class="browser-header">
+                <button class="accordion-button collapsed browser-trigger" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                  <div class="browser-meta w-100">
+                    <div class="fw-semibold text-nowrap">${escapeHtml(b.name)}</div>
+                    <span class="badge text-bg-light mono border text-nowrap">#${b.id}</span>
+                    <span class="badge text-bg-secondary text-nowrap">${escapeHtml(b.vendor || "generic")}</span>
+                    <span class="text-muted small mono browser-lan">${escapeHtml(b.lan_addr || "")}</span>
+                  </div>
+                </button>
+                <div class="browser-actions">
                   <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_browser" data-browser='${encodeURIComponent(JSON.stringify(b))}'>修改</button>
                   <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_browser" data-browser_id="${b.id}">删除</button>
                   <button class="btn btn-outline-primary btn-sm" type="button" data-action="new_space" data-browser_id="${b.id}">新增空间</button>
                 </div>
-              </button>
+              </div>
             </h2>
             <div id="${collapseId}" class="accordion-collapse collapse" data-bs-parent="#${parentId}">
               <div class="accordion-body">
@@ -232,6 +257,7 @@
           <div class="card mb-3">
             <div class="card-header d-flex flex-wrap gap-2 align-items-center">
               <div class="fw-semibold">${escapeHtml(s.name)}</div>
+              <span class="badge text-bg-light mono border">#${s.id}</span>
               <span class="badge text-bg-light mono border">${escapeHtml(s.space_id)}</span>
               <span class="ms-auto"></span>
               <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_space" data-space='${encodeURIComponent(JSON.stringify(s))}'>修改</button>
@@ -252,6 +278,7 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
+                  <th>窗口ID</th>
                   <th>窗口名称</th>
                   <th>账号</th>
                   <th>网址</th>
@@ -265,6 +292,7 @@
               <tbody>
                 ${windows.map(w => `
                   <tr class="small2">
+                    <td class="mono text-muted">#${escapeHtml(String(w.id ?? "-"))}</td>
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
                     <td>${escapeHtml(w.platform_account || "-")}</td>
                     <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
@@ -330,6 +358,7 @@
         toast("保存成功", "success");
         await loadProjects();
         if (!pid && d.project_id) projectSelect.value = String(d.project_id);
+        if (projectSelect.value) localStorage.setItem(LS_LAST_PROJECT_ID, projectSelect.value);
         await loadTree();
       }
 
@@ -343,6 +372,7 @@
         if (!r.ok) return toast(d.detail || "删除失败", "error");
         toast("已删除", "success");
         await loadProjects();
+        if (projectSelect.value) localStorage.setItem(LS_LAST_PROJECT_ID, projectSelect.value);
         await loadTree();
       }
 
@@ -468,7 +498,10 @@
       document.getElementById("btnExpandAll").addEventListener("click", () => expandAll(true));
       document.getElementById("btnCollapseAll").addEventListener("click", () => expandAll(false));
       document.getElementById("btnRefreshTree").addEventListener("click", loadTree);
-      projectSelect.addEventListener("change", loadTree);
+      projectSelect.addEventListener("change", () => {
+        if (projectSelect.value) localStorage.setItem(LS_LAST_PROJECT_ID, projectSelect.value);
+        loadTree();
+      });
 
       async function init() {
         await loadProjects();

@@ -693,20 +693,52 @@ class Database:
         self,
         task_type_id: int,
         name: str,
+        code: str,
         concurrency: int,
         continuous_error_threshold: int,
         timeout_seconds: int,
         enabled: bool,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT code FROM task_types WHERE id=? AND deleted=0", (task_type_id,))
+            row = await cur.fetchone()
+            if not row:
+                raise ValueError("任务类型不存在")
+
+            old_code = str(row["code"] or "").strip()
+            new_code = (code or "").strip()
+            if not new_code:
+                raise ValueError("code 不能为空")
+
+            if new_code != old_code:
+                cur = await db.execute(
+                    "SELECT COUNT(*) AS c FROM task_types WHERE code=? AND id<>?",
+                    (new_code, task_type_id),
+                )
+                if int((await cur.fetchone())["c"]) > 0:
+                    raise ValueError("英文名称（code）已存在")
+
             await db.execute(
                 """
                 UPDATE task_types
-                SET name=?, concurrency=?, continuous_error_threshold=?, timeout_seconds=?, enabled=?, updated_at=CURRENT_TIMESTAMP
+                SET name=?, code=?, concurrency=?, continuous_error_threshold=?, timeout_seconds=?, enabled=?, updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
-                (name.strip(), int(concurrency), int(continuous_error_threshold), int(timeout_seconds), 1 if enabled else 0, task_type_id),
+                (
+                    name.strip(),
+                    new_code,
+                    int(concurrency),
+                    int(continuous_error_threshold),
+                    int(timeout_seconds),
+                    1 if enabled else 0,
+                    task_type_id,
+                ),
             )
+
+            # 同步历史任务的 task_type_code，避免改 code 后历史记录“断链”
+            if new_code != old_code and old_code:
+                await db.execute("UPDATE tasks SET task_type_code=? WHERE task_type_code=?", (new_code, old_code))
             await db.commit()
 
     async def delete_task_type(self, task_type_id: int) -> None:

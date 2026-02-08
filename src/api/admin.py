@@ -62,14 +62,14 @@ class CreateBrowserRequest(BaseModel):
     project_id: int
     name: str = Field(min_length=1, max_length=100)
     lan_addr: str = Field(min_length=3, max_length=255)
-    vendor: str = Field(default="generic", max_length=50)
+    vendor: str = Field(default="roxy", max_length=50)
     access_key: Optional[str] = Field(default=None, max_length=255)
 
 
 class UpdateBrowserRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     lan_addr: str = Field(min_length=3, max_length=255)
-    vendor: str = Field(default="generic", max_length=50)
+    vendor: str = Field(default="roxy", max_length=50)
     access_key: Optional[str] = Field(default=None, max_length=255)
 
 
@@ -94,6 +94,7 @@ class CreateTaskTypeRequest(BaseModel):
 
 class UpdateTaskTypeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
@@ -357,12 +358,15 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
         proxy_enabled=syscfg.proxy_enabled,
         proxy_url=syscfg.proxy_url,
     )
-    windows = await client.list_windows(
-        vendor=browser.vendor,
-        base_url=browser.lan_addr,
-        access_key=browser.access_key,
-        space_id=space.space_id,
-    )
+    try:
+        windows = await client.list_windows(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     affected = await db.upsert_windows(space_pk=space_pk, windows=windows)
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条窗口记录", "affected": affected}
@@ -458,15 +462,19 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
 async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    await db.update_task_type(
-        task_type_id=task_type_id,
-        name=req.name,
-        concurrency=req.concurrency,
-        continuous_error_threshold=req.continuous_error_threshold,
-        timeout_seconds=req.timeout_seconds,
-        enabled=req.enabled,
-    )
-    return {"success": True}
+    try:
+        await db.update_task_type(
+            task_type_id=task_type_id,
+            name=req.name,
+            code=req.code,
+            concurrency=req.concurrency,
+            continuous_error_threshold=req.continuous_error_threshold,
+            timeout_seconds=req.timeout_seconds,
+            enabled=req.enabled,
+        )
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/api/admin/task-types/{task_type_id}")

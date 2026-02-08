@@ -223,13 +223,15 @@
         document.getElementById("typeErrThr").value = t?.continuous_error_threshold ?? 3;
         document.getElementById("typeTimeout").value = t?.timeout_seconds ?? 1800;
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
-        document.getElementById("typeCode").disabled = !!(t && t.id);
+        // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
+        document.getElementById("typeCode").disabled = false;
         document.getElementById("currentTypeHint").textContent = t ? `当前：${t.name} (${t.code})` : "未选择";
       }
 
       async function saveType() {
         try {
           const id = document.getElementById("typeId").value;
+          const oldCode = state.current?.code || "";
           const payload = {
             name: document.getElementById("typeName").value.trim(),
             code: document.getElementById("typeCode").value.trim(),
@@ -239,6 +241,10 @@
             enabled: document.getElementById("typeEnabled").checked,
           };
           if (!payload.name || !payload.code) throw new Error("请填写名称与英文名称");
+          if (id && oldCode && payload.code !== oldCode) {
+            const ok = confirm("你正在修改英文名称（code）。这会影响对外接口 task_type_code，并会同步更新历史任务记录的 task_type_code。确定继续吗？");
+            if (!ok) return;
+          }
           let r;
           if (!id) {
             r = await adminFetch("/api/admin/task-types", { method: "POST", body: JSON.stringify(payload) });
@@ -251,6 +257,7 @@
           toast("保存成功", "success");
           await loadTypes();
           if (!id && d.task_type_id) selectType(d.task_type_id);
+          if (id) selectType(parseInt(id, 10));
         } catch (e) {
           toast(e.message, "error");
         }
