@@ -1,0 +1,20 @@
+[server]
+host = "0.0.0.0"
+port = 8002
+
+[global]
+admin_username = "admin"
+admin_password = "admin"
+api_key = "fpb123456"
+
+[system]
+# 是否默认启用代理（影响自动化/对外请求）
+proxy_enabled = false
+proxy_url = ""
+
+# 是否启用调试模式（更详细的日志）
+debug_enabled = false
+
+# 是否把日志写入本地文件（data/logs/app.log）
+log_to_file = false
+

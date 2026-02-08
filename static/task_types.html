@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>任务类型管理 - FPBrowser2API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .small2 { font-size: 12px; }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/admin/system">FPBrowser2API</a>
+        <div class="navbar-nav me-auto">
+          <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
+          <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
+          <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
+        </div>
+        <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <div class="row g-4">
+        <div class="col-12 col-lg-4">
+          <div class="d-flex align-items-center mb-2">
+            <div class="fw-semibold">任务类型</div>
+            <button class="btn btn-primary btn-sm ms-auto" id="btnNewType">新增</button>
+          </div>
+          <div class="list-group shadow-sm" id="typeList"></div>
+          <div class="text-muted small mt-2">
+            英文名称（code）必须唯一；对外接口用 code 作为任务类型参数。
+          </div>
+        </div>
+
+        <div class="col-12 col-lg-8">
+          <div class="card shadow-sm mb-4">
+            <div class="card-body">
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <h5 class="card-title mb-0">任务类型配置</h5>
+                <span class="text-muted small ms-auto" id="currentTypeHint">未选择</span>
+              </div>
+              <hr />
+              <div class="row g-3">
+                <input type="hidden" id="typeId" />
+                <div class="col-12 col-md-6">
+                  <label class="form-label">名称</label>
+                  <input class="form-control" id="typeName" />
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label">英文名称（唯一）</label>
+                  <input class="form-control mono" id="typeCode" placeholder="gen_video / gen_image" />
+                </div>
+                <div class="col-12 col-md-4">
+                  <label class="form-label">并发数</label>
+                  <input class="form-control" id="typeConcurrency" type="number" min="1" value="1" />
+                </div>
+                <div class="col-12 col-md-4">
+                  <label class="form-label">连续错误阈值</label>
+                  <input class="form-control" id="typeErrThr" type="number" min="1" value="3" />
+                </div>
+                <div class="col-12 col-md-4">
+                  <label class="form-label">超时时长（秒）</label>
+                  <input class="form-control" id="typeTimeout" type="number" min="10" value="1800" />
+                </div>
+                <div class="col-12">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="typeEnabled" checked />
+                    <label class="form-check-label" for="typeEnabled">启用</label>
+                  </div>
+                </div>
+                <div class="col-12 d-flex gap-2">
+                  <button class="btn btn-primary" id="btnSaveType">保存</button>
+                  <button class="btn btn-outline-danger" id="btnDeleteType">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <h5 class="card-title mb-0">窗口绑定</h5>
+                <button class="btn btn-outline-primary btn-sm ms-auto" id="btnAddWindows">添加窗口</button>
+              </div>
+              <div class="text-muted small mt-1">
+                每个窗口可绑定多个任务类型；这里控制额度、并发、冷却与启用状态。
+              </div>
+              <hr />
+              <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                  <thead>
+                    <tr class="small2">
+                      <th>窗口</th>
+                      <th>空间</th>
+                      <th>额度(剩余/每日)</th>
+                      <th>并发</th>
+                      <th>连错/总错</th>
+                      <th>冷却至</th>
+                      <th>启用</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mappingBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Windows Modal -->
+    <div class="modal fade" id="winModal" tabindex="-1">
+      <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">选择窗口</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2 align-items-end">
+              <div class="col-12 col-md-3">
+                <label class="form-label">默认额度（每日）</label>
+                <input class="form-control" id="winDailyQuota" type="number" min="0" value="0" />
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label">默认额度（剩余）</label>
+                <input class="form-control" id="winRemainQuota" type="number" min="0" value="0" />
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label">默认并发</label>
+                <input class="form-control" id="winMaxConc" type="number" min="1" value="1" />
+              </div>
+              <div class="col-12 col-md-3">
+                <button class="btn btn-primary w-100" id="btnBindWindows">绑定所选窗口</button>
+              </div>
+            </div>
+            <hr />
+            <div class="table-responsive">
+              <table class="table table-sm align-middle">
+                <thead>
+                  <tr class="small2">
+                    <th><input type="checkbox" id="chkAll" /></th>
+                    <th>项目</th>
+                    <th>浏览器</th>
+                    <th>空间</th>
+                    <th>窗口</th>
+                    <th>账号</th>
+                    <th>网址</th>
+                    <th>代理</th>
+                  </tr>
+                </thead>
+                <tbody id="winBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module">
+      import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
+
+      setActiveNav("task_types");
+      document.getElementById("btnLogout").addEventListener("click", logout);
+
+      const winModal = new bootstrap.Modal("#winModal");
+
+      let state = {
+        types: [],
+        current: null,
+        mappings: [],
+        windows: [],
+      };
+
+      async function loadTypes() {
+        const r = await adminFetch("/api/admin/task-types");
+        if (!r) return;
+        const d = await r.json();
+        state.types = d.task_types || [];
+        renderTypeList();
+        if (!state.current && state.types[0]) selectType(state.types[0].id);
+      }
+
+      function renderTypeList() {
+        const list = document.getElementById("typeList");
+        if (!state.types.length) {
+          list.innerHTML = `<div class="list-group-item text-muted">暂无任务类型</div>`;
+          return;
+        }
+        list.innerHTML = state.types.map(t => `
+          <button class="list-group-item list-group-item-action ${state.current?.id===t.id ? "active" : ""}" data-id="${t.id}">
+            <div class="d-flex">
+              <div class="fw-semibold">${escapeHtml(t.name)}</div>
+              <div class="ms-auto mono small2">${escapeHtml(t.code)}</div>
+            </div>
+          </button>
+        `).join("");
+        list.querySelectorAll("[data-id]").forEach(btn => btn.addEventListener("click", () => selectType(parseInt(btn.dataset.id, 10))));
+      }
+
+      async function selectType(id) {
+        state.current = state.types.find(x => x.id === id) || null;
+        fillTypeForm(state.current);
+        renderTypeList();
+        await loadMappings();
+      }
+
+      function fillTypeForm(t) {
+        document.getElementById("typeId").value = t?.id || "";
+        document.getElementById("typeName").value = t?.name || "";
+        document.getElementById("typeCode").value = t?.code || "";
+        document.getElementById("typeConcurrency").value = t?.concurrency ?? 1;
+        document.getElementById("typeErrThr").value = t?.continuous_error_threshold ?? 3;
+        document.getElementById("typeTimeout").value = t?.timeout_seconds ?? 1800;
+        document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
+        document.getElementById("typeCode").disabled = !!(t && t.id);
+        document.getElementById("currentTypeHint").textContent = t ? `当前：${t.name} (${t.code})` : "未选择";
+      }
+
+      async function saveType() {
+        try {
+          const id = document.getElementById("typeId").value;
+          const payload = {
+            name: document.getElementById("typeName").value.trim(),
+            code: document.getElementById("typeCode").value.trim(),
+            concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
+            continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
+            timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
+            enabled: document.getElementById("typeEnabled").checked,
+          };
+          if (!payload.name || !payload.code) throw new Error("请填写名称与英文名称");
+          let r;
+          if (!id) {
+            r = await adminFetch("/api/admin/task-types", { method: "POST", body: JSON.stringify(payload) });
+          } else {
+            r = await adminFetch(`/api/admin/task-types/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          }
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "保存失败");
+          toast("保存成功", "success");
+          await loadTypes();
+          if (!id && d.task_type_id) selectType(d.task_type_id);
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      async function deleteType() {
+        const id = document.getElementById("typeId").value;
+        if (!id) return;
+        if (!confirm("确定删除该任务类型吗？")) return;
+        const r = await adminFetch(`/api/admin/task-types/${id}`, { method: "DELETE" });
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "删除失败", "error");
+        toast("已删除", "success");
+        state.current = null;
+        await loadTypes();
+        fillTypeForm(null);
+        document.getElementById("mappingBody").innerHTML = "";
+      }
+
+      async function loadMappings() {
+        const id = document.getElementById("typeId").value;
+        if (!id) {
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="8" class="text-muted small">请先选择任务类型</td></tr>`;
+          return;
+        }
+        const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
+        if (!r) return;
+        const d = await r.json();
+        state.mappings = d.items || [];
+        renderMappings();
+      }
+
+      function renderMappings() {
+        const body = document.getElementById("mappingBody");
+        if (!state.mappings.length) {
+          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无绑定窗口</td></tr>`;
+          return;
+        }
+        body.innerHTML = state.mappings.map(m => `
+          <tr class="small2">
+            <td>
+              <div class="fw-semibold">${escapeHtml(m.window_name || "-")}</div>
+              <div class="text-muted">${escapeHtml(m.browser_name || "-")}</div>
+            </td>
+            <td>
+              <div class="mono">${escapeHtml(m.space_id || "-")}</div>
+              <div class="text-muted">${escapeHtml(m.space_name || "-")}</div>
+            </td>
+            <td class="mono">${m.remaining_quota}/${m.daily_quota}</td>
+            <td class="mono">${m.max_concurrency}</td>
+            <td class="mono">${m.consecutive_errors}/${m.total_errors}</td>
+            <td class="mono">${escapeHtml(m.cooldown_until || "-")}</td>
+            <td>${m.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+            <td>
+              <button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>
+              <button class="btn btn-outline-danger btn-sm" data-act="del" data-mid="${m.id}">删除</button>
+            </td>
+          </tr>
+        `).join("");
+        body.querySelectorAll("[data-act]").forEach(btn => {
+          btn.addEventListener("click", () => openMappingEditor(parseInt(btn.dataset.mid, 10), btn.dataset.act));
+        });
+      }
+
+      async function openMappingEditor(mappingId, act) {
+        const m = state.mappings.find(x => x.id === mappingId);
+        if (!m) return;
+        if (act === "del") {
+          if (!confirm("确定删除该绑定吗？")) return;
+          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, { method: "PATCH", body: JSON.stringify({ deleted: true }) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) return toast(d.detail || "删除失败", "error");
+          toast("已删除", "success");
+          await loadMappings();
+          return;
+        }
+        // 简单 prompt 编辑（不做复杂弹窗）
+        const remain = prompt("剩余额度 remaining_quota：", String(m.remaining_quota));
+        if (remain === null) return;
+        const daily = prompt("每日额度 daily_quota：", String(m.daily_quota));
+        if (daily === null) return;
+        const conc = prompt("并发 max_concurrency：", String(m.max_concurrency));
+        if (conc === null) return;
+        const enabled = confirm("是否启用该绑定？（确定=启用，取消=禁用）");
+        const cooldown = prompt("冷却到 cooldown_until（ISO，留空清除）：", m.cooldown_until || "");
+        const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            remaining_quota: parseInt(remain, 10),
+            daily_quota: parseInt(daily, 10),
+            max_concurrency: parseInt(conc, 10),
+            enabled,
+            cooldown_until: cooldown || "",
+          }),
+        });
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "更新失败", "error");
+        toast("已更新", "success");
+        await loadMappings();
+      }
+
+      async function openWinModal() {
+        const id = document.getElementById("typeId").value;
+        if (!id) return toast("请先选择任务类型", "error");
+        const r = await adminFetch("/api/admin/windows/all");
+        if (!r) return;
+        const d = await r.json();
+        state.windows = d.windows || [];
+        renderWinList();
+        winModal.show();
+      }
+
+      function renderWinList() {
+        const body = document.getElementById("winBody");
+        if (!state.windows.length) {
+          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无窗口数据，请先在“项目管理”里同步窗口。</td></tr>`;
+          return;
+        }
+        body.innerHTML = state.windows.map(w => `
+          <tr class="small2">
+            <td><input type="checkbox" class="chkWin" value="${w.window_pk}" /></td>
+            <td>${escapeHtml(w.project_name || "-")}</td>
+            <td>${escapeHtml(w.browser_name || "-")}</td>
+            <td><div class="mono">${escapeHtml(w.space_id || "-")}</div><div class="text-muted">${escapeHtml(w.space_name || "-")}</div></td>
+            <td class="fw-semibold">${escapeHtml(w.window_name || "-")}</td>
+            <td>${escapeHtml(w.platform_account || "-")}</td>
+            <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+            <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
+          </tr>
+        `).join("");
+        document.getElementById("chkAll").checked = false;
+      }
+
+      async function bindWindows() {
+        try {
+          const typeId = document.getElementById("typeId").value;
+          const ids = Array.from(document.querySelectorAll(".chkWin:checked")).map(x => parseInt(x.value, 10));
+          if (!ids.length) throw new Error("请至少选择一个窗口");
+          const payload = {
+            window_pks: ids,
+            daily_quota: parseInt(document.getElementById("winDailyQuota").value, 10) || 0,
+            remaining_quota: parseInt(document.getElementById("winRemainQuota").value, 10) || 0,
+            max_concurrency: parseInt(document.getElementById("winMaxConc").value, 10) || 1,
+            enabled: true,
+          };
+          const r = await adminFetch(`/api/admin/task-types/${typeId}/windows`, { method: "POST", body: JSON.stringify(payload) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "绑定失败");
+          toast(`已绑定 ${d.affected || ids.length} 个窗口`, "success");
+          winModal.hide();
+          await loadMappings();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      document.getElementById("btnLogout").addEventListener("click", logout);
+      document.getElementById("btnNewType").addEventListener("click", () => {
+        state.current = null;
+        fillTypeForm(null);
+        renderTypeList();
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="8" class="text-muted small">请先保存任务类型</td></tr>`;
+      });
+      document.getElementById("btnSaveType").addEventListener("click", saveType);
+      document.getElementById("btnDeleteType").addEventListener("click", deleteType);
+      document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
+      document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
+      document.getElementById("chkAll").addEventListener("change", (e) => {
+        document.querySelectorAll(".chkWin").forEach(chk => chk.checked = e.target.checked);
+      });
+
+      loadTypes();
+    </script>
+  </body>
+</html>
+

@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>项目管理 - FPBrowser2API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .small2 { font-size: 12px; }
+      .cursor { cursor: pointer; }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/admin/system">FPBrowser2API</a>
+        <div class="navbar-nav me-auto">
+          <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
+          <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
+          <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
+        </div>
+        <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+        <div class="me-2 fw-semibold">项目</div>
+        <select id="projectSelect" class="form-select" style="max-width: 320px;"></select>
+        <button class="btn btn-primary btn-sm" id="btnNewProject">新增项目</button>
+        <button class="btn btn-outline-secondary btn-sm" id="btnEditProject">修改项目</button>
+        <button class="btn btn-outline-danger btn-sm" id="btnDeleteProject">删除项目</button>
+        <span class="text-muted small ms-auto">提示：窗口信息不可编辑，只能“同步”更新。</span>
+      </div>
+
+      <div class="d-flex flex-wrap gap-2 mb-3">
+        <button class="btn btn-outline-primary btn-sm" id="btnNewBrowser">新增指纹浏览器</button>
+        <button class="btn btn-outline-secondary btn-sm" id="btnExpandAll">一键展开全部</button>
+        <button class="btn btn-outline-secondary btn-sm" id="btnCollapseAll">一键收起全部</button>
+        <button class="btn btn-outline-secondary btn-sm" id="btnRefreshTree">刷新</button>
+      </div>
+
+      <div id="treeContainer"></div>
+    </div>
+
+    <!-- Project Modal -->
+    <div class="modal fade" id="projectModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="projectModalTitle">项目</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="projectId" />
+            <label class="form-label">项目名称</label>
+            <input class="form-control" id="projectName" />
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveProject">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Browser Modal -->
+    <div class="modal fade" id="browserModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="browserModalTitle">指纹浏览器</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="browserId" />
+            <div class="mb-3">
+              <label class="form-label">名称</label>
+              <input class="form-control" id="browserName" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">局域网地址</label>
+              <input class="form-control mono" id="browserLan" placeholder="http://192.168.1.10:50000" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Vendor</label>
+              <input class="form-control mono" id="browserVendor" placeholder="roxy / generic" />
+              <div class="form-text">用于选择同步协议（可先填 generic）。</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Access Key（可选）</label>
+              <input class="form-control mono" id="browserKey" placeholder="指纹浏览器侧 API key" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveBrowser">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Space Modal -->
+    <div class="modal fade" id="spaceModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="spaceModalTitle">空间</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="spacePk" />
+            <input type="hidden" id="spaceBrowserId" />
+            <div class="mb-3">
+              <label class="form-label">空间名称</label>
+              <input class="form-control" id="spaceName" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">空间ID</label>
+              <input class="form-control mono" id="spaceId" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveSpace">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module">
+      import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
+
+      setActiveNav("projects");
+      document.getElementById("btnLogout").addEventListener("click", logout);
+
+      const projectSelect = document.getElementById("projectSelect");
+      const treeContainer = document.getElementById("treeContainer");
+
+      const projectModal = new bootstrap.Modal("#projectModal");
+      const browserModal = new bootstrap.Modal("#browserModal");
+      const spaceModal = new bootstrap.Modal("#spaceModal");
+
+      let state = { projects: [], tree: [] };
+
+      function currentProjectId() {
+        const v = projectSelect.value;
+        return v ? parseInt(v, 10) : null;
+      }
+
+      async function loadProjects() {
+        const r = await adminFetch("/api/admin/projects");
+        if (!r) return;
+        const d = await r.json();
+        state.projects = d.projects || [];
+        projectSelect.innerHTML = state.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+        if (!projectSelect.value && state.projects[0]) projectSelect.value = String(state.projects[0].id);
+      }
+
+      async function loadTree() {
+        const pid = currentProjectId();
+        if (!pid) {
+          treeContainer.innerHTML = `<div class="alert alert-info">请先创建一个项目。</div>`;
+          return;
+        }
+        const r = await adminFetch(`/api/admin/tree?project_id=${pid}`);
+        if (!r) return;
+        const d = await r.json();
+        state.tree = d.tree || [];
+        renderTree();
+      }
+
+      function renderTree() {
+        const p = state.tree[0];
+        if (!p) {
+          treeContainer.innerHTML = `<div class="alert alert-info">暂无数据。</div>`;
+          return;
+        }
+
+        const accordionId = "accBrowsers";
+        const html = `
+          <div class="accordion" id="${accordionId}">
+            ${(p.browsers || []).map((b, bi) => renderBrowser(b, accordionId, bi)).join("")}
+          </div>
+        `;
+        treeContainer.innerHTML = html;
+
+        // bind buttons
+        treeContainer.querySelectorAll("[data-action]").forEach(btn => {
+          btn.addEventListener("click", () => handleAction(btn.dataset.action, btn.dataset));
+        });
+      }
+
+      function renderBrowser(b, parentId, idx) {
+        const bId = `b_${b.id}`;
+        const collapseId = `collapse_${bId}`;
+        const headingId = `heading_${bId}`;
+        return `
+          <div class="accordion-item mb-2 shadow-sm">
+            <h2 class="accordion-header" id="${headingId}">
+              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                <div class="w-100 d-flex flex-wrap gap-2 align-items-center">
+                  <div class="fw-semibold">${escapeHtml(b.name)}</div>
+                  <span class="badge text-bg-secondary">${escapeHtml(b.vendor || "generic")}</span>
+                  <span class="text-muted small mono">${escapeHtml(b.lan_addr || "")}</span>
+                  <span class="ms-auto"></span>
+                  <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_browser" data-browser='${encodeURIComponent(JSON.stringify(b))}'>修改</button>
+                  <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_browser" data-browser_id="${b.id}">删除</button>
+                  <button class="btn btn-outline-primary btn-sm" type="button" data-action="new_space" data-browser_id="${b.id}">新增空间</button>
+                </div>
+              </button>
+            </h2>
+            <div id="${collapseId}" class="accordion-collapse collapse" data-bs-parent="#${parentId}">
+              <div class="accordion-body">
+                ${(b.spaces || []).length ? (b.spaces || []).map(s => renderSpace(s)).join("") : `<div class="text-muted small">暂无空间</div>`}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderSpace(s) {
+        const sid = `s_${s.id}`;
+        const table = renderWindowsTable(s.windows || []);
+        return `
+          <div class="card mb-3">
+            <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+              <div class="fw-semibold">${escapeHtml(s.name)}</div>
+              <span class="badge text-bg-light mono border">${escapeHtml(s.space_id)}</span>
+              <span class="ms-auto"></span>
+              <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_space" data-space='${encodeURIComponent(JSON.stringify(s))}'>修改</button>
+              <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_space" data-space_pk="${s.id}">删除</button>
+              <button class="btn btn-primary btn-sm" type="button" data-action="sync_space" data-space_pk="${s.id}">同步窗口</button>
+            </div>
+            <div class="card-body">
+              ${table}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderWindowsTable(windows) {
+        if (!windows.length) return `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
+        return `
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr class="small2">
+                  <th>窗口名称</th>
+                  <th>账号</th>
+                  <th>网址</th>
+                  <th>代理</th>
+                  <th>国家</th>
+                  <th>到期</th>
+                  <th>启用</th>
+                  <th>删除</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${windows.map(w => `
+                  <tr class="small2">
+                    <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
+                    <td>${escapeHtml(w.platform_account || "-")}</td>
+                    <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+                    <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
+                    <td>${escapeHtml(w.proxy_country || "-")}</td>
+                    <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
+                    <td>${w.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+                    <td>${w.deleted ? `<span class="badge text-bg-danger">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      function handleAction(action, ds) {
+        if (action === "edit_browser") {
+          const b = JSON.parse(decodeURIComponent(ds.browser));
+          openBrowserModal("edit", b);
+        } else if (action === "delete_browser") {
+          deleteBrowser(parseInt(ds.browser_id, 10));
+        } else if (action === "new_space") {
+          openSpaceModal("new", { browser_id: parseInt(ds.browser_id, 10) });
+        } else if (action === "edit_space") {
+          const s = JSON.parse(decodeURIComponent(ds.space));
+          openSpaceModal("edit", s);
+        } else if (action === "delete_space") {
+          deleteSpace(parseInt(ds.space_pk, 10));
+        } else if (action === "sync_space") {
+          syncSpace(parseInt(ds.space_pk, 10));
+        }
+      }
+
+      function openProjectModal(mode) {
+        document.getElementById("projectModalTitle").textContent = mode === "new" ? "新增项目" : "修改项目";
+        if (mode === "new") {
+          document.getElementById("projectId").value = "";
+          document.getElementById("projectName").value = "";
+        } else {
+          const pid = currentProjectId();
+          const p = state.projects.find(x => x.id === pid);
+          document.getElementById("projectId").value = String(pid);
+          document.getElementById("projectName").value = p ? p.name : "";
+        }
+        projectModal.show();
+      }
+
+      async function saveProject() {
+        const pid = document.getElementById("projectId").value;
+        const name = document.getElementById("projectName").value.trim();
+        if (!name) return toast("请输入项目名称", "error");
+        let r;
+        if (!pid) {
+          r = await adminFetch("/api/admin/projects", { method: "POST", body: JSON.stringify({ name }) });
+        } else {
+          r = await adminFetch(`/api/admin/projects/${pid}`, { method: "PUT", body: JSON.stringify({ name }) });
+        }
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "保存失败", "error");
+        projectModal.hide();
+        toast("保存成功", "success");
+        await loadProjects();
+        if (!pid && d.project_id) projectSelect.value = String(d.project_id);
+        await loadTree();
+      }
+
+      async function deleteProject() {
+        const pid = currentProjectId();
+        if (!pid) return;
+        if (!confirm("确定删除该项目吗？")) return;
+        const r = await adminFetch(`/api/admin/projects/${pid}`, { method: "DELETE" });
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "删除失败", "error");
+        toast("已删除", "success");
+        await loadProjects();
+        await loadTree();
+      }
+
+      function openBrowserModal(mode, b) {
+        document.getElementById("browserModalTitle").textContent = mode === "new" ? "新增指纹浏览器" : "修改指纹浏览器";
+        document.getElementById("browserId").value = mode === "new" ? "" : String(b.id);
+        document.getElementById("browserName").value = b?.name || "";
+        document.getElementById("browserLan").value = b?.lan_addr || "";
+        document.getElementById("browserVendor").value = b?.vendor || "generic";
+        document.getElementById("browserKey").value = b?.access_key || "";
+        browserModal.show();
+      }
+
+      async function saveBrowser() {
+        const pid = currentProjectId();
+        if (!pid) return toast("请先选择项目", "error");
+        const bid = document.getElementById("browserId").value;
+        const name = document.getElementById("browserName").value.trim();
+        const lan_addr = document.getElementById("browserLan").value.trim();
+        const vendor = document.getElementById("browserVendor").value.trim() || "generic";
+        const access_key = document.getElementById("browserKey").value.trim() || null;
+        if (!name || !lan_addr) return toast("请填写名称与局域网地址", "error");
+        let r;
+        if (!bid) {
+          r = await adminFetch("/api/admin/browsers", { method: "POST", body: JSON.stringify({ project_id: pid, name, lan_addr, vendor, access_key }) });
+        } else {
+          r = await adminFetch(`/api/admin/browsers/${bid}`, { method: "PUT", body: JSON.stringify({ name, lan_addr, vendor, access_key }) });
+        }
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "保存失败", "error");
+        browserModal.hide();
+        toast("保存成功", "success");
+        await loadTree();
+      }
+
+      async function deleteBrowser(browserId) {
+        if (!confirm("确定删除该指纹浏览器吗？")) return;
+        const r = await adminFetch(`/api/admin/browsers/${browserId}`, { method: "DELETE" });
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "删除失败", "error");
+        toast("已删除", "success");
+        await loadTree();
+      }
+
+      function openSpaceModal(mode, s) {
+        document.getElementById("spaceModalTitle").textContent = mode === "new" ? "新增空间" : "修改空间";
+        document.getElementById("spacePk").value = mode === "new" ? "" : String(s.id);
+        document.getElementById("spaceBrowserId").value = String(s.browser_id || "");
+        if (mode === "new") {
+          document.getElementById("spaceName").value = "";
+          document.getElementById("spaceId").value = "";
+        } else {
+          document.getElementById("spaceName").value = s.name || "";
+          document.getElementById("spaceId").value = s.space_id || "";
+        }
+        spaceModal.show();
+      }
+
+      async function saveSpace() {
+        const spk = document.getElementById("spacePk").value;
+        const browser_id = parseInt(document.getElementById("spaceBrowserId").value, 10);
+        const name = document.getElementById("spaceName").value.trim();
+        const space_id = document.getElementById("spaceId").value.trim();
+        if (!name || !space_id) return toast("请填写空间名称与空间ID", "error");
+        let r;
+        if (!spk) {
+          r = await adminFetch("/api/admin/spaces", { method: "POST", body: JSON.stringify({ browser_id, name, space_id }) });
+        } else {
+          r = await adminFetch(`/api/admin/spaces/${spk}`, { method: "PUT", body: JSON.stringify({ name, space_id }) });
+        }
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "保存失败", "error");
+        spaceModal.hide();
+        toast("保存成功", "success");
+        await loadTree();
+      }
+
+      async function deleteSpace(spacePk) {
+        if (!confirm("确定删除该空间吗？")) return;
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}`, { method: "DELETE" });
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "删除失败", "error");
+        toast("已删除", "success");
+        await loadTree();
+      }
+
+      async function syncSpace(spacePk) {
+        try {
+          toast("正在同步窗口...", "info");
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-windows`, { method: "POST" });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "同步失败");
+          toast(d.message || "同步完成", "success");
+          await loadTree();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      function expandAll(expand) {
+        document.querySelectorAll(".accordion-collapse").forEach(el => {
+          const c = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+          expand ? c.show() : c.hide();
+        });
+      }
+
+      // bind top actions
+      document.getElementById("btnNewProject").addEventListener("click", () => openProjectModal("new"));
+      document.getElementById("btnEditProject").addEventListener("click", () => openProjectModal("edit"));
+      document.getElementById("btnDeleteProject").addEventListener("click", deleteProject);
+      document.getElementById("btnSaveProject").addEventListener("click", saveProject);
+
+      document.getElementById("btnNewBrowser").addEventListener("click", () => openBrowserModal("new", {}));
+      document.getElementById("btnSaveBrowser").addEventListener("click", saveBrowser);
+
+      document.getElementById("btnSaveSpace").addEventListener("click", saveSpace);
+
+      document.getElementById("btnExpandAll").addEventListener("click", () => expandAll(true));
+      document.getElementById("btnCollapseAll").addEventListener("click", () => expandAll(false));
+      document.getElementById("btnRefreshTree").addEventListener("click", loadTree);
+      projectSelect.addEventListener("change", loadTree);
+
+      async function init() {
+        await loadProjects();
+        await loadTree();
+      }
+      init();
+    </script>
+  </body>
+</html>
+

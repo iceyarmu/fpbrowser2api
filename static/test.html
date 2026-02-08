@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>测试 - FPBrowser2API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/admin/system">FPBrowser2API</a>
+        <div class="navbar-nav me-auto">
+          <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
+          <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
+          <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
+        </div>
+        <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <div class="row g-4">
+        <div class="col-12 col-lg-6">
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <h5 class="card-title">发起测试任务</h5>
+              <div class="mb-3">
+                <label class="form-label">任务类型</label>
+                <select class="form-select" id="taskType"></select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">文本内容</label>
+                <textarea class="form-control" id="prompt" rows="5" placeholder="输入文本提示词"></textarea>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">图片（可选）</label>
+                <input class="form-control" id="image" type="file" accept="image/*" />
+              </div>
+              <button class="btn btn-primary" id="btnSubmit">提交任务</button>
+              <div class="text-muted small mt-2">
+                注意：当前执行器为“模拟进度”，你后续可在 `src/services/task_executor.py` 接入真实自动化。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-lg-6">
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <h5 class="card-title">任务进度</h5>
+              <div class="mb-2">
+                <div class="text-muted small">task_id</div>
+                <div class="mono" id="taskId">-</div>
+              </div>
+              <div class="mb-3">
+                <div class="progress" role="progressbar">
+                  <div class="progress-bar" id="bar" style="width: 0%">0%</div>
+                </div>
+              </div>
+              <div class="mb-3">
+                <div class="text-muted small">状态</div>
+                <div id="status">-</div>
+              </div>
+              <div class="mb-3">
+                <div class="text-muted small">结果</div>
+                <pre class="bg-light border rounded p-2 small" id="result" style="min-height: 160px; white-space: pre-wrap;"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module">
+      import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
+
+      setActiveNav("test");
+      document.getElementById("btnLogout").addEventListener("click", logout);
+
+      let apiKey = null;
+      let pollTimer = null;
+
+      async function loadApiKey() {
+        const r = await adminFetch("/api/admin/system-config");
+        if (!r) return;
+        const d = await r.json();
+        apiKey = d.config?.api_key || null;
+      }
+
+      async function loadTaskTypes() {
+        if (!apiKey) return;
+        const r = await fetch("/v1/task-types", { headers: { Authorization: `Bearer ${apiKey}` } });
+        const d = await r.json();
+        const items = d.task_types || [];
+        const sel = document.getElementById("taskType");
+        sel.innerHTML = items.map(t => `<option value="${escapeHtml(t.code)}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`).join("");
+      }
+
+      function setProgress(pct) {
+        const bar = document.getElementById("bar");
+        const v = Math.max(0, Math.min(100, pct || 0));
+        bar.style.width = `${v}%`;
+        bar.textContent = `${v}%`;
+      }
+
+      async function submit() {
+        try {
+          if (!apiKey) throw new Error("API Key 未加载");
+          const type = document.getElementById("taskType").value;
+          const prompt = document.getElementById("prompt").value.trim();
+          const file = document.getElementById("image").files?.[0] || null;
+          if (!type) throw new Error("请选择任务类型");
+          if (!prompt) throw new Error("请输入文本内容");
+
+          const fd = new FormData();
+          fd.append("task_type_code", type);
+          fd.append("prompt", prompt);
+          if (file) fd.append("image", file);
+
+          const r = await fetch("/v1/tasks", { method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: fd });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "提交失败");
+          toast("提交成功", "success");
+          document.getElementById("taskId").textContent = d.task_id;
+          document.getElementById("status").textContent = "queued";
+          document.getElementById("result").textContent = "";
+          setProgress(0);
+          startPoll(d.task_id);
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      function stopPoll() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = null;
+      }
+
+      function startPoll(taskId) {
+        stopPoll();
+        pollTimer = setInterval(async () => {
+          try {
+            const r = await fetch(`/v1/tasks/${taskId}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "查询失败");
+            document.getElementById("status").textContent = d.status;
+            setProgress(d.progress || 0);
+            document.getElementById("result").textContent = JSON.stringify(d, null, 2);
+            if (d.status === "completed" || d.status === "failed") {
+              stopPoll();
+            }
+          } catch (e) {
+            // 不打断轮询，避免偶发网络抖动
+          }
+        }, 2000);
+      }
+
+      document.getElementById("btnSubmit").addEventListener("click", submit);
+
+      async function init() {
+        await loadApiKey();
+        await loadTaskTypes();
+      }
+      init();
+    </script>
+  </body>
+</html>
+
