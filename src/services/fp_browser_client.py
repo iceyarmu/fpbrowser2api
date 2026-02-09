@@ -23,7 +23,11 @@ RoxyBrowser 官方接口文档：
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Dict, List, Optional, Tuple
+import http.client
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -39,7 +43,8 @@ class FPBrowserClient:
         - 新版本常用参数名为 proxy
         - 老版本常用参数名为 proxies
         """
-        timeout = httpx.Timeout(30.0)
+        # 说明：显式拆分超时，避免某些版本/场景下默认值不生效导致“无限等待”
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
         if self.proxy_enabled and self.proxy_url:
             try:
                 return httpx.AsyncClient(proxy=self.proxy_url, timeout=timeout)  # type: ignore[call-arg]
@@ -138,7 +143,6 @@ class FPBrowserClient:
 
         if vendor not in ("roxy", "roxybrowser", "generic"):
             raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_close，请设置为 roxy")
-
         return await self._roxy_close_browser(
             base_url=base_url,
             token=access_key,
@@ -160,12 +164,99 @@ class FPBrowserClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def _roxy_post(self, base_url: str, token: Optional[str], path: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _roxy_post(
+        self,
+        base_url: str,
+        token: Optional[str],
+        path: str,
+        data: Dict[str, Any],
+        *,
+        timeout_seconds: Optional[float] = None,
+        allow_non_json: bool = False,
+    ) -> Dict[str, Any]:
         url = base_url.rstrip("/") + "/" + path.lstrip("/")
         async with self._client() as client:
-            resp = await client.post(url, headers=self._roxy_headers(token), json=(data or {}))
+            headers = self._roxy_headers(token)
+            payload = data or {}
+            print(f"url: {url}, headers: {headers}, data: {payload}")
+
+            try:
+                req_coro = client.post(url, headers=headers, json=payload)
+                if timeout_seconds is not None and float(timeout_seconds) > 0:
+                    resp = await asyncio.wait_for(req_coro, timeout=float(timeout_seconds))
+                else:
+                    resp = await req_coro
+            except asyncio.TimeoutError as e:
+                raise RuntimeError(f"Roxy POST 超时：{url} timeout={timeout_seconds}s") from e
+            except httpx.TimeoutException as e:
+                raise RuntimeError(f"Roxy POST 超时：httpx 超时异常 url={url}") from e
+
+            # 先打印 status + body 片段，避免 resp.json() 因非 JSON/空响应出错导致“没有任何返回日志”
+            body_text = ""
+            try:
+                body_text = resp.text
+            except Exception:
+                body_text = ""
+            print(f"status: {resp.status_code}, body: {(body_text or '')[:500]}")
+
             resp.raise_for_status()
-            return resp.json()
+
+            if not (body_text or "").strip():
+                return {"code": 0, "msg": "empty response", "data": {}}
+
+            try:
+                return resp.json()
+            except Exception as e:
+                if allow_non_json:
+                    return {"code": -1, "msg": f"non-json response: {e}", "data": {"text": body_text}}
+                raise RuntimeError(f"Roxy POST 返回非 JSON：url={url} status={resp.status_code}") from e
+
+    def _roxy_close_httpclient(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        dir_id: str,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        """
+        只为 /browser/close 定制的“更强健”实现：
+        - 使用 http.client（标准库）并设置 socket timeout
+        - 只等待响应头（getresponse），不读取 response body，避免服务端不结束 body 导致 read() 卡住
+        - 强制 Connection: close
+        """
+        u = urlsplit((base_url or "").strip())
+        if not u.scheme or not u.hostname:
+            raise RuntimeError(f"base_url 非法：{base_url}")
+
+        path = "/browser/close"
+        host = u.hostname
+        port = int(u.port or (443 if u.scheme == "https" else 80))
+
+        headers = self._roxy_headers(token)
+        headers["Connection"] = "close"
+        body_dict = {"dirId": str(dir_id).strip()}
+        body_bytes = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+        headers["Content-Length"] = str(len(body_bytes))
+
+        conn_cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+        conn = conn_cls(host, port, timeout=float(timeout_seconds))
+        try:
+            conn.request("POST", path, body=body_bytes, headers=headers)
+            resp = conn.getresponse()  # 只拿响应头就足够了
+            status = int(getattr(resp, "status", 0) or 0)
+            reason = str(getattr(resp, "reason", "") or "")
+            # 不 resp.read()：避免服务端一直不结束 body 导致卡住
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return {"code": 0 if status == 200 else status, "msg": reason or "ok", "data": {"status": status}}
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     async def _roxy_open_browser(
         self,
@@ -193,14 +284,34 @@ class FPBrowserClient:
         return rsp or {}
 
     async def _roxy_close_browser(self, *, base_url: str, token: Optional[str], dir_id: str) -> Dict[str, Any]:
-        rsp = await self._roxy_post(
-            base_url,
-            token,
-            "/browser/close",
-            {
-                "dirId": str(dir_id),
-            },
-        )
+        dir_str = str(dir_id).strip();
+        # 精简：优先走与 open 相同的 httpx POST。
+        # 仍保留兜底：若 close 接口在某些环境下异常/超时，则回退到标准库 http.client 版本，确保不会无限挂起。
+        try:
+            rsp = await self._roxy_post(
+                base_url,
+                token,
+                "/browser/close",
+                {"dirId": dir_str},
+                timeout_seconds=8.0,
+                allow_non_json=True,
+            )
+        except Exception:
+            close_timeout = 12.0
+            try:
+                rsp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._roxy_close_httpclient,
+                        base_url=base_url,
+                        token=token,
+                        dir_id=dir_str,
+                        timeout_seconds=close_timeout,
+                    ),
+                    timeout=close_timeout + 3.0,
+                )
+            except asyncio.TimeoutError:
+                rsp = {"code": 504, "msg": f"browser_close timeout>{close_timeout}s", "data": {"dirId": dir_str}}
+
         return rsp or {}
 
     async def _roxy_get_browser_list_v3(
