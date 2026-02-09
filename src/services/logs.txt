@@ -1,0 +1,1891 @@
+
+====================================================================================================
+[2026-02-09 20:51:36] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+[2026-02-09 20:51:51] sniff_end
+
+====================================================================================================
+[2026-02-09 20:53:05] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+[2026-02-09 20:53:20] sniff_end
+
+====================================================================================================
+[2026-02-09 21:14:10] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:14:16] requestWillBeSent requestId=11628.515
+url: https://sora.chatgpt.com/backend/nf/create
+method: POST
+postData:
+{"kind":"video","prompt":"这是一条测试视频3","title":null,"orientation":"portrait","size":"small","n_frames":300,"inpaint_items":[],"remix_target_id":null,"project_id":null,"metadata":null,"cameo_ids":null,"cameo_replacements":null,"model":"sy_8","style_id":null,"audio_caption":null,"audio_transcript":null,"video_caption":null,"storyboard_id":null}
+[2026-02-09 21:14:17] responseReceived requestId=11628.515
+status: 400
+url: https://sora.chatgpt.com/backend/nf/create
+headers:
+{
+  "access-control-allow-origin": "https://sora.chatgpt.com",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3a104af65cc9f-LAX",
+  "content-length": "256",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:14:18 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "376",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "Origin",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "6475e0b1-53ab-4fff-8be5-a3636800bde0",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "6475e0b1-53ab-4fff-8be5-a3636800bde0",
+  "x-sora-request-id": "6475e0b1-53ab-4fff-8be5-a3636800bde0"
+}
+[2026-02-09 21:14:17] loadingFinished requestId=11628.515
+responseBody:
+{
+  "error": {
+    "message": "Hmmm something didn't look right with your request. Please try again later or visit https://help.openai.com if this issue persists.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_request"
+  }
+}
+[2026-02-09 21:14:17] sniff_end
+
+====================================================================================================
+[2026-02-09 21:18:17] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:18:22] requestWillBeSent requestId=11628.754
+url: https://sora.chatgpt.com/backend/nf/create
+method: POST
+postData:
+{"kind":"video","prompt":"这是一条测试视频3","title":null,"orientation":"portrait","size":"small","n_frames":300,"inpaint_items":[],"remix_target_id":null,"project_id":null,"metadata":null,"cameo_ids":null,"cameo_replacements":null,"model":"sy_8","style_id":null,"audio_caption":null,"audio_transcript":null,"video_caption":null,"storyboard_id":null}
+[2026-02-09 21:18:22] responseReceived requestId=11628.754
+status: 400
+url: https://sora.chatgpt.com/backend/nf/create
+headers:
+{
+  "access-control-allow-origin": "https://sora.chatgpt.com",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3a7062fd46d31-LAX",
+  "content-length": "256",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:18:24 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "335",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "Origin",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "b41bf242-2c57-4f11-a69c-8b1143f8fb8b",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "b41bf242-2c57-4f11-a69c-8b1143f8fb8b",
+  "x-sora-request-id": "b41bf242-2c57-4f11-a69c-8b1143f8fb8b"
+}
+[2026-02-09 21:18:22] loadingFinished requestId=11628.754
+responseBody:
+{
+  "error": {
+    "message": "Hmmm something didn't look right with your request. Please try again later or visit https://help.openai.com if this issue persists.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_request"
+  }
+}
+[2026-02-09 21:18:23] sniff_end
+
+====================================================================================================
+[2026-02-09 21:22:33] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:22:39] requestWillBeSent requestId=11628.1000
+url: https://sora.chatgpt.com/backend/nf/create
+method: POST
+postData:
+{"kind":"video","prompt":"这是一条测试视频3","title":null,"orientation":"portrait","size":"small","n_frames":300,"inpaint_items":[],"remix_target_id":null,"project_id":null,"metadata":null,"cameo_ids":null,"cameo_replacements":null,"model":"sy_8","style_id":null,"audio_caption":null,"audio_transcript":null,"video_caption":null,"storyboard_id":null}
+[2026-02-09 21:22:40] responseReceived requestId=11628.1000
+status: 400
+url: https://sora.chatgpt.com/backend/nf/create
+headers:
+{
+  "access-control-allow-origin": "https://sora.chatgpt.com",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ad4c7acfdba2-LAX",
+  "content-length": "256",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:22:41 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "351",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "Origin",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "c3d815b4-f330-452a-8ffc-6729e1dca9db",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "c3d815b4-f330-452a-8ffc-6729e1dca9db",
+  "x-sora-request-id": "c3d815b4-f330-452a-8ffc-6729e1dca9db"
+}
+[2026-02-09 21:22:40] loadingFinished requestId=11628.1000
+responseBody:
+{
+  "error": {
+    "message": "Hmmm something didn't look right with your request. Please try again later or visit https://help.openai.com if this issue persists.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_request"
+  }
+}
+[2026-02-09 21:22:40] sniff_end
+
+====================================================================================================
+[2026-02-09 21:39:36] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+[2026-02-09 21:39:51] sniff_end
+
+====================================================================================================
+[2026-02-09 21:40:08] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+[2026-02-09 21:40:23] sniff_end
+
+====================================================================================================
+[2026-02-09 21:40:52] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:40:53] requestWillBeSent requestId=1768.857
+url: https://sora.chatgpt.com/backend/nf/create
+method: POST
+postData:
+{"kind":"video","prompt":"这是一条测试视频3","title":null,"orientation":"portrait","size":"small","n_frames":300,"inpaint_items":[],"remix_target_id":null,"project_id":null,"metadata":null,"cameo_ids":null,"cameo_replacements":null,"model":"sy_8","style_id":null,"audio_caption":null,"audio_transcript":null,"video_caption":null,"storyboard_id":null}
+[2026-02-09 21:40:54] responseReceived requestId=1768.857
+status: 200
+url: https://sora.chatgpt.com/backend/nf/create
+headers:
+{
+  "access-control-allow-origin": "https://sora.chatgpt.com",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c7ffca0672e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:40:55 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "1215",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "Origin",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "20aa1ffe-87d6-4d9d-82c5-33807dcafbfa",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "20aa1ffe-87d6-4d9d-82c5-33807dcafbfa",
+  "x-sora-request-id": "20aa1ffe-87d6-4d9d-82c5-33807dcafbfa"
+}
+[2026-02-09 21:40:54] loadingFinished requestId=1768.857
+responseBody:
+{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","draft":null,"priority":1,"rate_limit_and_credit_balance":{"rate_limit_reached":false,"access_resets_in_seconds":86399,"credit_remaining":0,"estimated_num_videos_remaining":30,"estimated_num_purchased_videos_remaining":0},"task_type":"video_gen"}
+[2026-02-09 21:40:54] sniff_end
+
+====================================================================================================
+[2026-02-09 21:40:59] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:40:59] responseReceived requestId=1768.860
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c808ff5072e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:40:56 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "233",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "1b0e1795-6c6e-4e46-9065-f9653038bdd3",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "1b0e1795-6c6e-4e46-9065-f9653038bdd3",
+  "x-sora-request-id": "1b0e1795-6c6e-4e46-9065-f9653038bdd3"
+}
+[2026-02-09 21:40:59] loadingFinished requestId=1768.860
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"preprocessing","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:40:59] requestWillBeSent requestId=1768.865
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:40:59] responseReceived requestId=1768.865
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8186d2b72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:40:58 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "282",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "2eefe3b1-91fe-46e2-8bdc-207040ee58af",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "2eefe3b1-91fe-46e2-8bdc-207040ee58af",
+  "x-sora-request-id": "2eefe3b1-91fe-46e2-8bdc-207040ee58af"
+}
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:40:59] requestWillBeSent requestId=1768.871
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:00] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:01] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:41:01] responseReceived requestId=1768.871
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8283b4b72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:01 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "258",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "f5340525-0ee6-4a7b-8d33-510adf53a9d0",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "f5340525-0ee6-4a7b-8d33-510adf53a9d0",
+  "x-sora-request-id": "f5340525-0ee6-4a7b-8d33-510adf53a9d0"
+}
+[2026-02-09 21:41:01] loadingFinished requestId=1768.871
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:01] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:02] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:02] requestWillBeSent requestId=1768.872
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:02] responseReceived requestId=1768.872
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c837e8a972e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:03 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "255",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "6ec1b60d-d88b-4e8d-889d-58f1403efd08",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "6ec1b60d-d88b-4e8d-889d-58f1403efd08",
+  "x-sora-request-id": "6ec1b60d-d88b-4e8d-889d-58f1403efd08"
+}
+[2026-02-09 21:41:02] loadingFinished requestId=1768.872
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:02] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:03] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:04] requestWillBeSent requestId=1768.874
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:05] responseReceived requestId=1768.874
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8478d7472e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:06 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "252",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "a75d4d36-e691-48be-b79c-66b4e56e8292",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "a75d4d36-e691-48be-b79c-66b4e56e8292",
+  "x-sora-request-id": "a75d4d36-e691-48be-b79c-66b4e56e8292"
+}
+[2026-02-09 21:41:05] loadingFinished requestId=1768.874
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:05] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:06] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:07] requestWillBeSent requestId=1768.875
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:07] responseReceived requestId=1768.875
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8572b0372e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:08 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "243",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "3a197216-bff1-494b-aa11-1a639d8771e6",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "3a197216-bff1-494b-aa11-1a639d8771e6",
+  "x-sora-request-id": "3a197216-bff1-494b-aa11-1a639d8771e6"
+}
+[2026-02-09 21:41:07] loadingFinished requestId=1768.875
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:07] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:08] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:09] requestWillBeSent requestId=1768.876
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:09] responseReceived requestId=1768.876
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c866c8eb72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:11 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "310",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "c3c3c922-34ae-46a9-9208-9c0f21d1421d",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "c3c3c922-34ae-46a9-9208-9c0f21d1421d",
+  "x-sora-request-id": "c3c3c922-34ae-46a9-9208-9c0f21d1421d"
+}
+[2026-02-09 21:41:09] loadingFinished requestId=1768.876
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:10] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:11] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:11] requestWillBeSent requestId=1768.877
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:12] responseReceived requestId=1768.877
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c876cd2c72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:13 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "236",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "24a6b48f-40ad-45b4-a9c5-47ddaec23fef",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "24a6b48f-40ad-45b4-a9c5-47ddaec23fef",
+  "x-sora-request-id": "24a6b48f-40ad-45b4-a9c5-47ddaec23fef"
+}
+[2026-02-09 21:41:12] loadingFinished requestId=1768.877
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:12] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:13] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:14] requestWillBeSent requestId=1768.878
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:15] responseReceived requestId=1768.878
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8864a9c72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:16 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "254",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "d788e741-c358-4c18-8f80-6fe67ac08a92",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "d788e741-c358-4c18-8f80-6fe67ac08a92",
+  "x-sora-request-id": "d788e741-c358-4c18-8f80-6fe67ac08a92"
+}
+[2026-02-09 21:41:15] loadingFinished requestId=1768.878
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:15] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:16] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:17] requestWillBeSent requestId=1768.879
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:17] responseReceived requestId=1768.879
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c895f89572e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:18 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "245",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "6be336c9-af18-490e-a3c6-022444ceca8a",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "6be336c9-af18-490e-a3c6-022444ceca8a",
+  "x-sora-request-id": "6be336c9-af18-490e-a3c6-022444ceca8a"
+}
+[2026-02-09 21:41:17] loadingFinished requestId=1768.879
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.1,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:17] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:18] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:19] requestWillBeSent requestId=1768.881
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:20] responseReceived requestId=1768.881
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8a5bd7672e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:21 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "256",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "926e99be-8c7c-403b-b750-7dca6923e460",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "926e99be-8c7c-403b-b750-7dca6923e460",
+  "x-sora-request-id": "926e99be-8c7c-403b-b750-7dca6923e460"
+}
+[2026-02-09 21:41:20] loadingFinished requestId=1768.881
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.1,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:20] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:21] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:22] requestWillBeSent requestId=1768.882
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:22] responseReceived requestId=1768.882
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8b55a4472e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:23 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "255",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "19a145de-223a-4d66-a688-3bfae3b919b0",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "19a145de-223a-4d66-a688-3bfae3b919b0",
+  "x-sora-request-id": "19a145de-223a-4d66-a688-3bfae3b919b0"
+}
+[2026-02-09 21:41:22] loadingFinished requestId=1768.882
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.1,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:22] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:23] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:24] requestWillBeSent requestId=1768.883
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:25] responseReceived requestId=1768.883
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8c4ed7f72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:26 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "246",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "166f24fc-336c-4909-ae6b-2e23337e2a73",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "166f24fc-336c-4909-ae6b-2e23337e2a73",
+  "x-sora-request-id": "166f24fc-336c-4909-ae6b-2e23337e2a73"
+}
+[2026-02-09 21:41:25] loadingFinished requestId=1768.883
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.1,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:25] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:26] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:27] requestWillBeSent requestId=1768.884
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:27] responseReceived requestId=1768.884
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8d4796072e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:28 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "241",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "6081434b-7dd3-44e1-b1cf-4c16386dc1f5",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "6081434b-7dd3-44e1-b1cf-4c16386dc1f5",
+  "x-sora-request-id": "6081434b-7dd3-44e1-b1cf-4c16386dc1f5"
+}
+[2026-02-09 21:41:27] loadingFinished requestId=1768.884
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.48000000000000004,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:27] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:28] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:29] requestWillBeSent requestId=1768.885
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:30] responseReceived requestId=1768.885
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8e3fd0172e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:31 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "240",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "127cdc86-7f66-45e8-9458-3b9241ae16c6",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "127cdc86-7f66-45e8-9458-3b9241ae16c6",
+  "x-sora-request-id": "127cdc86-7f66-45e8-9458-3b9241ae16c6"
+}
+[2026-02-09 21:41:30] loadingFinished requestId=1768.885
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.48000000000000004,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:30] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:31] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:31] requestWillBeSent requestId=1768.886
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:32] responseReceived requestId=1768.886
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c8f3785a72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:33 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "253",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "89fd117e-c6e9-4063-a2c5-47e2562c08f3",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "89fd117e-c6e9-4063-a2c5-47e2562c08f3",
+  "x-sora-request-id": "89fd117e-c6e9-4063-a2c5-47e2562c08f3"
+}
+[2026-02-09 21:41:32] loadingFinished requestId=1768.886
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.48000000000000004,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:32] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:33] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:34] requestWillBeSent requestId=1768.887
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:35] responseReceived requestId=1768.887
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9031bdb72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:36 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "238",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "b2fafd4a-526b-47be-a1d5-95f74400379b",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "b2fafd4a-526b-47be-a1d5-95f74400379b",
+  "x-sora-request-id": "b2fafd4a-526b-47be-a1d5-95f74400379b"
+}
+[2026-02-09 21:41:35] loadingFinished requestId=1768.887
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.48000000000000004,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:35] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:36] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:37] requestWillBeSent requestId=1768.888
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:37] responseReceived requestId=1768.888
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c912af6b72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:38 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "277",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "8099f197-d104-4e9a-8933-0d3c88b9ed6c",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "8099f197-d104-4e9a-8933-0d3c88b9ed6c",
+  "x-sora-request-id": "8099f197-d104-4e9a-8933-0d3c88b9ed6c"
+}
+[2026-02-09 21:41:37] loadingFinished requestId=1768.888
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.585,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:37] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:38] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:39] requestWillBeSent requestId=1768.889
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:40] responseReceived requestId=1768.889
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9226ce272e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:41 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "608",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "3cc6c8f0-7b0e-45cf-aba1-5e46e72c1f0d",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "3cc6c8f0-7b0e-45cf-aba1-5e46e72c1f0d",
+  "x-sora-request-id": "3cc6c8f0-7b0e-45cf-aba1-5e46e72c1f0d"
+}
+[2026-02-09 21:41:40] loadingFinished requestId=1768.889
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.585,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:40] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:41] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:42] requestWillBeSent requestId=1768.890
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:42] responseReceived requestId=1768.890
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c934bdd072e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:44 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "237",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "534199ec-b211-4c56-8295-0912b791e5e0",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "534199ec-b211-4c56-8295-0912b791e5e0",
+  "x-sora-request-id": "534199ec-b211-4c56-8295-0912b791e5e0"
+}
+[2026-02-09 21:41:42] loadingFinished requestId=1768.890
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.585,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:43] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:44] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:44] requestWillBeSent requestId=1768.891
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:45] responseReceived requestId=1768.891
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c94439a272e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:46 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "243",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "5f3197ea-7219-43ad-aa60-82bf5c87f9c5",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "5f3197ea-7219-43ad-aa60-82bf5c87f9c5",
+  "x-sora-request-id": "5f3197ea-7219-43ad-aa60-82bf5c87f9c5"
+}
+[2026-02-09 21:41:45] loadingFinished requestId=1768.891
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.585,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:45] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:46] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:47] requestWillBeSent requestId=1768.892
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:48] responseReceived requestId=1768.892
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c953ce0372e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:49 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "293",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "34fbec1a-4c54-4ccc-8dcd-e2062601a1ac",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "34fbec1a-4c54-4ccc-8dcd-e2062601a1ac",
+  "x-sora-request-id": "34fbec1a-4c54-4ccc-8dcd-e2062601a1ac"
+}
+[2026-02-09 21:41:48] loadingFinished requestId=1768.892
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.68,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:48] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:49] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:50] requestWillBeSent requestId=1768.894
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:50] responseReceived requestId=1768.894
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c963aa9672e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:51 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "244",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "9b841194-e5af-49e3-ad34-2a6b2b4e5a57",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "9b841194-e5af-49e3-ad34-2a6b2b4e5a57",
+  "x-sora-request-id": "9b841194-e5af-49e3-ad34-2a6b2b4e5a57"
+}
+[2026-02-09 21:41:50] loadingFinished requestId=1768.894
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.68,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:50] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:51] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:52] requestWillBeSent requestId=1768.895
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:52] responseReceived requestId=1768.895
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9734e1a72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:54 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "233",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "a2c881fe-6454-449b-8762-fce0ea2094ac",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "a2c881fe-6454-449b-8762-fce0ea2094ac",
+  "x-sora-request-id": "a2c881fe-6454-449b-8762-fce0ea2094ac"
+}
+[2026-02-09 21:41:52] loadingFinished requestId=1768.895
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.68,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:53] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:54] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:54] requestWillBeSent requestId=1768.896
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:55] responseReceived requestId=1768.896
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c982ca6b72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:56 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "239",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "7d77f2f8-73d1-4605-bcae-30b0034f9f01",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "7d77f2f8-73d1-4605-bcae-30b0034f9f01",
+  "x-sora-request-id": "7d77f2f8-73d1-4605-bcae-30b0034f9f01"
+}
+[2026-02-09 21:41:55] loadingFinished requestId=1768.896
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.68,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:55] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:56] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:57] requestWillBeSent requestId=1768.897
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:41:57] responseReceived requestId=1768.897
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9923de072e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:41:59 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "228",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "4963f465-ee2f-4f48-a19b-676f8004f60f",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "4963f465-ee2f-4f48-a19b-676f8004f60f",
+  "x-sora-request-id": "4963f465-ee2f-4f48-a19b-676f8004f60f"
+}
+[2026-02-09 21:41:57] loadingFinished requestId=1768.897
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.7675000000000001,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:41:58] sniff_end
+
+====================================================================================================
+[2026-02-09 21:41:59] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:41:59] requestWillBeSent requestId=1768.898
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:00] responseReceived requestId=1768.898
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9a1aa3372e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:01 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "230",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "d03e4a2e-eedb-4a96-9875-3f7ea867552f",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "d03e4a2e-eedb-4a96-9875-3f7ea867552f",
+  "x-sora-request-id": "d03e4a2e-eedb-4a96-9875-3f7ea867552f"
+}
+[2026-02-09 21:42:00] loadingFinished requestId=1768.898
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.7675000000000001,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:00] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:01] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:02] requestWillBeSent requestId=1768.899
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:02] responseReceived requestId=1768.899
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9b11f0872e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:04 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "274",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "6adefce4-bc2a-49a9-9042-8f102c9a4ff6",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "6adefce4-bc2a-49a9-9042-8f102c9a4ff6",
+  "x-sora-request-id": "6adefce4-bc2a-49a9-9042-8f102c9a4ff6"
+}
+[2026-02-09 21:42:02] loadingFinished requestId=1768.899
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.7675000000000001,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:03] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:04] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:04] requestWillBeSent requestId=1768.900
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:05] responseReceived requestId=1768.900
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9c0ef3872e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:06 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "509",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "badd10c8-9bb7-4438-9d14-63c90f8042e5",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "badd10c8-9bb7-4438-9d14-63c90f8042e5",
+  "x-sora-request-id": "badd10c8-9bb7-4438-9d14-63c90f8042e5"
+}
+[2026-02-09 21:42:05] loadingFinished requestId=1768.900
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.7675000000000001,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:05] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:06] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:07] requestWillBeSent requestId=1768.901
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:08] responseReceived requestId=1768.901
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9d22d4d72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:09 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "251",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "bccc612b-dce4-41b2-b27c-2ee54b916dd7",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "bccc612b-dce4-41b2-b27c-2ee54b916dd7",
+  "x-sora-request-id": "bccc612b-dce4-41b2-b27c-2ee54b916dd7"
+}
+[2026-02-09 21:42:08] loadingFinished requestId=1768.901
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:08] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:09] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:10] requestWillBeSent requestId=1768.902
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:10] responseReceived requestId=1768.902
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9e1b91572e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:11 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "238",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "8d6b3743-5508-44c2-a846-a64de6a0e344",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "8d6b3743-5508-44c2-a846-a64de6a0e344",
+  "x-sora-request-id": "8d6b3743-5508-44c2-a846-a64de6a0e344"
+}
+[2026-02-09 21:42:10] loadingFinished requestId=1768.902
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:10] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:11] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:12] requestWillBeSent requestId=1768.903
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:13] responseReceived requestId=1768.903
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3c9f12d0a72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:14 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "233",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "60a37ca8-93e2-4060-b736-ad73cad27019",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "60a37ca8-93e2-4060-b736-ad73cad27019",
+  "x-sora-request-id": "60a37ca8-93e2-4060-b736-ad73cad27019"
+}
+[2026-02-09 21:42:13] loadingFinished requestId=1768.903
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:13] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:14] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:15] requestWillBeSent requestId=1768.904
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:15] responseReceived requestId=1768.904
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca00a9c372e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:16 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "231",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "7ee7e304-59ae-47c8-9800-22392324a182",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "7ee7e304-59ae-47c8-9800-22392324a182",
+  "x-sora-request-id": "7ee7e304-59ae-47c8-9800-22392324a182"
+}
+[2026-02-09 21:42:15] loadingFinished requestId=1768.904
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:15] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:16] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:17] requestWillBeSent requestId=1768.905
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:19] responseReceived requestId=1768.905
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca102dd272e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:20 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "271",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "0f1ff8d5-732a-408e-b965-8a6dd8f5786b",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "0f1ff8d5-732a-408e-b965-8a6dd8f5786b",
+  "x-sora-request-id": "0f1ff8d5-732a-408e-b965-8a6dd8f5786b"
+}
+[2026-02-09 21:42:19] loadingFinished requestId=1768.905
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:19] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:20] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:21] requestWillBeSent requestId=1768.907
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:21] responseReceived requestId=1768.907
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca290ffc72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:23 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "252",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "6a9a0640-a047-486f-ab07-150f89d899ab",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "6a9a0640-a047-486f-ab07-150f89d899ab",
+  "x-sora-request-id": "6a9a0640-a047-486f-ab07-150f89d899ab"
+}
+[2026-02-09 21:42:21] loadingFinished requestId=1768.907
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:22] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:23] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:24] requestWillBeSent requestId=1768.908
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:24] responseReceived requestId=1768.908
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca38ad8e72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:25 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "268",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "0949b858-e50b-4642-b95d-e9af75f95cf3",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "0949b858-e50b-4642-b95d-e9af75f95cf3",
+  "x-sora-request-id": "0949b858-e50b-4642-b95d-e9af75f95cf3"
+}
+[2026-02-09 21:42:24] loadingFinished requestId=1768.908
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:24] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:25] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:26] requestWillBeSent requestId=1768.909
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:27] responseReceived requestId=1768.909
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca486b4572e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:28 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "229",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "5e28e6f4-db0d-4d09-9a82-8e2ccc03269f",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "5e28e6f4-db0d-4d09-9a82-8e2ccc03269f",
+  "x-sora-request-id": "5e28e6f4-db0d-4d09-9a82-8e2ccc03269f"
+}
+[2026-02-09 21:42:27] loadingFinished requestId=1768.909
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:27] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:28] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:29] requestWillBeSent requestId=1768.910
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:29] responseReceived requestId=1768.910
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca57d86272e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:30 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "238",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "c5a49dcf-a70b-4807-bd04-255bb477c16c",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "c5a49dcf-a70b-4807-bd04-255bb477c16c",
+  "x-sora-request-id": "c5a49dcf-a70b-4807-bd04-255bb477c16c"
+}
+[2026-02-09 21:42:29] loadingFinished requestId=1768.910
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:29] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:30] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:31] requestWillBeSent requestId=1768.911
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:31] responseReceived requestId=1768.911
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca675da772e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:33 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "240",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "552c9d40-5d5c-457f-9f07-2cf7857f489a",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "552c9d40-5d5c-457f-9f07-2cf7857f489a",
+  "x-sora-request-id": "552c9d40-5d5c-457f-9f07-2cf7857f489a"
+}
+[2026-02-09 21:42:31] loadingFinished requestId=1768.911
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":0.8491666666666666,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:32] sniff_end
+
+====================================================================================================
+[2026-02-09 21:42:33] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:42:33] requestWillBeSent requestId=1768.912
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:42:34] responseReceived requestId=1768.912
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ca770c0072e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:42:35 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "234",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "1d29b273-db48-4138-8a88-be90b50f3ed1",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "1d29b273-db48-4138-8a88-be90b50f3ed1",
+  "x-sora-request-id": "1d29b273-db48-4138-8a88-be90b50f3ed1"
+}
+[2026-02-09 21:42:34] loadingFinished requestId=1768.912
+responseBody:
+[{"id":"task_01kh1a4fmbe8mvknax3f4vsxd5","task_type":"video_gen","status":"processing","failure_reason":null,"prompt":"这是一条测试视频3","title":null,"progress_pct":1.0,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:42:34] sniff_end
+
+====================================================================================================
+[2026-02-09 21:43:46] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/create' method='POST'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:43:46] requestWillBeSent requestId=1768.1284
+url: https://sora.chatgpt.com/backend/nf/create
+method: POST
+postData:
+{"kind":"video","prompt":"这是一条测试视频4","title":null,"orientation":"portrait","size":"small","n_frames":300,"inpaint_items":[],"remix_target_id":null,"project_id":null,"metadata":null,"cameo_ids":null,"cameo_replacements":null,"model":"sy_8","style_id":null,"audio_caption":null,"audio_transcript":null,"video_caption":null,"storyboard_id":null}
+[2026-02-09 21:43:48] responseReceived requestId=1768.1284
+status: 200
+url: https://sora.chatgpt.com/backend/nf/create
+headers:
+{
+  "access-control-allow-origin": "https://sora.chatgpt.com",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc3c187872e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:43:49 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "1229",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "vary": "Origin",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "709202b2-6774-4366-ab52-9aa4840b1ae6",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "709202b2-6774-4366-ab52-9aa4840b1ae6",
+  "x-sora-request-id": "709202b2-6774-4366-ab52-9aa4840b1ae6"
+}
+[2026-02-09 21:43:48] loadingFinished requestId=1768.1284
+responseBody:
+{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","draft":null,"priority":1,"rate_limit_and_credit_balance":{"rate_limit_reached":false,"access_resets_in_seconds":86226,"credit_remaining":0,"estimated_num_videos_remaining":29,"estimated_num_purchased_videos_remaining":0},"task_type":"video_gen"}
+[2026-02-09 21:43:48] sniff_end
+
+====================================================================================================
+[2026-02-09 21:43:53] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:43:53] responseReceived requestId=1768.1288
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc45de1e72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:43:49 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "231",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "c65c337a-b831-4f15-9e2a-fbce87461f0a",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "c65c337a-b831-4f15-9e2a-fbce87461f0a",
+  "x-sora-request-id": "c65c337a-b831-4f15-9e2a-fbce87461f0a"
+}
+[2026-02-09 21:43:53] loadingFinished requestId=1768.1288
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"preprocessing","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:43:53] requestWillBeSent requestId=1768.1293
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:43:53] responseReceived requestId=1768.1293
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc554dea72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:43:52 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "244",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "40b6709c-4d5a-47f0-bf13-5f3ae9615c2b",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "40b6709c-4d5a-47f0-bf13-5f3ae9615c2b",
+  "x-sora-request-id": "40b6709c-4d5a-47f0-bf13-5f3ae9615c2b"
+}
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:43:53] requestWillBeSent requestId=1768.1297
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:43:53] sniff_end
+
+====================================================================================================
+[2026-02-09 21:43:54] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:43:54] responseReceived requestId=1768.1297
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc650af672e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:43:54 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "253",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "9c68d14d-c515-41c5-8edf-ad9fe70ac203",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "9c68d14d-c515-41c5-8edf-ad9fe70ac203",
+  "x-sora-request-id": "9c68d14d-c515-41c5-8edf-ad9fe70ac203"
+}
+[2026-02-09 21:43:54] loadingFinished requestId=1768.1297
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:43:54] sniff_end
+
+====================================================================================================
+[2026-02-09 21:43:55] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:43:55] requestWillBeSent requestId=1768.1298
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:43:56] responseReceived requestId=1768.1298
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc74c8a872e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:43:57 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "244",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "194f9e40-234d-4c0b-b764-0c19b0cb2a79",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "194f9e40-234d-4c0b-b764-0c19b0cb2a79",
+  "x-sora-request-id": "194f9e40-234d-4c0b-b764-0c19b0cb2a79"
+}
+[2026-02-09 21:43:56] loadingFinished requestId=1768.1298
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:43:56] sniff_end
+
+====================================================================================================
+[2026-02-09 21:43:57] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:43:58] requestWillBeSent requestId=1768.1299
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:43:58] responseReceived requestId=1768.1299
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc844e5072e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:43:59 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "232",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "063502e7-4ebc-4f29-b0e5-6e85bc56d136",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "063502e7-4ebc-4f29-b0e5-6e85bc56d136",
+  "x-sora-request-id": "063502e7-4ebc-4f29-b0e5-6e85bc56d136"
+}
+[2026-02-09 21:43:58] loadingFinished requestId=1768.1299
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:43:58] sniff_end
+
+====================================================================================================
+[2026-02-09 21:43:59] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:44:00] requestWillBeSent requestId=1768.1300
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:44:01] responseReceived requestId=1768.1300
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cc93cb5672e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:44:02 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "241",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "74865528-08df-44f6-86c8-b118b44829a9",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "74865528-08df-44f6-86c8-b118b44829a9",
+  "x-sora-request-id": "74865528-08df-44f6-86c8-b118b44829a9"
+}
+[2026-02-09 21:44:01] loadingFinished requestId=1768.1300
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:44:01] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:02] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:44:03] requestWillBeSent requestId=1768.1301
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:44:03] responseReceived requestId=1768.1301
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cca348c172e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:44:04 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "224",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "91f6d4dc-0e68-4127-bb6f-20d667b58c25",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "91f6d4dc-0e68-4127-bb6f-20d667b58c25",
+  "x-sora-request-id": "91f6d4dc-0e68-4127-bb6f-20d667b58c25"
+}
+[2026-02-09 21:44:03] loadingFinished requestId=1768.1301
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:44:03] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:04] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:44:05] requestWillBeSent requestId=1768.1302
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:44:05] responseReceived requestId=1768.1302
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ccb2ac0d72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:44:07 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "243",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "3054e55a-37a3-4e9d-b8cc-fcfd5829b522",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "3054e55a-37a3-4e9d-b8cc-fcfd5829b522",
+  "x-sora-request-id": "3054e55a-37a3-4e9d-b8cc-fcfd5829b522"
+}
+[2026-02-09 21:44:05] loadingFinished requestId=1768.1302
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:44:06] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:07] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:44:07] requestWillBeSent requestId=1768.1303
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:44:08] responseReceived requestId=1768.1303
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ccc2285472e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:44:09 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "245",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "c45e637b-1036-46d3-a9ae-f33fb6e503fc",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "c45e637b-1036-46d3-a9ae-f33fb6e503fc",
+  "x-sora-request-id": "c45e637b-1036-46d3-a9ae-f33fb6e503fc"
+}
+[2026-02-09 21:44:08] loadingFinished requestId=1768.1303
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"queued","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":null,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:44:08] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:09] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:44:10] requestWillBeSent requestId=1768.1305
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:44:10] responseReceived requestId=1768.1305
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3ccd1ee0372e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:44:12 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "243",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "70ed0991-4e55-4e5e-846e-79338fc73221",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "70ed0991-4e55-4e5e-846e-79338fc73221",
+  "x-sora-request-id": "70ed0991-4e55-4e5e-846e-79338fc73221"
+}
+[2026-02-09 21:44:10] loadingFinished requestId=1768.1305
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":0.1,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:44:11] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:12] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:44:12] requestWillBeSent requestId=1768.1306
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:44:13] responseReceived requestId=1768.1306
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cce15b6f72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:44:14 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "247",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "60a465d5-5c0c-4be2-a08c-c80210209152",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "60a465d5-5c0c-4be2-a08c-c80210209152",
+  "x-sora-request-id": "60a465d5-5c0c-4be2-a08c-c80210209152"
+}
+[2026-02-09 21:44:13] loadingFinished requestId=1768.1306
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"running","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":0.1,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:44:13] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:14] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:44:24] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:25] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:44:35] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:36] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:44:46] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:47] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:44:58] sniff_end
+
+====================================================================================================
+[2026-02-09 21:44:59] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:45:09] sniff_end
+
+====================================================================================================
+[2026-02-09 21:45:10] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:45:20] sniff_end
+
+====================================================================================================
+[2026-02-09 21:45:21] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:45:31] sniff_end
+
+====================================================================================================
+[2026-02-09 21:45:32] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+[2026-02-09 21:45:42] sniff_end
+
+====================================================================================================
+[2026-02-09 21:45:43] sniff_start url_regex='https://sora\\.chatgpt\\.com/backend/nf/pending/v2' method='GET'
+----------------------------------------------------------------------------------------------------
+[2026-02-09 21:45:45] requestWillBeSent requestId=1768.1310
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+method: GET
+[2026-02-09 21:45:46] responseReceived requestId=1768.1310
+status: 200
+url: https://sora.chatgpt.com/backend/nf/pending/v2
+headers:
+{
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "9cb3cf241a4e72e0-LAX",
+  "content-encoding": "gzip",
+  "content-type": "application/json",
+  "date": "Mon, 09 Feb 2026 13:45:47 GMT",
+  "openai-organization": "user-86ipexllfomatyoqwoeovjg5",
+  "openai-processing-ms": "244",
+  "openai-version": "2020-10-01",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "x-content-type-options": "nosniff",
+  "x-oai-request-id": "0a15d0aa-7ee0-4c44-886a-60785f7a585c",
+  "x-openai-proxy-wasm": "v0.1",
+  "x-request-id": "0a15d0aa-7ee0-4c44-886a-60785f7a585c",
+  "x-sora-request-id": "0a15d0aa-7ee0-4c44-886a-60785f7a585c"
+}
+[2026-02-09 21:45:46] loadingFinished requestId=1768.1310
+responseBody:
+[{"id":"task_01kh1a9s33evsv3m22ejvp5g3j","task_type":"video_gen","status":"processing","failure_reason":null,"prompt":"这是一条测试视频4","title":null,"progress_pct":1.0,"generations":[],"width":352,"height":640,"thumbnail_url":null}]
+[2026-02-09 21:45:46] sniff_end

@@ -19,6 +19,7 @@
           <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
           <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
         </div>
@@ -91,6 +92,19 @@
       setActiveNav("test");
       document.getElementById("btnLogout").addEventListener("click", logout);
 
+      // ---- 本地缓存（localStorage）----
+      const LS_PREFIX = "fpbrowser2api.admin.";
+      const LS_KEYS = {
+        testTaskType: `${LS_PREFIX}test.task_type_code`,
+        testPrompt: `${LS_PREFIX}test.prompt`,
+      };
+      function lsGet(key) {
+        try { return localStorage.getItem(key); } catch { return null; }
+      }
+      function lsSet(key, val) {
+        try { localStorage.setItem(key, val ?? ""); } catch {}
+      }
+
       let apiKey = null;
       let pollTimer = null;
 
@@ -108,6 +122,12 @@
         const items = d.task_types || [];
         const sel = document.getElementById("taskType");
         sel.innerHTML = items.map(t => `<option value="${escapeHtml(t.code)}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`).join("");
+
+        // 任务类型回填（需等 options 渲染完成）
+        const saved = lsGet(LS_KEYS.testTaskType);
+        if (saved && Array.from(sel.options).some(o => o.value === saved)) {
+          sel.value = saved;
+        }
       }
 
       function setProgress(pct) {
@@ -176,6 +196,16 @@
       document.getElementById("btnSubmit").addEventListener("click", submit);
 
       async function init() {
+        // 文本内容回填（无需等待接口）
+        const promptEl = document.getElementById("prompt");
+        const savedPrompt = lsGet(LS_KEYS.testPrompt);
+        if (savedPrompt !== null) promptEl.value = savedPrompt;
+        promptEl.addEventListener("input", (e) => lsSet(LS_KEYS.testPrompt, e.target.value));
+
+        // 任务类型缓存（回填发生在 loadTaskTypes 之后）
+        const typeEl = document.getElementById("taskType");
+        typeEl.addEventListener("change", (e) => lsSet(LS_KEYS.testTaskType, e.target.value || ""));
+
         await loadApiKey();
         await loadTaskTypes();
       }

@@ -78,6 +78,73 @@ class FPBrowserClient:
             workspace_id=workspace_id,
         )
 
+    async def browser_open(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        window_key: str,
+        args: Optional[List[str]] = None,
+        force_open: bool = False,
+        headless: bool = False,
+    ) -> Dict[str, Any]:
+        """打开指纹浏览器窗口，并返回 Selenium 连接信息（debuggerAddress/driver）。
+
+        约定：
+        - 对于 RoxyBrowser：space_id = workspaceId（纯数字），window_key = dirId
+        - 返回结构与 RoxyBrowser 接口一致：{code, msg, data:{http, driver, ws,...}}
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        window_key = (window_key or "").strip()
+        if not base_url or not space_id or not window_key:
+            raise RuntimeError("browser_open 参数不足：base_url/space_id/window_key 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_open，请设置为 roxy")
+
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        return await self._roxy_open_browser(
+            base_url=base_url,
+            token=access_key,
+            workspace_id=workspace_id,
+            dir_id=window_key,
+            args=args or [],
+            force_open=bool(force_open),
+            headless=bool(headless),
+        )
+
+    async def browser_close(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        window_key: str,
+    ) -> Dict[str, Any]:
+        """关闭指纹浏览器窗口（RoxyBrowser：POST /browser/close）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        window_key = (window_key or "").strip()
+        if not base_url or not window_key:
+            raise RuntimeError("browser_close 参数不足：base_url/window_key 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_close，请设置为 roxy")
+
+        return await self._roxy_close_browser(
+            base_url=base_url,
+            token=access_key,
+            dir_id=window_key,
+        )
+
     # -------------------- RoxyBrowser --------------------
     def _roxy_headers(self, token: Optional[str]) -> Dict[str, str]:
         h = {"Content-Type": "application/json"}
@@ -92,6 +159,49 @@ class FPBrowserClient:
             resp = await client.get(url, headers=self._roxy_headers(token), params={k: v for k, v in (params or {}).items() if v is not None and v != ""})
             resp.raise_for_status()
             return resp.json()
+
+    async def _roxy_post(self, base_url: str, token: Optional[str], path: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        url = base_url.rstrip("/") + "/" + path.lstrip("/")
+        async with self._client() as client:
+            resp = await client.post(url, headers=self._roxy_headers(token), json=(data or {}))
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _roxy_open_browser(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        workspace_id: int,
+        dir_id: str,
+        args: List[str],
+        force_open: bool,
+        headless: bool,
+    ) -> Dict[str, Any]:
+        rsp = await self._roxy_post(
+            base_url,
+            token,
+            "/browser/open",
+            {
+                "dirId": str(dir_id),
+                "args": args or [],
+                "forceOpen": bool(force_open),
+                "headless": bool(headless),
+                "workspaceId": int(workspace_id),
+            },
+        )
+        return rsp or {}
+
+    async def _roxy_close_browser(self, *, base_url: str, token: Optional[str], dir_id: str) -> Dict[str, Any]:
+        rsp = await self._roxy_post(
+            base_url,
+            token,
+            "/browser/close",
+            {
+                "dirId": str(dir_id),
+            },
+        )
+        return rsp or {}
 
     async def _roxy_get_browser_list_v3(
         self,

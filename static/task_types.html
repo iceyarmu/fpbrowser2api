@@ -22,6 +22,7 @@
           <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
           <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
         </div>
@@ -182,6 +183,52 @@
       </div>
     </div>
 
+    <!-- Mapping Edit Modal -->
+    <div class="modal fade" id="mappingEditModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">编辑绑定</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="mapEditId" />
+            <div class="mb-2">
+              <div class="text-muted small">窗口</div>
+              <div class="fw-semibold" id="mapEditWinName">-</div>
+              <div class="text-muted small mono" id="mapEditSpace">-</div>
+            </div>
+            <hr class="my-2" />
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label">剩余额度（remaining_quota）</label>
+                <input class="form-control mono" id="mapEditRemain" type="number" min="0" value="0" />
+              </div>
+              <div class="col-12">
+                <label class="form-label">连续错误（consecutive_errors）</label>
+                <input class="form-control mono" id="mapEditConsecutive" type="number" min="0" value="0" />
+                <div class="form-text">提示：执行成功会自动清零；这里仅用于人工干预。</div>
+              </div>
+              <div class="col-12">
+                <label class="form-label">冷却到（cooldown_until）</label>
+                <input class="form-control mono" id="mapEditCooldown" placeholder="例如：2026-02-09 12:34:56（留空清除）" />
+              </div>
+              <div class="col-12">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="mapEditEnabled" />
+                  <label class="form-check-label" for="mapEditEnabled">启用</label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveMapping">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
@@ -189,7 +236,23 @@
       setActiveNav("task_types");
       document.getElementById("btnLogout").addEventListener("click", logout);
 
+      // ---- 本地缓存（localStorage）----
+      const LS_PREFIX = "fpbrowser2api.admin.";
+      const LS_KEYS = {
+        currentTypeId: `${LS_PREFIX}task_types.current_type_id`,
+      };
+      function lsGet(key) {
+        try { return localStorage.getItem(key); } catch { return null; }
+      }
+      function lsSet(key, val) {
+        try { localStorage.setItem(key, val ?? ""); } catch {}
+      }
+      function lsDel(key) {
+        try { localStorage.removeItem(key); } catch {}
+      }
+
       const winModal = new bootstrap.Modal("#winModal");
+      const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
 
       let state = {
         types: [],
@@ -242,7 +305,12 @@
           state.current = state.types.find(x => x.id === state.current.id) || state.current;
         }
         renderTypeSelect();
-        if (!state.current && state.types[0]) selectType(state.types[0].id);
+        if (!state.current) {
+          const cached = parseInt(lsGet(LS_KEYS.currentTypeId) || "", 10);
+          const hit = !Number.isNaN(cached) && state.types.find(x => x.id === cached);
+          if (hit) await selectType(hit.id);
+          else if (state.types[0]) await selectType(state.types[0].id);
+        }
       }
 
       function renderTypeSelect() {
@@ -265,6 +333,7 @@
         state.current = state.types.find(x => x.id === id) || null;
         fillTypeForm(state.current);
         renderTypeSelect();
+        if (state.current?.id) lsSet(LS_KEYS.currentTypeId, String(state.current.id));
         await loadMappings();
       }
 
@@ -331,6 +400,7 @@
         if (!r.ok) return toast(d.detail || "删除失败", "error");
         toast("已删除", "success");
         state.current = null;
+        lsDel(LS_KEYS.currentTypeId);
         await loadTypes();
         fillTypeForm(null);
         document.getElementById("mappingBody").innerHTML = "";
@@ -373,7 +443,15 @@
               </div>
             </td>
             <td class="mono cell-stack">
-              <div>错误：<span class="fw-semibold">${m.consecutive_errors}</span>/${m.total_errors}</div>
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div>错误：<span class="fw-semibold">${m.consecutive_errors}</span>/${m.total_errors}</div>
+                <button
+                  class="btn btn-outline-secondary btn-sm py-0 px-1"
+                  title="清空连续错误（重置为 0）"
+                  data-act="resetConsecutiveErrors"
+                  data-mid="${m.id}"
+                >⟲</button>
+              </div>
               <div>冷却：${escapeHtml(m.cooldown_until || "-")}</div>
             </td>
             <td>${m.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
@@ -424,8 +502,15 @@
         if (act === "refreshQuota") {
           return refreshQuota(mappingId);
         }
+        if (act === "resetConsecutiveErrors") {
+          return resetConsecutiveErrors(mappingId);
+        }
         const m = state.mappings.find(x => x.id === mappingId);
         if (!m) return;
+        if (act === "edit") {
+          openMappingEditModal(m);
+          return;
+        }
         if (act === "del") {
           if (!confirm("确定删除该绑定吗？")) return;
           const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, { method: "PATCH", body: JSON.stringify({ deleted: true }) });
@@ -436,24 +521,63 @@
           await loadMappings();
           return;
         }
-        // 简单 prompt 编辑（不做复杂弹窗）
-        const remain = prompt("剩余额度 remaining_quota：", String(m.remaining_quota));
-        if (remain === null) return;
-        const enabled = confirm("是否启用该绑定？（确定=启用，取消=禁用）");
-        const cooldown = prompt("冷却到 cooldown_until（ISO，留空清除）：", m.cooldown_until || "");
-        const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            remaining_quota: parseInt(remain, 10),
-            enabled,
-            cooldown_until: cooldown || "",
-          }),
-        });
-        if (!r) return;
-        const d = await r.json();
-        if (!r.ok) return toast(d.detail || "更新失败", "error");
-        toast("已更新", "success");
-        await loadMappings();
+      }
+
+      function openMappingEditModal(m) {
+        document.getElementById("mapEditId").value = String(m.id);
+        document.getElementById("mapEditWinName").textContent = m.window_name || "-";
+        document.getElementById("mapEditSpace").textContent = `${m.space_id || "-"} · ${m.space_name || "-"}`;
+        document.getElementById("mapEditRemain").value = String(m.remaining_quota ?? 0);
+        document.getElementById("mapEditConsecutive").value = String(m.consecutive_errors ?? 0);
+        document.getElementById("mapEditCooldown").value = m.cooldown_until || "";
+        document.getElementById("mapEditEnabled").checked = !!m.enabled;
+        mappingEditModal.show();
+      }
+
+      async function saveMappingFromModal() {
+        try {
+          const id = parseInt(document.getElementById("mapEditId").value, 10);
+          if (Number.isNaN(id)) return;
+          const payload = {
+            remaining_quota: parseInt(document.getElementById("mapEditRemain").value, 10) || 0,
+            consecutive_errors: parseInt(document.getElementById("mapEditConsecutive").value, 10) || 0,
+            cooldown_until: (document.getElementById("mapEditCooldown").value || "").trim(),
+            enabled: document.getElementById("mapEditEnabled").checked,
+          };
+          const r = await adminFetch(`/api/admin/task-type-windows/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "保存失败");
+          toast("已保存", "success");
+          mappingEditModal.hide();
+          await loadMappings();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      async function resetConsecutiveErrors(mappingId) {
+        try {
+          const m = state.mappings.find(x => x.id === mappingId);
+          if (!m) return;
+          if ((m.consecutive_errors || 0) <= 0) {
+            toast("连续错误已为 0", "success");
+            return;
+          }
+          const ok = confirm(`确定清空该绑定的连续错误吗？\n窗口：${m.window_name || "-"}\n连续错误：${m.consecutive_errors} → 0`);
+          if (!ok) return;
+          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ consecutive_errors: 0 }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "清空失败");
+          toast("已清空连续错误", "success");
+          await loadMappings();
+        } catch (e) {
+          toast(e.message, "error");
+        }
       }
 
       async function openWinModal() {
@@ -548,6 +672,7 @@
       document.getElementById("btnLogout").addEventListener("click", logout);
       document.getElementById("btnNewType").addEventListener("click", () => {
         state.current = null;
+        lsSet(LS_KEYS.currentTypeId, "");
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
@@ -557,11 +682,13 @@
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
+      document.getElementById("btnSaveMapping").addEventListener("click", saveMappingFromModal);
       document.getElementById("quotaHandlerQuick").addEventListener("change", (e) => quickUpdateQuotaHandler(e.target.value || ""));
       document.getElementById("typeSelect").addEventListener("change", (e) => {
         const v = e.target.value;
         if (!v) {
           state.current = null;
+          lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
           document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;

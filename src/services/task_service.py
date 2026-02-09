@@ -17,6 +17,7 @@ from .task_executor import simulate_image_task, simulate_video_task, sora_gen_vi
 class PickedWindow:
     mapping_id: int
     window_pk: int
+    window_key: str
     task_code: str
     task_concurrency: int
     # 当前“可用窗口”总数（用于任务类型级别并发控制）
@@ -45,15 +46,19 @@ class TaskService:
             raise ValueError("task_type_code 不能为空")
         payload = payload or {}
 
+        print(f"count_available_windows: {task_type_code}")
+        available_window_total = await self.db.count_available_windows(task_type_code)
+        if available_window_total <= 0:
+            raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用1")
+
         picked_raw = await self.db.pick_available_window(task_type_code)
         if not picked_raw:
-            raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用")
-
-        available_window_total = await self.db.count_available_windows(task_type_code)
+            raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用2")
 
         picked = PickedWindow(
             mapping_id=int(picked_raw["id"]),
             window_pk=int(picked_raw["window_pk"]),
+            window_key=str(picked_raw.get("window_key") or "").strip(),
             task_code=str(picked_raw["task_code"]),
             task_concurrency=int(picked_raw.get("task_concurrency") or 1),
             available_window_total=max(1, int(available_window_total or 0)),
@@ -65,6 +70,8 @@ class TaskService:
             browser_access_key=picked_raw.get("access_key"),
             space_id=str(picked_raw.get("space_id") or ""),
         )
+        if not picked.window_key:
+            raise RuntimeError("窗口缺少 window_key（指纹浏览器窗口标识），请先同步窗口或检查数据")
 
         task_id = uuid.uuid4().hex
         # 不把 payload 写入 DB；仅保存最小字段（prompt 存空字符串满足 NOT NULL）
@@ -121,7 +128,19 @@ class TaskService:
 
                     # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
                     if picked.create_task_handler == "sora_gen_video":
-                        result = await asyncio.wait_for(sora_gen_video(payload, progress_cb), timeout=float(picked.timeout_seconds))
+                        result = await asyncio.wait_for(
+                            sora_gen_video(
+                                payload,
+                                progress_cb,
+                                browser_vendor=picked.browser_vendor,
+                                browser_base_url=picked.browser_base_url,
+                                browser_access_key=picked.browser_access_key,
+                                space_id=picked.space_id,
+                                window_key=picked.window_key,
+                                timeout_seconds=float(picked.timeout_seconds),
+                            ),
+                            timeout=float(picked.timeout_seconds),
+                        )
                     elif picked.task_code == "gen_video":
                         result = await asyncio.wait_for(simulate_video_task(prompt, None, progress_cb), timeout=float(picked.timeout_seconds))
                     else:

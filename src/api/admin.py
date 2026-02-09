@@ -598,6 +598,26 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
     return {"success": True}
 
 
+# -------------------- tasks --------------------
+@router.get("/api/admin/tasks")
+async def list_tasks(
+    limit: int = 50,
+    offset: int = 0,
+    task_type_code: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    token: str = Depends(verify_admin_token),
+):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    lim = max(1, min(200, int(limit or 50)))
+    off = max(0, int(offset or 0))
+    total = await db.count_tasks(task_type_code=task_type_code, status=status, q=q)
+    items = await db.list_tasks(limit=lim, offset=off, task_type_code=task_type_code, status=status, q=q)
+    return {"success": True, "total": total, "limit": lim, "offset": off, "items": items}
+
+
 # -------------------- logs --------------------
 @router.get("/api/admin/logs")
 async def get_logs(limit: int = 200, token: str = Depends(verify_admin_token)):

@@ -1032,6 +1032,7 @@ class Database:
                   t.continuous_error_threshold,
                   t.timeout_seconds,
                   t.create_task_handler,
+                  w.window_key,
                   w.window_name,
                   w.platform_account,
                   w.platform_url,
@@ -1088,6 +1089,81 @@ class Database:
                     d["result"] = None
             d.pop("result_json", None)
             return Task(**d)
+
+    async def count_tasks(
+        self,
+        task_type_code: Optional[str] = None,
+        status: Optional[str] = None,
+        q: Optional[str] = None,
+    ) -> int:
+        where: List[str] = ["1=1"]
+        params: List[Any] = []
+
+        if task_type_code:
+            where.append("task_type_code = ?")
+            params.append(task_type_code.strip())
+        if status:
+            where.append("status = ?")
+            params.append(status.strip())
+        if q:
+            qq = f"%{q.strip()}%"
+            where.append("(task_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
+            params.extend([qq, qq, qq])
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
+            row = await cur.fetchone()
+            try:
+                return int((row[0] if row else 0) or 0)
+            except Exception:
+                return 0
+
+    async def list_tasks(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        task_type_code: Optional[str] = None,
+        status: Optional[str] = None,
+        q: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        lim = max(1, min(200, int(limit or 50)))
+        off = max(0, int(offset or 0))
+
+        where: List[str] = ["1=1"]
+        params: List[Any] = []
+
+        if task_type_code:
+            where.append("task_type_code = ?")
+            params.append(task_type_code.strip())
+        if status:
+            where.append("status = ?")
+            params.append(status.strip())
+        if q:
+            qq = f"%{q.strip()}%"
+            where.append("(task_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
+            params.extend([qq, qq, qq])
+
+        params.extend([lim, off])
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"""
+                SELECT
+                  task_id,
+                  task_type_code,
+                  status,
+                  error_message,
+                  created_at
+                FROM tasks
+                WHERE {' AND '.join(where)}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
     async def update_task(
         self,

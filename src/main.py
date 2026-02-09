@@ -167,6 +167,11 @@ async def admin_task_types_page():
     return _page(static_dir / "task_types.html")
 
 
+@app.get("/admin/tasks", response_class=HTMLResponse)
+async def admin_tasks_page():
+    return _page(static_dir / "tasks.html")
+
+
 @app.get("/admin/test", response_class=HTMLResponse)
 async def admin_test_page():
     return _page(static_dir / "test.html")
