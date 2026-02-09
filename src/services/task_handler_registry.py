@@ -18,8 +18,8 @@ from ..core.models import TaskType
 @dataclass(frozen=True)
 class CreateTaskContext:
     task_type: TaskType
-    prompt: str
-    image_path: Optional[str]
+    # 任意参数（由具体 handler 自行解析）
+    payload: Dict[str, Any]
 
     # 延迟导入/传入：避免循环依赖（TaskService 也会 import 其它 services）
     db: Any
@@ -55,18 +55,25 @@ def _label(key: str, text: str) -> Dict[str, str]:
 async def create_task__default_submit(ctx: CreateTaskContext) -> str:
     """默认：走 TaskService.submit_task（原有行为）。"""
 
-    return await ctx.task_service.submit_task(ctx.task_type.code, ctx.prompt, image_path=ctx.image_path)
+    return await ctx.task_service.submit_task(ctx.task_type.code, ctx.payload or {})
 
 
 async def create_task__force_gen_image(ctx: CreateTaskContext) -> str:
     """示例：无论选择什么任务类型，都强制按 gen_image 创建（便于演示/调试）。"""
 
-    return await ctx.task_service.submit_task("gen_image", ctx.prompt, image_path=ctx.image_path)
+    return await ctx.task_service.submit_task("gen_image", ctx.payload or {})
+
+
+async def create_task__sora_gen_video(ctx: CreateTaskContext) -> str:
+    """Sora 生视频：同样走 submit_task，执行阶段在 _run_task 中分发到 sora_gen_video.py。"""
+
+    return await ctx.task_service.submit_task(ctx.task_type.code, ctx.payload or {})
 
 
 CREATE_TASK_HANDLERS: Dict[str, Tuple[str, CreateTaskHandler]] = {
     "default_submit": ("默认：submit_task 调度", create_task__default_submit),
     "force_gen_image": ("示例：强制 gen_image", create_task__force_gen_image),
+    "sora_gen_video": ("Sora：生成视频（prompt + first_image_url + duration）", create_task__sora_gen_video),
 }
 
 

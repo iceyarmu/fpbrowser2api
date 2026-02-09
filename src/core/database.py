@@ -984,6 +984,38 @@ class Database:
             )
             await db.commit()
 
+    async def count_available_windows(self, task_type_code: str) -> int:
+        """统计某任务类型当前可用窗口数（额度>0、启用、未冷却、未删除）。
+
+        用途：调度层按“可用窗口总数”做任务类型级别并发控制。
+        """
+        code = (task_type_code or "").strip()
+        if not code:
+            return 0
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM task_types t
+                JOIN task_type_windows m ON m.task_type_id = t.id
+                JOIN windows w ON m.window_pk = w.id
+                WHERE t.deleted=0 AND t.enabled=1
+                  AND t.code=?
+                  AND m.deleted=0 AND m.enabled=1
+                  AND w.deleted=0 AND w.enabled=1
+                  AND (m.remaining_quota > 0)
+                  AND (m.cooldown_until IS NULL OR m.cooldown_until <= CURRENT_TIMESTAMP)
+                """,
+                (code,),
+            )
+            row = await cur.fetchone()
+            try:
+                return int((row[0] if row else 0) or 0)
+            except Exception:
+                return 0
+
+    
     async def pick_available_window(self, task_type_code: str) -> Optional[Dict[str, Any]]:
         """选择一个可用窗口（额度>0、启用、未冷却、未删除）。
 
@@ -999,6 +1031,7 @@ class Database:
                   t.concurrency AS task_concurrency,
                   t.continuous_error_threshold,
                   t.timeout_seconds,
+                  t.create_task_handler,
                   w.window_name,
                   w.platform_account,
                   w.platform_url,

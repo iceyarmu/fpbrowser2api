@@ -41,8 +41,13 @@
                 <textarea class="form-control" id="prompt" rows="5" placeholder="输入文本提示词"></textarea>
               </div>
               <div class="mb-3">
-                <label class="form-label">图片（可选）</label>
-                <input class="form-control" id="image" type="file" accept="image/*" />
+                <label class="form-label">首帧图片链接 first_image_url（可选）</label>
+                <input class="form-control mono" id="firstImageUrl" placeholder="https://..." />
+                <div class="text-muted small">后端不再接收图片二进制，只接收网络链接（由 handler 自行处理）。</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">时长 duration（可选）</label>
+                <input class="form-control mono" id="duration" placeholder="5" />
               </div>
               <button class="btn btn-primary" id="btnSubmit">提交任务</button>
               <div class="text-muted small mt-2">
@@ -117,16 +122,20 @@
           if (!apiKey) throw new Error("API Key 未加载");
           const type = document.getElementById("taskType").value;
           const prompt = document.getElementById("prompt").value.trim();
-          const file = document.getElementById("image").files?.[0] || null;
+          const firstImageUrl = document.getElementById("firstImageUrl").value.trim();
+          const durationRaw = document.getElementById("duration").value.trim();
+          const duration = durationRaw ? Number(durationRaw) : undefined;
           if (!type) throw new Error("请选择任务类型");
-          if (!prompt) throw new Error("请输入文本内容");
+          // 注意：不同 task handler 可能需要不同字段，这里仅示例常用字段
+          const payload = { prompt };
+          if (firstImageUrl) payload.first_image_url = firstImageUrl;
+          if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
 
-          const fd = new FormData();
-          fd.append("task_type_code", type);
-          fd.append("prompt", prompt);
-          if (file) fd.append("image", file);
-
-          const r = await fetch("/v1/tasks", { method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: fd });
+          const r = await fetch("/v1/tasks", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ task_type_code: type, json: payload }),
+          });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "提交失败");
           toast("提交成功", "success");

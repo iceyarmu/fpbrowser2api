@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import base64
-import os
-from pathlib import Path
-from typing import Optional
+from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body
+from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -30,25 +27,9 @@ def set_dependencies(database: Database) -> None:
     task_service = TaskService(database)
 
 
-class CreateTaskJsonRequest(BaseModel):
+class CreateTaskRequest(BaseModel):
     task_type_code: str = Field(min_length=2, max_length=64)
-    prompt: str = Field(min_length=1, max_length=20000)
-    image_base64: Optional[str] = None  # 允许 data:image/...;base64,xxx 或纯 base64
-
-
-def _ensure_upload_dir() -> Path:
-    p = Path(__file__).parent.parent.parent / "data" / "uploads"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _save_bytes(filename_hint: str, data: bytes) -> str:
-    upload_dir = _ensure_upload_dir()
-    safe = "".join(c for c in (filename_hint or "upload.bin") if c.isalnum() or c in ("-", "_", ".", " "))
-    safe = safe.strip().replace(" ", "_") or "upload.bin"
-    path = upload_dir / f"{os.urandom(8).hex()}_{safe}"
-    path.write_bytes(data)
-    return str(path)
+    json: Dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/v1/task-types")
@@ -62,39 +43,14 @@ async def list_task_types(api_key: str = Depends(verify_api_key_header)):
 @router.post("/v1/tasks")
 async def create_task(
     api_key: str = Depends(verify_api_key_header),
-    # multipart/form-data
-    task_type_code: Optional[str] = Form(default=None),
-    prompt: Optional[str] = Form(default=None),
-    image: Optional[UploadFile] = File(default=None),
-    # json fallback
-    json_body: Optional[CreateTaskJsonRequest] = Body(default=None),
+    body: CreateTaskRequest = Body(...),
 ):
     if not db or not task_service:
         raise HTTPException(status_code=500, detail="service not initialized")
 
-    image_path: Optional[str] = None
-
-    if json_body is not None and (task_type_code is None and prompt is None):
-        task_type_code = json_body.task_type_code
-        prompt = json_body.prompt
-        if json_body.image_base64:
-            b64 = json_body.image_base64
-            if "base64," in b64:
-                b64 = b64.split("base64,", 1)[1]
-            try:
-                data = base64.b64decode(b64)
-                image_path = _save_bytes("image.png", data)
-            except Exception:
-                raise HTTPException(status_code=400, detail="image_base64 解析失败")
-
-    if image is not None:
-        data = await image.read()
-        if data:
-            image_path = _save_bytes(image.filename or "image.bin", data)
-
     try:
-        tcode = (task_type_code or "").strip()
-        p = (prompt or "").strip()
+        tcode = (body.task_type_code or "").strip()
+        payload = body.json or {}
         task_type = await db.get_task_type_by_code(tcode)
         if not task_type or task_type.deleted or not task_type.enabled:
             raise ValueError("task_type_code 不存在或未启用")
@@ -103,7 +59,7 @@ async def create_task(
             handler = get_create_task_handler(task_type.create_task_handler)
         except KeyError as e:
             raise ValueError(str(e))
-        tid = await handler(CreateTaskContext(task_type=task_type, prompt=p, image_path=image_path, db=db, task_service=task_service))
+        tid = await handler(CreateTaskContext(task_type=task_type, payload=payload, db=db, task_service=task_service))
         return {"success": True, "task_id": tid}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

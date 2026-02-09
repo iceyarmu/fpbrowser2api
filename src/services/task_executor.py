@@ -44,3 +44,17 @@ async def simulate_video_task(prompt: str, image_path: Optional[str], progress_c
         "outputs": [],
     }
 
+async def sora_gen_video(payload: Dict[str, Any], progress_cb: ProgressCB) -> Dict[str, Any]:
+    """执行 sora 生视频（你稍后实现）。
+
+    期望参数（都从 payload 读取）：
+    - prompt: str
+    - first_image_url: str (可选)
+    - duration: int/float (可选)
+    """
+
+    _ = payload  # TODO: 你后续实现具体逻辑
+    _cb = progress_cb
+    # TODO: 你后续在这里实现（例如调用外部 API / 自动化执行器），并用 progress_cb 更新进度
+    raise RuntimeError("sora_gen_video 尚未实现")
+

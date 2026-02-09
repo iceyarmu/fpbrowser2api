@@ -421,6 +421,9 @@
       }
 
       async function openMappingEditor(mappingId, act) {
+        if (act === "refreshQuota") {
+          return refreshQuota(mappingId);
+        }
         const m = state.mappings.find(x => x.id === mappingId);
         if (!m) return;
         if (act === "del") {
@@ -589,12 +592,6 @@
           toast(e.message, "error");
         }
       }
-
-      const _openMappingEditor = openMappingEditor;
-      openMappingEditor = async (mappingId, act) => {
-        if (act === "refreshQuota") return refreshQuota(mappingId);
-        return _openMappingEditor(mappingId, act);
-      };
 
       loadHandlerOptions().then(loadTypes);
     </script>
