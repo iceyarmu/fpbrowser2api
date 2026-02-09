@@ -19,7 +19,6 @@ class PickedWindow:
     window_pk: int
     task_code: str
     task_concurrency: int
-    mapping_max_concurrency: int
     threshold: int
     timeout_seconds: int
 
@@ -52,7 +51,6 @@ class TaskService:
             window_pk=int(picked_raw["window_pk"]),
             task_code=str(picked_raw["task_code"]),
             task_concurrency=int(picked_raw.get("task_concurrency") or 1),
-            mapping_max_concurrency=int(picked_raw.get("max_concurrency") or 1),
             threshold=int(picked_raw.get("continuous_error_threshold") or 3),
             timeout_seconds=int(picked_raw.get("timeout_seconds") or 1800),
             browser_vendor=str(picked_raw.get("vendor") or "generic"),
@@ -84,16 +82,17 @@ class TaskService:
             self._type_semaphores[task_type_code] = sem
         return sem
 
-    def _get_mapping_sem(self, mapping_id: int, max_concurrency: int) -> asyncio.Semaphore:
+    def _get_mapping_sem(self, mapping_id: int) -> asyncio.Semaphore:
         sem = self._mapping_semaphores.get(mapping_id)
         if sem is None:
-            sem = asyncio.Semaphore(max(1, int(max_concurrency)))
+            # 窗口层不再配置并发：仍然固定为 1，避免同一绑定窗口被并行占用导致异常
+            sem = asyncio.Semaphore(1)
             self._mapping_semaphores[mapping_id] = sem
         return sem
 
     async def _run_task(self, task_id: str, picked: PickedWindow, prompt: str, image_path: Optional[str]) -> None:
         type_sem = self._get_type_sem(picked.task_code, picked.task_concurrency)
-        mapping_sem = self._get_mapping_sem(picked.mapping_id, picked.mapping_max_concurrency)
+        mapping_sem = self._get_mapping_sem(picked.mapping_id)
 
         async with type_sem:
             async with mapping_sem:

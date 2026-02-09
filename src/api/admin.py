@@ -90,6 +90,8 @@ class CreateTaskTypeRequest(BaseModel):
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
+    create_task_handler: Optional[str] = None
+    refresh_quota_handler: Optional[str] = None
 
 
 class UpdateTaskTypeRequest(BaseModel):
@@ -98,6 +100,8 @@ class UpdateTaskTypeRequest(BaseModel):
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
+    create_task_handler: Optional[str] = None
+    refresh_quota_handler: Optional[str] = None
     enabled: bool = True
 
 
@@ -105,7 +109,6 @@ class AddTaskTypeWindowsRequest(BaseModel):
     window_pks: List[int] = Field(min_length=1)
     daily_quota: int = Field(default=0, ge=0, le=100000)
     remaining_quota: int = Field(default=0, ge=0, le=100000)
-    max_concurrency: int = Field(default=1, ge=1, le=999)
     enabled: bool = True
 
 
@@ -114,7 +117,6 @@ class UpdateTaskTypeWindowRequest(BaseModel):
     deleted: Optional[bool] = None
     daily_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     remaining_quota: Optional[int] = Field(default=None, ge=0, le=100000)
-    max_concurrency: Optional[int] = Field(default=None, ge=1, le=999)
     cooldown_until: Optional[str] = None  # ISO or empty
     total_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
     consecutive_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
@@ -452,7 +454,23 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     try:
-        tid = await db.create_task_type(req.name, req.code, req.concurrency, req.continuous_error_threshold, req.timeout_seconds)
+        # 校验 handler key（避免保存后运行时报错）
+        from ..services.task_handler_registry import get_create_task_handler, get_refresh_quota_handler
+
+        if req.create_task_handler:
+            get_create_task_handler(req.create_task_handler)
+        if req.refresh_quota_handler:
+            get_refresh_quota_handler(req.refresh_quota_handler)
+
+        tid = await db.create_task_type(
+            req.name,
+            req.code,
+            req.concurrency,
+            req.continuous_error_threshold,
+            req.timeout_seconds,
+            create_task_handler=req.create_task_handler,
+            refresh_quota_handler=req.refresh_quota_handler,
+        )
         return {"success": True, "task_type_id": tid}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -463,6 +481,14 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     try:
+        # 校验 handler key（避免保存后运行时报错）
+        from ..services.task_handler_registry import get_create_task_handler, get_refresh_quota_handler
+
+        if req.create_task_handler:
+            get_create_task_handler(req.create_task_handler)
+        if req.refresh_quota_handler:
+            get_refresh_quota_handler(req.refresh_quota_handler)
+
         await db.update_task_type(
             task_type_id=task_type_id,
             name=req.name,
@@ -470,11 +496,60 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             concurrency=req.concurrency,
             continuous_error_threshold=req.continuous_error_threshold,
             timeout_seconds=req.timeout_seconds,
+            create_task_handler=req.create_task_handler,
+            refresh_quota_handler=req.refresh_quota_handler,
             enabled=req.enabled,
         )
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# -------------------- task type dynamic handlers --------------------
+@router.get("/api/admin/task-type-handler-options")
+async def list_task_type_handler_options(token: str = Depends(verify_admin_token)):
+    from ..services.task_handler_registry import list_create_task_handler_options, list_refresh_quota_handler_options
+
+    return {
+        "success": True,
+        "create_task_handlers": list_create_task_handler_options(),
+        "refresh_quota_handlers": list_refresh_quota_handler_options(),
+    }
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/refresh-remaining-quota")
+async def refresh_mapping_remaining_quota(mapping_id: int, token: str = Depends(verify_admin_token)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    # 以 task_type 配置为准（避免 join 字段不全）
+    task_code = str(ctx_row.get("task_code") or "").strip()
+    if not task_code:
+        raise HTTPException(status_code=400, detail="task_code missing")
+
+    task_type = await db.get_task_type_by_code(task_code)
+    if not task_type:
+        raise HTTPException(status_code=404, detail="task_type not found")
+
+    from ..services.task_handler_registry import RefreshQuotaContext, get_refresh_quota_handler
+
+    try:
+        fn = get_refresh_quota_handler(task_type.refresh_quota_handler)
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        new_remaining = await fn(RefreshQuotaContext(task_type=task_type, mapping_row=ctx_row, db=db))
+        new_remaining = max(0, int(new_remaining))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"刷新额度失败：{e}")
+
+    await db.update_task_type_window(mapping_id=mapping_id, remaining_quota=new_remaining)
+    return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
 
 
 @router.delete("/api/admin/task-types/{task_type_id}")
@@ -501,7 +576,6 @@ async def add_task_type_windows(task_type_id: int, req: AddTaskTypeWindowsReques
         window_pks=req.window_pks,
         daily_quota=req.daily_quota,
         remaining_quota=req.remaining_quota,
-        max_concurrency=req.max_concurrency,
         enabled=req.enabled,
     )
     return {"success": True, "affected": affected}
@@ -517,7 +591,6 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
         deleted=req.deleted,
         daily_quota=req.daily_quota,
         remaining_quota=req.remaining_quota,
-        max_concurrency=req.max_concurrency,
         cooldown_until=req.cooldown_until,
         total_errors=req.total_errors,
         consecutive_errors=req.consecutive_errors,

@@ -15,6 +15,7 @@ from ..core.auth import verify_api_key_header
 from ..core.database import Database
 from ..core.models import TaskStatusResponse
 from ..services.task_service import TaskService
+from ..services.task_handler_registry import CreateTaskContext, get_create_task_handler
 
 
 router = APIRouter()
@@ -92,7 +93,17 @@ async def create_task(
             image_path = _save_bytes(image.filename or "image.bin", data)
 
     try:
-        tid = await task_service.submit_task(task_type_code or "", prompt or "", image_path=image_path)
+        tcode = (task_type_code or "").strip()
+        p = (prompt or "").strip()
+        task_type = await db.get_task_type_by_code(tcode)
+        if not task_type or task_type.deleted or not task_type.enabled:
+            raise ValueError("task_type_code 不存在或未启用")
+
+        try:
+            handler = get_create_task_handler(task_type.create_task_handler)
+        except KeyError as e:
+            raise ValueError(str(e))
+        tid = await handler(CreateTaskContext(task_type=task_type, prompt=p, image_path=image_path, db=db, task_service=task_service))
         return {"success": True, "task_id": tid}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

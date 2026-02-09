@@ -163,6 +163,8 @@ class Database:
                     concurrency INTEGER DEFAULT 1,
                     continuous_error_threshold INTEGER DEFAULT 3,
                     timeout_seconds INTEGER DEFAULT 1800,
+                    create_task_handler TEXT,
+                    refresh_quota_handler TEXT,
                     enabled BOOLEAN DEFAULT 1,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -181,7 +183,6 @@ class Database:
                     consecutive_errors INTEGER DEFAULT 0,
                     daily_quota INTEGER DEFAULT 0,
                     remaining_quota INTEGER DEFAULT 0,
-                    max_concurrency INTEGER DEFAULT 1,
                     cooldown_until TIMESTAMP,
                     enabled BOOLEAN DEFAULT 1,
                     deleted BOOLEAN DEFAULT 0,
@@ -303,6 +304,66 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "system_config", col_name):
                         await db.execute(f"ALTER TABLE system_config ADD COLUMN {col_name} {col_type}")
+
+            # task_types: 动态 handler 字段
+            if await self._table_exists(db, "task_types"):
+                columns_to_add = [
+                    ("create_task_handler", "TEXT"),
+                    ("refresh_quota_handler", "TEXT"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "task_types", col_name):
+                        await db.execute(f"ALTER TABLE task_types ADD COLUMN {col_name} {col_type}")
+
+            # task_type_windows: 移除 max_concurrency（窗口层并发不再配置）
+            if await self._table_exists(db, "task_type_windows"):
+                if await self._column_exists(db, "task_type_windows", "max_concurrency"):
+                    # SQLite 不支持 DROP COLUMN：采用“建新表 -> 拷贝 -> 替换”的方式迁移
+                    await db.execute("PRAGMA foreign_keys=OFF")
+                    await db.execute("BEGIN")
+                    await db.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS task_type_windows_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            task_type_id INTEGER NOT NULL,
+                            window_pk INTEGER NOT NULL,
+                            total_errors INTEGER DEFAULT 0,
+                            consecutive_errors INTEGER DEFAULT 0,
+                            daily_quota INTEGER DEFAULT 0,
+                            remaining_quota INTEGER DEFAULT 0,
+                            cooldown_until TIMESTAMP,
+                            enabled BOOLEAN DEFAULT 1,
+                            deleted BOOLEAN DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (task_type_id, window_pk),
+                            FOREIGN KEY (task_type_id) REFERENCES task_types(id),
+                            FOREIGN KEY (window_pk) REFERENCES windows(id)
+                        )
+                        """
+                    )
+                    await db.execute(
+                        """
+                        INSERT INTO task_type_windows_new (
+                            id, task_type_id, window_pk,
+                            total_errors, consecutive_errors,
+                            daily_quota, remaining_quota,
+                            cooldown_until, enabled, deleted,
+                            created_at, updated_at
+                        )
+                        SELECT
+                            id, task_type_id, window_pk,
+                            total_errors, consecutive_errors,
+                            daily_quota, remaining_quota,
+                            cooldown_until, enabled, deleted,
+                            created_at, updated_at
+                        FROM task_type_windows
+                        """
+                    )
+                    await db.execute("DROP TABLE task_type_windows")
+                    await db.execute("ALTER TABLE task_type_windows_new RENAME TO task_type_windows")
+                    await db.execute("COMMIT")
+                    await db.execute("PRAGMA foreign_keys=ON")
 
             # Step 3: 默认行（不覆盖已有）
             await self._ensure_default_rows(db, config_dict=config_dict)
@@ -677,14 +738,28 @@ class Database:
         concurrency: int,
         continuous_error_threshold: int,
         timeout_seconds: int,
+        create_task_handler: Optional[str] = None,
+        refresh_quota_handler: Optional[str] = None,
     ) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 """
-                INSERT INTO task_types (name, code, concurrency, continuous_error_threshold, timeout_seconds, enabled, deleted)
-                VALUES (?, ?, ?, ?, ?, 1, 0)
+                INSERT INTO task_types (
+                  name, code, concurrency, continuous_error_threshold, timeout_seconds,
+                  create_task_handler, refresh_quota_handler,
+                  enabled, deleted
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
-                (name.strip(), code.strip(), int(concurrency), int(continuous_error_threshold), int(timeout_seconds)),
+                (
+                    name.strip(),
+                    code.strip(),
+                    int(concurrency),
+                    int(continuous_error_threshold),
+                    int(timeout_seconds),
+                    (create_task_handler or "").strip() or None,
+                    (refresh_quota_handler or "").strip() or None,
+                ),
             )
             await db.commit()
             return int(cur.lastrowid)
@@ -697,6 +772,8 @@ class Database:
         concurrency: int,
         continuous_error_threshold: int,
         timeout_seconds: int,
+        create_task_handler: Optional[str],
+        refresh_quota_handler: Optional[str],
         enabled: bool,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -722,7 +799,9 @@ class Database:
             await db.execute(
                 """
                 UPDATE task_types
-                SET name=?, code=?, concurrency=?, continuous_error_threshold=?, timeout_seconds=?, enabled=?, updated_at=CURRENT_TIMESTAMP
+                SET name=?, code=?, concurrency=?, continuous_error_threshold=?, timeout_seconds=?,
+                    create_task_handler=?, refresh_quota_handler=?,
+                    enabled=?, updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
                 (
@@ -731,6 +810,8 @@ class Database:
                     int(concurrency),
                     int(continuous_error_threshold),
                     int(timeout_seconds),
+                    (create_task_handler or "").strip() or None,
+                    (refresh_quota_handler or "").strip() or None,
                     1 if enabled else 0,
                     task_type_id,
                 ),
@@ -740,6 +821,37 @@ class Database:
             if new_code != old_code and old_code:
                 await db.execute("UPDATE tasks SET task_type_code=? WHERE task_type_code=?", (new_code, old_code))
             await db.commit()
+
+    async def get_task_type_window_context(self, mapping_id: int) -> Optional[Dict[str, Any]]:
+        """按 mapping_id 取“刷新额度/调度”所需的上下文（join 后 dict）。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  m.*,
+                  t.id AS task_type_id,
+                  t.code AS task_code,
+                  t.create_task_handler,
+                  t.refresh_quota_handler,
+                  w.window_key,
+                  w.window_name,
+                  s.space_id AS space_id,
+                  b.vendor,
+                  b.lan_addr,
+                  b.access_key
+                FROM task_type_windows m
+                JOIN task_types t ON m.task_type_id = t.id
+                JOIN windows w ON m.window_pk = w.id
+                JOIN spaces s ON w.space_pk = s.id
+                JOIN browsers b ON s.browser_id = b.id
+                WHERE m.id = ? AND m.deleted = 0
+                LIMIT 1
+                """,
+                (int(mapping_id),),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
     async def delete_task_type(self, task_type_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -797,7 +909,6 @@ class Database:
         window_pks: List[int],
         daily_quota: int,
         remaining_quota: int,
-        max_concurrency: int,
         enabled: bool = True,
     ) -> int:
         async with aiosqlite.connect(self.db_path) as db:
@@ -807,13 +918,12 @@ class Database:
                     """
                     INSERT INTO task_type_windows (
                       task_type_id, window_pk,
-                      daily_quota, remaining_quota, max_concurrency,
+                      daily_quota, remaining_quota,
                       enabled, deleted, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
                     ON CONFLICT(task_type_id, window_pk) DO UPDATE SET
                       daily_quota=excluded.daily_quota,
                       remaining_quota=excluded.remaining_quota,
-                      max_concurrency=excluded.max_concurrency,
                       enabled=excluded.enabled,
                       deleted=0,
                       updated_at=CURRENT_TIMESTAMP
@@ -823,7 +933,6 @@ class Database:
                         int(wid),
                         int(daily_quota),
                         int(remaining_quota),
-                        int(max_concurrency),
                         1 if enabled else 0,
                     ),
                 )
@@ -838,7 +947,6 @@ class Database:
         deleted: Optional[bool] = None,
         daily_quota: Optional[int] = None,
         remaining_quota: Optional[int] = None,
-        max_concurrency: Optional[int] = None,
         cooldown_until: Optional[str] = None,  # ISO string or None
         total_errors: Optional[int] = None,
         consecutive_errors: Optional[int] = None,
@@ -858,8 +966,6 @@ class Database:
             _set("daily_quota", int(daily_quota))
         if remaining_quota is not None:
             _set("remaining_quota", int(remaining_quota))
-        if max_concurrency is not None:
-            _set("max_concurrency", int(max_concurrency))
         if cooldown_until is not None:
             _set("cooldown_until", cooldown_until if cooldown_until else None)
         if total_errors is not None:

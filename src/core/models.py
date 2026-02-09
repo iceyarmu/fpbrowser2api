@@ -92,6 +92,9 @@ class TaskType(BaseModel):
     concurrency: int = 1
     continuous_error_threshold: int = 3
     timeout_seconds: int = 1800
+    # 动态函数 key（来自 services/task_handler_registry.py）
+    create_task_handler: Optional[str] = None
+    refresh_quota_handler: Optional[str] = None
     enabled: bool = True
     deleted: bool = False
     created_at: Optional[datetime] = None
@@ -108,7 +111,6 @@ class TaskTypeWindow(BaseModel):
 
     daily_quota: int = 0
     remaining_quota: int = 0
-    max_concurrency: int = 1
 
     cooldown_until: Optional[datetime] = None
     enabled: bool = True

@@ -8,6 +8,8 @@
     <style>
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .small2 { font-size: 12px; }
+      .cell-stack > div { line-height: 1.25; }
+      .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     </style>
   </head>
   <body class="bg-light">
@@ -28,19 +30,21 @@
     </nav>
 
     <div class="container py-4">
-      <div class="row g-4">
-        <div class="col-12 col-lg-4">
-          <div class="d-flex align-items-center mb-2">
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
             <div class="fw-semibold">任务类型</div>
-            <button class="btn btn-primary btn-sm ms-auto" id="btnNewType">新增</button>
-          </div>
-          <div class="list-group shadow-sm" id="typeList"></div>
-          <div class="text-muted small mt-2">
-            英文名称（code）必须唯一；对外接口用 code 作为任务类型参数。
+            <div class="flex-grow-1" style="min-width: 260px; max-width: 560px;">
+              <select class="form-select" id="typeSelect"></select>
+              <div class="form-text">英文名称（code）必须唯一；对外接口用 code 作为任务类型参数。</div>
+            </div>
+            <button class="btn btn-primary ms-auto" id="btnNewType">新增</button>
           </div>
         </div>
+      </div>
 
-        <div class="col-12 col-lg-8">
+      <div class="row g-4">
+        <div class="col-12">
           <div class="card shadow-sm mb-4">
             <div class="card-body">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -70,6 +74,16 @@
                   <label class="form-label">超时时长（秒）</label>
                   <input class="form-control" id="typeTimeout" type="number" min="10" value="1800" />
                 </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label">创建任务接口函数</label>
+                  <select class="form-select mono" id="typeCreateHandler"></select>
+                  <div class="text-muted small">根据 task_type_code 动态分发到对应创建任务函数。</div>
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label">刷新窗口剩余额度接口函数</label>
+                  <select class="form-select mono" id="typeQuotaHandler"></select>
+                  <div class="text-muted small">点击额度后的刷新按钮会调用此函数。</div>
+                </div>
                 <div class="col-12">
                   <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="typeEnabled" checked />
@@ -88,7 +102,11 @@
             <div class="card-body">
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <h5 class="card-title mb-0">窗口绑定</h5>
-                <button class="btn btn-outline-primary btn-sm ms-auto" id="btnAddWindows">添加窗口</button>
+                <div class="d-flex flex-wrap gap-2 align-items-center ms-auto">
+                  <div class="small text-muted">额度刷新函数</div>
+                  <select class="form-select form-select-sm mono" id="quotaHandlerQuick" style="min-width: 260px;"></select>
+                  <button class="btn btn-outline-primary btn-sm" id="btnAddWindows">添加窗口</button>
+                </div>
               </div>
               <div class="text-muted small mt-1">
                 每个窗口可绑定多个任务类型；这里控制额度、并发、冷却与启用状态。
@@ -100,10 +118,8 @@
                     <tr class="small2">
                       <th>窗口</th>
                       <th>空间</th>
-                      <th>额度(剩余/每日)</th>
-                      <th>并发</th>
-                      <th>连错/总错</th>
-                      <th>冷却至</th>
+                      <th>额度</th>
+                      <th>状态</th>
                       <th>启用</th>
                       <th>操作</th>
                     </tr>
@@ -127,20 +143,24 @@
           </div>
           <div class="modal-body">
             <div class="row g-2 align-items-end">
-              <div class="col-12 col-md-3">
-                <label class="form-label">默认额度（每日）</label>
-                <input class="form-control" id="winDailyQuota" type="number" min="0" value="0" />
-              </div>
-              <div class="col-12 col-md-3">
-                <label class="form-label">默认额度（剩余）</label>
+              <div class="col-12 col-md-4">
+                <label class="form-label">默认额度（remaining_quota）</label>
                 <input class="form-control" id="winRemainQuota" type="number" min="0" value="0" />
               </div>
-              <div class="col-12 col-md-3">
-                <label class="form-label">默认并发</label>
-                <input class="form-control" id="winMaxConc" type="number" min="1" value="1" />
+              <div class="col-12 col-md-4">
+                <label class="form-label">提示</label>
+                <input class="form-control" value="窗口不再单独配置并发（以任务类型并发为准）" disabled />
               </div>
-              <div class="col-12 col-md-3">
+              <div class="col-12 col-md-4">
                 <button class="btn btn-primary w-100" id="btnBindWindows">绑定所选窗口</button>
+              </div>
+            </div>
+            <div class="row g-2 mt-2 align-items-center">
+              <div class="col-12 col-md-6">
+                <input class="form-control" id="winFilter" placeholder="搜索：项目 / 浏览器 / 空间 / 窗口 / 账号 / 代理 / URL" />
+              </div>
+              <div class="col-12 col-md-6 text-md-end small text-muted">
+                已选 <span class="fw-semibold" id="winSelectedCount">0</span> 个
               </div>
             </div>
             <hr />
@@ -149,13 +169,9 @@
                 <thead>
                   <tr class="small2">
                     <th><input type="checkbox" id="chkAll" /></th>
-                    <th>项目</th>
-                    <th>浏览器</th>
-                    <th>空间</th>
                     <th>窗口</th>
-                    <th>账号</th>
                     <th>网址</th>
-                    <th>代理</th>
+                    <th>账号 / 代理</th>
                   </tr>
                 </thead>
                 <tbody id="winBody"></tbody>
@@ -180,38 +196,75 @@
         current: null,
         mappings: [],
         windows: [],
+        winSelected: new Set(),
+        handlers: { create: [], quota: [] },
       };
+
+      async function loadHandlerOptions() {
+        const r = await adminFetch("/api/admin/task-type-handler-options");
+        if (!r) return;
+        const d = await r.json();
+        state.handlers.create = d.create_task_handlers || [];
+        state.handlers.quota = d.refresh_quota_handlers || [];
+        renderHandlerSelects();
+      }
+
+      function renderQuotaQuickSelect() {
+        const sel = document.getElementById("quotaHandlerQuick");
+        const quotaHandlerKey = state.current?.refresh_quota_handler || "";
+        const opts = [`<option value="">（默认）noop</option>`].concat(
+          (state.handlers.quota || []).map(h => `<option value="${escapeHtml(h.key)}">${escapeHtml(h.key)} - ${escapeHtml(h.label)}</option>`)
+        );
+        sel.innerHTML = opts.join("");
+        sel.value = quotaHandlerKey || "";
+        sel.disabled = !document.getElementById("typeId").value;
+      }
+
+      function renderHandlerSelects() {
+        const selCreate = document.getElementById("typeCreateHandler");
+        const selQuota = document.getElementById("typeQuotaHandler");
+        const mk = (items, emptyText) => {
+          const opts = [`<option value="">${escapeHtml(emptyText)}</option>`]
+            .concat((items || []).map(x => `<option value="${escapeHtml(x.key)}">${escapeHtml(x.key)} - ${escapeHtml(x.label)}</option>`));
+          return opts.join("");
+        };
+        selCreate.innerHTML = mk(state.handlers.create, "（默认）default_submit");
+        selQuota.innerHTML = mk(state.handlers.quota, "（默认）noop");
+        renderQuotaQuickSelect();
+      }
 
       async function loadTypes() {
         const r = await adminFetch("/api/admin/task-types");
         if (!r) return;
         const d = await r.json();
         state.types = d.task_types || [];
-        renderTypeList();
+        if (state.current?.id) {
+          state.current = state.types.find(x => x.id === state.current.id) || state.current;
+        }
+        renderTypeSelect();
         if (!state.current && state.types[0]) selectType(state.types[0].id);
       }
 
-      function renderTypeList() {
-        const list = document.getElementById("typeList");
+      function renderTypeSelect() {
+        const sel = document.getElementById("typeSelect");
         if (!state.types.length) {
-          list.innerHTML = `<div class="list-group-item text-muted">暂无任务类型</div>`;
+          sel.innerHTML = `<option value="">暂无任务类型（点击右侧“新增”创建）</option>`;
+          sel.value = "";
+          sel.disabled = true;
           return;
         }
-        list.innerHTML = state.types.map(t => `
-          <button class="list-group-item list-group-item-action ${state.current?.id===t.id ? "active" : ""}" data-id="${t.id}">
-            <div class="d-flex">
-              <div class="fw-semibold">${escapeHtml(t.name)}</div>
-              <div class="ms-auto mono small2">${escapeHtml(t.code)}</div>
-            </div>
-          </button>
-        `).join("");
-        list.querySelectorAll("[data-id]").forEach(btn => btn.addEventListener("click", () => selectType(parseInt(btn.dataset.id, 10))));
+        sel.disabled = false;
+        const opts = [`<option value="">（未选择 / 新建）</option>`].concat(
+          state.types.map(t => `<option value="${t.id}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`)
+        );
+        sel.innerHTML = opts.join("");
+        sel.value = state.current?.id ? String(state.current.id) : "";
       }
 
       async function selectType(id) {
         state.current = state.types.find(x => x.id === id) || null;
         fillTypeForm(state.current);
-        renderTypeList();
+        renderTypeSelect();
         await loadMappings();
       }
 
@@ -222,10 +275,13 @@
         document.getElementById("typeConcurrency").value = t?.concurrency ?? 1;
         document.getElementById("typeErrThr").value = t?.continuous_error_threshold ?? 3;
         document.getElementById("typeTimeout").value = t?.timeout_seconds ?? 1800;
+        document.getElementById("typeCreateHandler").value = t?.create_task_handler || "";
+        document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
         document.getElementById("typeCode").disabled = false;
         document.getElementById("currentTypeHint").textContent = t ? `当前：${t.name} (${t.code})` : "未选择";
+        renderQuotaQuickSelect();
       }
 
       async function saveType() {
@@ -238,6 +294,8 @@
             concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
             continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
             timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
+            create_task_handler: document.getElementById("typeCreateHandler").value || null,
+            refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
             enabled: document.getElementById("typeEnabled").checked,
           };
           if (!payload.name || !payload.code) throw new Error("请填写名称与英文名称");
@@ -281,7 +339,7 @@
       async function loadMappings() {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="8" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
@@ -294,23 +352,30 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="6" class="text-muted small">暂无绑定窗口</td></tr>`;
           return;
         }
+        renderQuotaQuickSelect();
         body.innerHTML = state.mappings.map(m => `
           <tr class="small2">
             <td>
               <div class="fw-semibold">${escapeHtml(m.window_name || "-")}</div>
-              <div class="text-muted">${escapeHtml(m.browser_name || "-")}</div>
+              <div class="text-muted truncate-1">${escapeHtml(m.browser_name || "-")}</div>
             </td>
             <td>
               <div class="mono">${escapeHtml(m.space_id || "-")}</div>
               <div class="text-muted">${escapeHtml(m.space_name || "-")}</div>
             </td>
-            <td class="mono">${m.remaining_quota}/${m.daily_quota}</td>
-            <td class="mono">${m.max_concurrency}</td>
-            <td class="mono">${m.consecutive_errors}/${m.total_errors}</td>
-            <td class="mono">${escapeHtml(m.cooldown_until || "-")}</td>
+            <td class="mono">
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div class="fw-semibold">${m.remaining_quota}</div>
+                <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
+              </div>
+            </td>
+            <td class="mono cell-stack">
+              <div>错误：<span class="fw-semibold">${m.consecutive_errors}</span>/${m.total_errors}</div>
+              <div>冷却：${escapeHtml(m.cooldown_until || "-")}</div>
+            </td>
             <td>${m.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
             <td>
               <button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>
@@ -319,8 +384,40 @@
           </tr>
         `).join("");
         body.querySelectorAll("[data-act]").forEach(btn => {
-          btn.addEventListener("click", () => openMappingEditor(parseInt(btn.dataset.mid, 10), btn.dataset.act));
+          const act = btn.dataset.act;
+          const mid = parseInt(btn.dataset.mid, 10);
+          btn.addEventListener("click", () => openMappingEditor(mid, act));
         });
+      }
+
+      async function quickUpdateQuotaHandler(newKey) {
+        try {
+          const id = document.getElementById("typeId").value;
+          if (!id) return;
+          // 同步到表单（保持一致）
+          document.getElementById("typeQuotaHandler").value = newKey || "";
+          document.getElementById("quotaHandlerQuick").value = newKey || "";
+          // 直接 PUT 更新（复用当前表单值，避免丢字段）
+          const payload = {
+            name: document.getElementById("typeName").value.trim(),
+            code: document.getElementById("typeCode").value.trim(),
+            concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
+            continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
+            timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
+            create_task_handler: document.getElementById("typeCreateHandler").value || null,
+            refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
+            enabled: document.getElementById("typeEnabled").checked,
+          };
+          const r = await adminFetch(`/api/admin/task-types/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "更新失败");
+          toast("已更新额度刷新函数", "success");
+          await loadTypes();
+          await selectType(parseInt(id, 10));
+        } catch (e) {
+          toast(e.message, "error");
+        }
       }
 
       async function openMappingEditor(mappingId, act) {
@@ -339,18 +436,12 @@
         // 简单 prompt 编辑（不做复杂弹窗）
         const remain = prompt("剩余额度 remaining_quota：", String(m.remaining_quota));
         if (remain === null) return;
-        const daily = prompt("每日额度 daily_quota：", String(m.daily_quota));
-        if (daily === null) return;
-        const conc = prompt("并发 max_concurrency：", String(m.max_concurrency));
-        if (conc === null) return;
         const enabled = confirm("是否启用该绑定？（确定=启用，取消=禁用）");
         const cooldown = prompt("冷却到 cooldown_until（ISO，留空清除）：", m.cooldown_until || "");
         const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
           method: "PATCH",
           body: JSON.stringify({
             remaining_quota: parseInt(remain, 10),
-            daily_quota: parseInt(daily, 10),
-            max_concurrency: parseInt(conc, 10),
             enabled,
             cooldown_until: cooldown || "",
           }),
@@ -369,41 +460,74 @@
         if (!r) return;
         const d = await r.json();
         state.windows = d.windows || [];
+        state.winSelected = new Set();
+        document.getElementById("winFilter").value = "";
         renderWinList();
         winModal.show();
       }
 
       function renderWinList() {
         const body = document.getElementById("winBody");
-        if (!state.windows.length) {
-          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无窗口数据，请先在“项目管理”里同步窗口。</td></tr>`;
+        const q = (document.getElementById("winFilter")?.value || "").trim().toLowerCase();
+        const items = !q ? state.windows : state.windows.filter(w => {
+          const hay = [
+            w.project_name, w.browser_name, w.space_id, w.space_name, w.window_name,
+            w.platform_account, w.platform_url, w.proxy_addr,
+          ].filter(Boolean).join(" ").toLowerCase();
+          return hay.includes(q);
+        });
+
+        document.getElementById("winSelectedCount").textContent = String(state.winSelected.size || 0);
+
+        if (!items.length) {
+          body.innerHTML = `<tr><td colspan="4" class="text-muted small">${state.windows.length ? "无匹配结果，请调整搜索条件。" : "暂无窗口数据，请先在“项目管理”里同步窗口。"}</td></tr>`;
+          document.getElementById("chkAll").checked = false;
           return;
         }
-        body.innerHTML = state.windows.map(w => `
+        body.innerHTML = items.map(w => `
           <tr class="small2">
-            <td><input type="checkbox" class="chkWin" value="${w.window_pk}" /></td>
-            <td>${escapeHtml(w.project_name || "-")}</td>
-            <td>${escapeHtml(w.browser_name || "-")}</td>
-            <td><div class="mono">${escapeHtml(w.space_id || "-")}</div><div class="text-muted">${escapeHtml(w.space_name || "-")}</div></td>
-            <td class="fw-semibold">${escapeHtml(w.window_name || "-")}</td>
-            <td>${escapeHtml(w.platform_account || "-")}</td>
-            <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
-            <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
+            <td><input type="checkbox" class="chkWin" value="${w.window_pk}" ${state.winSelected.has(w.window_pk) ? "checked" : ""} /></td>
+            <td class="cell-stack">
+              <div class="fw-semibold">${escapeHtml(w.window_name || "-")}</div>
+              <div class="text-muted">${escapeHtml(w.project_name || "-")} / ${escapeHtml(w.browser_name || "-")}</div>
+              <div class="mono text-muted">${escapeHtml(w.space_id || "-")} <span class="text-muted">·</span> ${escapeHtml(w.space_name || "-")}</div>
+            </td>
+            <td class="mono">
+              <div class="truncate-1">
+                ${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}
+              </div>
+            </td>
+            <td class="cell-stack">
+              <div>${escapeHtml(w.platform_account || "-")}</div>
+              <div class="mono text-muted">${escapeHtml(w.proxy_addr || "-")}</div>
+            </td>
           </tr>
         `).join("");
-        document.getElementById("chkAll").checked = false;
+
+        // 绑定勾选事件，保持筛选/滚动时选中状态不丢失
+        body.querySelectorAll(".chkWin").forEach(chk => {
+          chk.addEventListener("change", (e) => {
+            const pk = parseInt(e.target.value, 10);
+            if (e.target.checked) state.winSelected.add(pk);
+            else state.winSelected.delete(pk);
+            document.getElementById("winSelectedCount").textContent = String(state.winSelected.size || 0);
+            const boxes = Array.from(body.querySelectorAll(".chkWin"));
+            document.getElementById("chkAll").checked = boxes.length > 0 && boxes.every(x => x.checked);
+          });
+        });
+        const boxes = Array.from(body.querySelectorAll(".chkWin"));
+        document.getElementById("chkAll").checked = boxes.length > 0 && boxes.every(x => x.checked);
       }
 
       async function bindWindows() {
         try {
           const typeId = document.getElementById("typeId").value;
-          const ids = Array.from(document.querySelectorAll(".chkWin:checked")).map(x => parseInt(x.value, 10));
+          const ids = Array.from(state.winSelected || []).map(x => parseInt(x, 10)).filter(x => !Number.isNaN(x));
           if (!ids.length) throw new Error("请至少选择一个窗口");
           const payload = {
             window_pks: ids,
-            daily_quota: parseInt(document.getElementById("winDailyQuota").value, 10) || 0,
+            daily_quota: 0,
             remaining_quota: parseInt(document.getElementById("winRemainQuota").value, 10) || 0,
-            max_concurrency: parseInt(document.getElementById("winMaxConc").value, 10) || 1,
             enabled: true,
           };
           const r = await adminFetch(`/api/admin/task-types/${typeId}/windows`, { method: "POST", body: JSON.stringify(payload) });
@@ -422,18 +546,57 @@
       document.getElementById("btnNewType").addEventListener("click", () => {
         state.current = null;
         fillTypeForm(null);
-        renderTypeList();
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="8" class="text-muted small">请先保存任务类型</td></tr>`;
+        renderTypeSelect();
+        document.getElementById("typeSelect").value = "";
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
+      document.getElementById("quotaHandlerQuick").addEventListener("change", (e) => quickUpdateQuotaHandler(e.target.value || ""));
+      document.getElementById("typeSelect").addEventListener("change", (e) => {
+        const v = e.target.value;
+        if (!v) {
+          state.current = null;
+          fillTypeForm(null);
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          return;
+        }
+        selectType(parseInt(v, 10));
+      });
+      document.getElementById("winFilter").addEventListener("input", () => renderWinList());
       document.getElementById("chkAll").addEventListener("change", (e) => {
-        document.querySelectorAll(".chkWin").forEach(chk => chk.checked = e.target.checked);
+        const checked = e.target.checked;
+        document.querySelectorAll("#winBody .chkWin").forEach(chk => {
+          chk.checked = checked;
+          const pk = parseInt(chk.value, 10);
+          if (checked) state.winSelected.add(pk);
+          else state.winSelected.delete(pk);
+        });
+        document.getElementById("winSelectedCount").textContent = String(state.winSelected.size || 0);
       });
 
-      loadTypes();
+      async function refreshQuota(mappingId) {
+        try {
+          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "刷新失败");
+          toast(`已刷新：remaining_quota=${d.remaining_quota}`, "success");
+          await loadMappings();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      const _openMappingEditor = openMappingEditor;
+      openMappingEditor = async (mappingId, act) => {
+        if (act === "refreshQuota") return refreshQuota(mappingId);
+        return _openMappingEditor(mappingId, act);
+      };
+
+      loadHandlerOptions().then(loadTypes);
     </script>
   </body>
 </html>
