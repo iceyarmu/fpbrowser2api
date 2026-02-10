@@ -589,6 +589,71 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
     }
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
+async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """手动打开窗口并禁止 _schedule_idle_close 自动关闭（保持窗口常驻）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.task_executor import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    # 先禁止自动关闭，再确保已打开（避免 ensure_open / 其它调用尾部 schedule 进来）
+    sora_ctx.idle_close_disabled = True
+    try:
+        sora_ctx._cancel_idle_close()
+    except Exception:
+        pass
+    try:
+        await sora_ctx.ensure_open(args=[], force_open=False, headless=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
+
+    return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": True}
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/manual-close")
+async def manual_close_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """取消“保持打开”并触发一次 _schedule_idle_close（不会立刻关闭，避免影响正在运行的任务）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.task_executor import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx.idle_close_disabled = False
+    try:
+        sora_ctx._schedule_idle_close()
+    except Exception:
+        pass
+
+    return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": False}
+
+
 @router.delete("/api/admin/task-types/{task_type_id}")
 async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_token)):
     if not db:

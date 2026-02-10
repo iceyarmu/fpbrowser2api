@@ -1718,6 +1718,8 @@ class _SoraBrowserContext:
     watchers: Dict[str, _SoraWatcher] = field(default_factory=dict)
     monitor_task: Optional[asyncio.Task] = None
     idle_close_task: Optional[asyncio.Task] = None
+    # 手动“保持打开”：为 True 时，禁止一切 _schedule_idle_close 自动关闭
+    idle_close_disabled: bool = False
 
     # 监控配置（会在 watch 时更新）
     pending_url_regex: Optional[str] = None
@@ -1747,6 +1749,10 @@ class _SoraBrowserContext:
     ) -> None:
         """确保窗口已打开且 Playwright 已通过 CDP 连接到指纹浏览器。"""
         self.last_used_at = time.time()
+
+        # 判断窗口是否已经打开
+        # - 情况1：本服务已建立 Playwright/CDP 连接（browser/page 已存在）
+        # - 情况2：指纹浏览器软件端窗口已打开，但本服务未连接（需要先查 connection_info）
         if self.browser is not None and self.page is not None:
             return
 
@@ -1755,23 +1761,55 @@ class _SoraBrowserContext:
         except Exception as e:
             raise RuntimeError(f"Playwright 未安装或导入失败，请先安装依赖：pip install playwright；并执行：python -m playwright install chromium；错误：{e}")
 
-        rsp = await self.fp_client.browser_open(
-            vendor=self.vendor,
-            base_url=self.base_url,
-            access_key=self.access_key,
-            space_id=self.space_id,
-            window_key=self.window_key,
-            args=args or [],
-            force_open=bool(force_open),
-            headless=bool(headless),
-        )
-        if (rsp or {}).get("code") != 0:
-            raise RuntimeError(f"browser_open 失败：{rsp}")
-        data = (rsp or {}).get("data") or {}
-        raw_endpoint = str(data.get("http") or data.get("ws") or "").strip()
+        # 先查询“是否已打开”，避免窗口已打开时 /browser/open 返回错误导致无法继续连接
+        raw_endpoint = ""
+        try:
+            conn = await self.fp_client.get_open_window_connection_info(
+                vendor=self.vendor,
+                base_url=self.base_url,
+                access_key=self.access_key,
+                window_key=self.window_key,
+            )
+            if conn:
+                raw_endpoint = str(conn.get("http") or conn.get("ws") or "").strip()
+        except Exception:
+            # connection_info 查询失败则忽略，继续走 open 逻辑
+            pass
+
+        if not raw_endpoint:
+            rsp = await self.fp_client.browser_open(
+                vendor=self.vendor,
+                base_url=self.base_url,
+                access_key=self.access_key,
+                space_id=self.space_id,
+                window_key=self.window_key,
+                args=args or [],
+                force_open=bool(force_open),
+                headless=bool(headless),
+            )
+            if (rsp or {}).get("code") != 0:
+                # 兜底：部分服务在“窗口已打开”时会返回非 0，但此时仍可用 connection_info 取到 endpoint
+                try:
+                    conn = await self.fp_client.get_open_window_connection_info(
+                        vendor=self.vendor,
+                        base_url=self.base_url,
+                        access_key=self.access_key,
+                        window_key=self.window_key,
+                    )
+                    if conn:
+                        raw_endpoint = str(conn.get("http") or conn.get("ws") or "").strip()
+                except Exception:
+                    pass
+                if not raw_endpoint:
+                    raise RuntimeError(f"browser_open 失败：{rsp}")
+
+            if not raw_endpoint:
+                data = (rsp or {}).get("data") or {}
+                raw_endpoint = str(data.get("http") or data.get("ws") or "").strip()
+
         debugger_address = _normalize_cdp_endpoint(raw_endpoint)
         if not debugger_address:
-            raise RuntimeError(f"browser_open 返回缺少 http/ws(CDP endpoint)：{rsp}")
+            raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
 
         self.cdp_endpoint = debugger_address
 
@@ -1950,6 +1988,11 @@ class _SoraBrowserContext:
 
     def _schedule_idle_close(self) -> None:
         """当 ctx 没有任务执行时自动 close。"""
+        # 被手动“保持打开”时：取消已有 idle_close 任务，且不再创建新的自动关闭任务
+        if bool(self.idle_close_disabled):
+            self._cancel_idle_close()
+            return
+
         self._cancel_idle_close()
 
         async def _job():
@@ -1958,6 +2001,9 @@ class _SoraBrowserContext:
                 if secs <= 0:
                     return
                 await asyncio.sleep(secs)
+                # sleep 期间可能被切到“保持打开”
+                if bool(self.idle_close_disabled):
+                    return
                 if self.watchers:
                     return
                 if self.create_lock.locked():
