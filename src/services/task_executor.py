@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from uuid import uuid4
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from .fp_browser_client import FPBrowserClient
 
@@ -93,6 +94,34 @@ def _mask_secret(s: Optional[str], *, head: int = 8, tail: int = 6) -> str:
     if len(s) <= head + tail + 3:
         return s[: max(1, min(len(s), head))] + "...(masked)"
     return s[:head] + "...(masked)..." + s[-tail:]
+
+
+def _pick_orientation_from_ratio(ratio: Optional[str]) -> Optional[str]:
+    """将尺寸比例（如 19:6 / 6:19）转换为 sora 的 orientation（landscape/portrait）。"""
+    if not ratio:
+        return None
+    s = str(ratio).strip().lower().replace("：", ":")
+    if "19:6" in s:
+        return "landscape"
+    if "6:19" in s:
+        return "portrait"
+    return None
+
+
+def _pick_n_frames(v: Any) -> int:
+    """将“时长参数”归一化为 n_frames（当前按你的需求仅支持 300/450）。"""
+    try:
+        iv = int(float(v))
+    except Exception:
+        iv = 300
+    if iv in (300, 450):
+        return iv
+    # 常见：秒数 10/15
+    if iv == 10:
+        return 300
+    if iv == 15:
+        return 450
+    return 450
 
 
 async def _sora_extract_bearer_from_any_post_pw(page, *, timeout_seconds: float, log_file: Path) -> Dict[str, Any]:
@@ -417,6 +446,8 @@ async def _pw_page_fetch_tx(
 
     重要：浏览器侧无法设置 User-Agent/Host/Cookie 等受限 header，这些会由浏览器自动携带。
     """
+    if page is None:
+        raise RuntimeError("page 为 None（窗口可能已被自动回收/关闭），无法执行 page.fetch")
     tx: Dict[str, Any] = {
         "seen": True,
         "request_id": None,
@@ -541,6 +572,138 @@ async def _sora_api_post_project_y_post_pw(
     tx = await _pw_page_fetch_json(page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
     obj = tx.get("_json")
     return obj if isinstance(obj, dict) else {}
+
+
+async def _pw_download_bytes_via_context_pw(ctx, *, url: str, timeout_ms: int = 30_000) -> Tuple[bytes, Dict[str, str]]:
+    """用同一指纹浏览器 context 下载资源（走浏览器网络栈），返回 (bytes, headers)。"""
+    p = await ctx.new_page()
+    try:
+        resp = await p.goto(url, wait_until="networkidle", timeout=int(timeout_ms))
+        if resp is None:
+            raise RuntimeError(f"下载失败：无响应 url={url!r}")
+        try:
+            status = int(getattr(resp, "status", 0) or 0)
+        except Exception:
+            status = 0
+        if status and status >= 400:
+            raise RuntimeError(f"下载失败：status={status} url={url!r}")
+        data = await resp.body()
+        try:
+            hdrs = dict(resp.headers or {})
+        except Exception:
+            hdrs = {}
+        return bytes(data or b""), hdrs
+    finally:
+        try:
+            await p.close()
+        except Exception:
+            pass
+
+
+def _guess_image_filename_and_mime(headers: Dict[str, str], *, default_name: str = "image.png") -> Tuple[str, str]:
+    ct = ""
+    try:
+        ct = str((headers or {}).get("content-type") or (headers or {}).get("Content-Type") or "").lower()
+    except Exception:
+        ct = ""
+    if "image/jpeg" in ct or "image/jpg" in ct:
+        return "image.jpg", "image/jpeg"
+    if "image/webp" in ct:
+        return "image.webp", "image/webp"
+    if "image/png" in ct:
+        return "image.png", "image/png"
+    return default_name, "image/png"
+
+
+async def _sora_api_upload_image_bytes_pw(
+    page,
+    *,
+    target_url: str,
+    bearer_token: str,
+    image_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    log_file: Path,
+) -> str:
+    """上传首帧图片获取 media_id（参考 sora_client.upload_image）。"""
+    candidates = [
+        _sora_backend_url_from_target(target_url, "/backend/uploads"),
+        _sora_backend_url_from_target(target_url, "/uploads"),
+    ]
+    try:
+        import base64
+
+        b64 = base64.b64encode(image_bytes or b"").decode("ascii")
+    except Exception:
+        b64 = ""
+    if not b64:
+        raise RuntimeError("首帧图片为空或 base64 编码失败")
+
+    last_err: Optional[str] = None
+    for upload_url in candidates:
+        try:
+            res = await page.evaluate(
+                """async (args) => {
+                  const { uploadUrl, bearer, filename, mime, b64 } = args;
+                  const bin = atob(b64);
+                  const bytes = new Uint8Array(bin.length);
+                  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                  const blob = new Blob([bytes], { type: mime || 'image/png' });
+                  const file = new File([blob], filename || 'image.png', { type: mime || 'image/png' });
+                  const fd = new FormData();
+                  fd.append('file', file, filename || 'image.png');
+                  fd.append('file_name', filename || 'image.png');
+                  const resp = await fetch(uploadUrl, {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + bearer },
+                    body: fd,
+                    credentials: 'include',
+                  });
+                  const text = await resp.text();
+                  return { status: resp.status, text };
+                }""",
+                {"uploadUrl": upload_url, "bearer": bearer_token, "filename": filename, "mime": mime_type, "b64": b64},
+            )
+            status = int((res or {}).get("status") or 0)
+            text = str((res or {}).get("text") or "")
+            _append_log(log_file, f"[sora][upload] url={upload_url!r} status={status} body={_safe_trim(text, 500)!r}")
+            if status not in (200, 201):
+                last_err = f"status={status} body={_safe_trim(text, 300)}"
+                continue
+            try:
+                obj = json.loads(text) if text else {}
+            except Exception:
+                obj = {}
+            media_id = str((obj or {}).get("id") or "").strip()
+            if media_id:
+                return media_id
+            last_err = f"missing id body={_safe_trim(text, 300)}"
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    raise RuntimeError(f"上传首帧失败：{last_err}")
+
+
+def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent: Optional[str] = None) -> Tuple[bytes, Dict[str, str]]:
+    """本地下载资源（按你的要求：不走指纹浏览器下载首帧图）。"""
+    u = str(url or "").strip()
+    if not u:
+        raise ValueError("url 不能为空")
+    headers = {
+        "Accept": "*/*",
+    }
+    if user_agent:
+        headers["User-Agent"] = str(user_agent)
+    req = Request(u, headers=headers, method="GET")
+    with urlopen(req, timeout=max(1.0, float(timeout_seconds))) as resp:
+        data = resp.read()
+        # Python 返回的是 HTTPMessage，可转成 dict
+        try:
+            hdrs = dict(getattr(resp, "headers", {}) or {})
+        except Exception:
+            hdrs = {}
+        return bytes(data or b""), hdrs
 
 
 def _normalize_cdp_endpoint(endpoint: str) -> str:
@@ -1399,6 +1562,9 @@ async def _sora_create_task_pw(
     monitor_seconds: float,
     monitor_url_regex: str,
     monitor_log_path: Optional[str],
+    first_image_url: Optional[str],
+    orientation: str,
+    n_frames: int,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """通过指纹浏览器环境直接调用 /backend/nf/create（不再模拟 UI 输入/点击）。"""
     log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
@@ -1417,8 +1583,6 @@ async def _sora_create_task_pw(
         user_agent = await _pw_get_user_agent(page)
     sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(page, device_id=None, log_file=log_file)
 
-    print(f"[sora][debug] bearer_token={_mask_secret(bearer_token or '', head=15, tail=15)} len={len(bearer_token or '')}")
-    print(f"[sora][debug] sentinel_token={_mask_secret(sentinel_token or '', head=15, tail=15)} len={len(sentinel_token or '')}")
 
     if not bearer_token:
         raise NonPenalizedTaskError("未能从指纹浏览器 Network 抓到 Bearer token（请确保已登录且页面会发出带 Authorization 的请求）")
@@ -1436,17 +1600,31 @@ async def _sora_create_task_pw(
     if not oai_device_id:
         oai_device_id = str(uuid4())
 
-    # 构造 nf/create payload（参考 sora2api/sora_client.py 的 remix_video / generate_storyboard）
+    # 首帧参考图：下载 -> 上传拿 media_id -> 写入 inpaint_items（参考 sora_client.generate_video）
+    inpaint_items: list[Dict[str, Any]] = []
+    if first_image_url:
+        img_bytes, img_headers = _download_bytes_local(first_image_url, timeout_seconds=30.0, user_agent=user_agent)
+        filename, mime_type = _guess_image_filename_and_mime(img_headers)
+        media_id = await _sora_api_upload_image_bytes_pw(
+            page,
+            target_url=target_url,
+            bearer_token=str(bearer_token),
+            image_bytes=img_bytes,
+            filename=filename,
+            mime_type=mime_type,
+            log_file=log_file,
+        )
+        inpaint_items = [{"kind": "upload", "upload_id": str(media_id)}]
+
+    # 构造 nf/create payload（参考 sora2api/sora_client.py generate_video）
     create_payload: Dict[str, Any] = {
         "kind": "video",
         "prompt": prompt,
-        "inpaint_items": [],
-        "remix_target_id": None,
-        "cameo_ids": [],
-        "cameo_replacements": {},
+        "orientation": str(orientation or "portrait"),
+        "size": "small",
+        "n_frames": int(_pick_n_frames(n_frames)),
         "model": "sy_8",
-        "orientation": "portrait",
-        "n_frames": 300,
+        "inpaint_items": inpaint_items,
         "style_id": None,
     }
 
@@ -1697,6 +1875,9 @@ class _SoraBrowserContext:
         monitor_seconds: float,
         monitor_url_regex: str,
         monitor_log_path: Optional[str],
+        first_image_url: Optional[str],
+        orientation: str,
+        n_frames: int,
         browser_open_args: list[str],
         browser_force_open: bool,
         browser_headless: bool,
@@ -1720,6 +1901,9 @@ class _SoraBrowserContext:
                         monitor_seconds=monitor_seconds,
                         monitor_url_regex=monitor_url_regex,
                         monitor_log_path=monitor_log_path,
+                        first_image_url=first_image_url,
+                        orientation=orientation,
+                        n_frames=n_frames,
                     )
                     # 保存 API 鉴权信息，供后续 pending 轮询使用（不写入日志/结果，避免泄露）
                     try:
@@ -1970,6 +2154,8 @@ class _SoraBrowserContext:
             last_items_sample: list[str] = []
             attempt = 0
             while time.time() < deadline and draft_item is None:
+                # 防止在 finalize 过程中被 idle_close 回收
+                self._schedule_idle_close()
                 attempt += 1
                 drafts = await _sora_api_get_video_drafts_pw(
                     self.page,
@@ -2153,6 +2339,13 @@ async def sora_gen_video(
     if not prompt:
         raise ValueError("payload.prompt 不能为空")
 
+    # 新增：首帧参考图 / 尺寸比例 / 时长（映射到 nf/create 的 inpaint_items/orientation/n_frames）
+    first_image_url = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip() or None
+    ratio = str(payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or "").strip() or None
+    orientation = _pick_orientation_from_ratio(ratio) or str(payload.get("orientation") or "").strip() or None
+    duration_v = payload.get("n_frames") or payload.get("duration_frames") or payload.get("duration") or payload.get("时长")
+    n_frames = _pick_n_frames(duration_v)
+
     # Playwright 行为配置（可从 payload 覆盖；默认值与 roxy_sora_automation.py 保持一致）
     target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
     create_button_text_regex = str(payload.get("sora_create_video_regex") or r"^\s*Create\s+video\s*$").strip()
@@ -2187,6 +2380,9 @@ async def sora_gen_video(
         monitor_seconds=monitor_seconds,
         monitor_url_regex=monitor_url_regex,
         monitor_log_path=monitor_log_path,
+        first_image_url=first_image_url,
+        orientation=str(orientation or "portrait"),
+        n_frames=int(n_frames),
         browser_open_args=[],
         browser_force_open=False,
         browser_headless=False,
@@ -2216,23 +2412,11 @@ async def sora_gen_video(
 
     result: Dict[str, Any] = {
         "type": "video",
-        "message": "Sora 任务已创建、监控完成，并已从草稿箱发布（去水印）",
+        "message": "Sora创建完成",
         "task_id": task_id,
-        "prompt": prompt,
-        "create_tx": {
-            "url": create_tx.get("url"),
-            "status": create_tx.get("status"),
-            "log_file": create_tx.get("log_file"),
-        },
-        "progress": progress_result,
-        "publish": {
-            "post_id": publish_result.get("post_id"),
-            "share_url": publish_result.get("share_url"),
-            "watermark_free_url": publish_result.get("watermark_free_url"),
-            "generation_id": publish_result.get("generation_id"),
-        },
-        "draft": publish_result.get("draft"),
-        "outputs": [],
+        "post_id": publish_result.get("post_id"),
+        "share_url": publish_result.get("share_url"),
+        "watermark_free_url": publish_result.get("watermark_free_url"),
     }
 
     return result
