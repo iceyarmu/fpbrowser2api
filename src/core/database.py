@@ -1035,11 +1035,14 @@ class Database:
             )
             await db.commit()
 
-    async def pick_available_window(self, task_type_code: str) -> Optional[Dict[str, Any]]:
-        """选择一个可用窗口（额度>0、启用、未冷却、未删除）。
+    async def list_available_windows_for_pick(self, task_type_code: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """返回可用于调度挑选的窗口候选列表（按健康度/额度排序）。
 
-        注意：并发控制在调度器层完成；这里仅做 DB 条件筛选 + 简单排序。
+        说明：
+        - 并发控制不在 DB 层完成（需要结合内存中的 semaphore 状态）。
+        - 调度器可基于本列表做负载均衡挑选，并跳过已满载窗口。
         """
+        lim = max(1, min(500, int(limit or 50)))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
@@ -1076,12 +1079,20 @@ class Database:
                   )
                   AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
                 ORDER BY m.consecutive_errors ASC, m.remaining_quota DESC, m.updated_at DESC
-                LIMIT 1
+                LIMIT ?
                 """,
-                (task_type_code.strip(),),
+                (task_type_code.strip(), lim),
             )
-            row = await cur.fetchone()
-            return dict(row) if row else None
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def pick_available_window(self, task_type_code: str) -> Optional[Dict[str, Any]]:
+        """选择一个可用窗口（额度>0、启用、未冷却、未删除）。
+
+        注意：并发控制在调度器层完成；这里仅做 DB 条件筛选 + 简单排序。
+        """
+        items = await self.list_available_windows_for_pick(task_type_code=task_type_code, limit=1)
+        return items[0] if items else None
 
     # ---------- tasks ----------
     async def create_task(self, task: Task) -> int:
