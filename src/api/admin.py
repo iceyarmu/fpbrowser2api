@@ -570,7 +570,7 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.task_executor import _get_or_create_ctx  # type: ignore
+    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
 
     sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     try:
@@ -607,7 +607,7 @@ async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verif
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.task_executor import _get_or_create_ctx  # type: ignore
+    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
 
     sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     # 先禁止自动关闭，再确保已打开（避免 ensure_open / 其它调用尾部 schedule 进来）
@@ -642,7 +642,7 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.task_executor import _get_or_create_ctx  # type: ignore
+    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
 
     sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     sora_ctx.idle_close_disabled = False

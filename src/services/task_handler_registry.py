@@ -65,7 +65,7 @@ async def create_task__force_gen_image(ctx: CreateTaskContext) -> str:
 
 
 async def create_task__sora_gen_video(ctx: CreateTaskContext) -> str:
-    """Sora 生视频：同样走 submit_task，执行阶段在 _run_task 中分发到 sora_gen_video.py。"""
+    """Sora 生视频：同样走 submit_task，执行阶段在 _run_task 中分发到 sora_task_executor.py。"""
 
     return await ctx.task_service.submit_task(ctx.task_type.code, ctx.payload or {})
 
@@ -110,7 +110,7 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
         raise RuntimeError("mapping 缺少 vendor/lan_addr/space_id/window_key，无法刷新 Sora 余额")
 
     # 复用 _SoraBrowserContext（避免重复开浏览器）
-    from .task_executor import _get_or_create_ctx  # type: ignore
+    from .sora_browser_context import _get_or_create_ctx  # type: ignore
 
     sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     # 选一个稳定入口页；只用于触发带 Authorization 的请求头捕获

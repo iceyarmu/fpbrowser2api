@@ -10,6 +10,7 @@
       .small2 { font-size: 12px; }
       .cell-stack > div { line-height: 1.25; }
       .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .btn-w-72 { min-width: 72px; }
     </style>
   </head>
   <body class="bg-light">
@@ -265,6 +266,142 @@
         handlers: { create: [], quota: [] },
       };
 
+      // ---- 仅用于本页交互（不入 state 持久化）----
+      const ui = {
+        closeCountdownByMappingId: new Map(), // mappingId -> { toastEl, toast, timer }
+      };
+
+      function getRowActionButtons(mappingId, fromEl) {
+        const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
+        if (!tr) return { tr: null, openBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null };
+        return {
+          tr,
+          openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
+          closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
+          refreshQuotaBtn: tr.querySelector(`button[data-act="refreshQuota"][data-mid="${mappingId}"]`),
+          refreshInviteBtn: tr.querySelector(`button[data-act="refreshInvite"][data-mid="${mappingId}"]`),
+        };
+      }
+
+      function setBtnBusy(btn, busy, { loadingText = "处理中", keepWidth = true } = {}) {
+        if (!btn) return;
+        if (busy) {
+          if (btn.dataset.origHtml == null) btn.dataset.origHtml = btn.innerHTML;
+          btn.disabled = true;
+          if (keepWidth && !btn.classList.contains("btn-w-72")) {
+            btn.classList.add("btn-w-72");
+            btn.dataset.widthAdded = "1";
+          }
+          btn.innerHTML = `
+            <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+            <span>${escapeHtml(loadingText)}</span>
+          `;
+          return;
+        }
+        btn.disabled = false;
+        if (btn.dataset.widthAdded === "1") {
+          btn.classList.remove("btn-w-72");
+          delete btn.dataset.widthAdded;
+        }
+        if (btn.dataset.origHtml != null) btn.innerHTML = btn.dataset.origHtml;
+      }
+
+      function flashBtnText(btn, text, ms = 900) {
+        if (!btn) return;
+        if (btn.dataset.origHtml == null) btn.dataset.origHtml = btn.innerHTML;
+        btn.innerHTML = escapeHtml(text);
+        window.setTimeout(() => {
+          if (btn.dataset.origHtml != null) btn.innerHTML = btn.dataset.origHtml;
+        }, ms);
+      }
+
+      function cancelCloseCountdown(mappingId) {
+        const it = ui.closeCountdownByMappingId.get(mappingId);
+        if (!it) return;
+        try { window.clearInterval(it.timer); } catch {}
+        try { it.toast?.hide?.(); } catch {}
+        ui.closeCountdownByMappingId.delete(mappingId);
+      }
+
+      function showCloseCountdownToast({ mappingId, windowName, seconds = 3, onCountdownEnd, onCancel }) {
+        cancelCloseCountdown(mappingId);
+
+        const container = document.getElementById("toastContainer") || document.body;
+        const el = document.createElement("div");
+        el.className = "toast text-bg-dark border-0";
+        el.setAttribute("role", "alert");
+        el.setAttribute("aria-live", "assertive");
+        el.setAttribute("aria-atomic", "true");
+
+        el.innerHTML = `
+          <div class="d-flex">
+            <div class="toast-body">
+              <div class="fw-semibold">即将关闭窗口</div>
+              <div class="small opacity-75 mt-1">
+                窗口：<span class="fw-semibold">${escapeHtml(windowName || "-")}</span>
+              </div>
+              <div class="small opacity-75">
+                <span data-role="sec">${seconds}</span>s 后执行。你可以点“撤销”取消。
+              </div>
+            </div>
+            <div class="d-flex align-items-center gap-2 me-2">
+              <button class="btn btn-sm btn-outline-light" type="button" data-role="cancel">撤销</button>
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+          </div>
+        `;
+
+        container.appendChild(el);
+        const t = new bootstrap.Toast(el, { autohide: false });
+        t.show();
+
+        let left = seconds;
+        let done = false;
+        const secEl = el.querySelector('[data-role="sec"]');
+        const cancelBtn = el.querySelector('[data-role="cancel"]');
+
+        const finish = async () => {
+          if (done) return;
+          done = true;
+          try { cancelBtn.disabled = true; } catch {}
+          try { await onCountdownEnd?.(); } finally { t.hide(); }
+        };
+
+        const timer = window.setInterval(() => {
+          left -= 1;
+          if (left <= 0) {
+            window.clearInterval(timer);
+            finish();
+          } else {
+            if (secEl) secEl.textContent = String(left);
+          }
+        }, 1000);
+
+        cancelBtn?.addEventListener?.("click", () => {
+          if (done) return;
+          done = true;
+          window.clearInterval(timer);
+          t.hide();
+          try { onCancel?.(); } catch {}
+        });
+
+        el.addEventListener("hidden.bs.toast", () => {
+          try { window.clearInterval(timer); } catch {}
+          el.remove();
+          if (!done) {
+            done = true;
+            try { onCancel?.(); } catch {}
+          }
+          // 如果 toast 自己被关掉了，也要清理记录
+          if (ui.closeCountdownByMappingId.get(mappingId)?.toastEl === el) {
+            ui.closeCountdownByMappingId.delete(mappingId);
+          }
+        });
+
+        ui.closeCountdownByMappingId.set(mappingId, { toastEl: el, toast: t, timer });
+        return { el, toast: t, timer };
+      }
+
       async function loadHandlerOptions() {
         const r = await adminFetch("/api/admin/task-type-handler-options");
         if (!r) return;
@@ -434,7 +571,13 @@
         body.innerHTML = state.mappings.map(m => `
           <tr class="small2">
             <td>
-              <div class="fw-semibold">${escapeHtml(m.window_name || "-")}</div>
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div class="fw-semibold">${escapeHtml(m.window_name || "-")}</div>
+                <div class="btn-group btn-group-sm" role="group" aria-label="window-manual-open-close">
+                  <button class="btn btn-outline-success btn-sm btn-w-72" data-act="manualOpen" data-mid="${m.id}">打开</button>
+                  <button class="btn btn-outline-secondary btn-sm btn-w-72" data-act="manualClose" data-mid="${m.id}">关闭</button>
+                </div>
+              </div>
               <div class="mono text-muted">账号：${escapeHtml(m.platform_account || "-")}</div>
               <div class="text-muted truncate-1">${escapeHtml(m.browser_name || "-")}</div>
             </td>
@@ -481,7 +624,7 @@
         body.querySelectorAll("[data-act]").forEach(btn => {
           const act = btn.dataset.act;
           const mid = parseInt(btn.dataset.mid, 10);
-          btn.addEventListener("click", () => openMappingEditor(mid, act));
+          btn.addEventListener("click", (e) => openMappingEditor(mid, act, e.currentTarget));
         });
       }
 
@@ -515,7 +658,13 @@
         }
       }
 
-      async function openMappingEditor(mappingId, act) {
+      async function openMappingEditor(mappingId, act, el) {
+        if (act === "manualOpen") {
+          return manualOpenWindow(mappingId, el);
+        }
+        if (act === "manualClose") {
+          return manualCloseWindow(mappingId, el);
+        }
         if (act === "refreshQuota") {
           return refreshQuota(mappingId);
         }
@@ -554,6 +703,69 @@
         } catch (e) {
           toast(e.message, "error");
         }
+      }
+
+      async function manualOpenWindow(mappingId, fromEl) {
+        try {
+          cancelCloseCountdown(mappingId);
+          const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          // 防止重复点击：打开/关闭同时锁住
+          setBtnBusy(openBtn, true, { loadingText: "打开中" });
+          if (closeBtn) closeBtn.disabled = true;
+
+          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "打开失败");
+          toast("已打开窗口，并禁止自动关闭", "success");
+          flashBtnText(openBtn, "已打开");
+        } catch (e) {
+          toast(e.message, "error");
+        } finally {
+          const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          setBtnBusy(openBtn, false);
+          if (closeBtn) closeBtn.disabled = false;
+        }
+      }
+
+      async function manualCloseWindow(mappingId, fromEl) {
+        const m = state.mappings.find(x => x.id === mappingId);
+        const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+
+        // 交互：先给一个可撤销的倒计时提示，避免误触
+        if (closeBtn) closeBtn.disabled = true;
+        showCloseCountdownToast({
+          mappingId,
+          windowName: m?.window_name || "-",
+          seconds: 3,
+          onCancel: () => {
+            // 用户撤销/关闭提示：恢复按钮可点击
+            if (openBtn) openBtn.disabled = false;
+            if (closeBtn) closeBtn.disabled = false;
+          },
+          onCountdownEnd: async () => {
+            try {
+              // 倒计时结束后再真正调用接口；期间保持锁住，防止并发点击
+              setBtnBusy(closeBtn, true, { loadingText: "关闭中" });
+              if (openBtn) openBtn.disabled = true;
+
+              const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
+              if (!r) return;
+              const d = await r.json();
+              if (!r.ok) throw new Error(d.detail || "关闭失败");
+              toast("已取消禁止自动关闭，并触发延迟关闭检查", "success");
+              flashBtnText(closeBtn, "已触发");
+            } catch (e) {
+              toast(e.message, "error");
+            } finally {
+              // 清理 toast 记录（这里的 hide 会触发 hidden 监听，但我们还是主动删一下更稳）
+              ui.closeCountdownByMappingId.delete(mappingId);
+              setBtnBusy(closeBtn, false);
+              if (openBtn) openBtn.disabled = false;
+              if (closeBtn) closeBtn.disabled = false;
+            }
+          },
+        });
       }
 
       function openMappingEditModal(m) {

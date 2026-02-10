@@ -10,7 +10,9 @@ from typing import Any, Dict, Optional
 from ..core.database import Database
 from ..core.logger import logger
 from ..core.models import Task
-from .task_executor import simulate_image_task, simulate_video_task, sora_gen_video
+from .image_task_executor import simulate_image_task
+from .video_task_executor import simulate_video_task
+from .sora_task_executor import sora_gen_video
 
 
 @dataclass
