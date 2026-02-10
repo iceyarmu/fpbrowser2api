@@ -21,7 +21,6 @@ class PickedWindow:
     task_code: str
     task_concurrency: int
     # 当前“可用窗口”总数（用于任务类型级别并发控制）
-    available_window_total: int
     threshold: int
     timeout_seconds: int
     create_task_handler: Optional[str]
@@ -45,10 +44,6 @@ class TaskService:
             raise ValueError("task_type_code 不能为空")
         payload = payload or {}
 
-        available_window_total = await self.db.count_available_windows(task_type_code)
-        if available_window_total <= 0:
-            raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用1")
-
         picked_raw = await self.db.pick_available_window(task_type_code)
         if not picked_raw:
             raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用2")
@@ -59,7 +54,6 @@ class TaskService:
             window_key=str(picked_raw.get("window_key") or "").strip(),
             task_code=str(picked_raw["task_code"]),
             task_concurrency=int(picked_raw.get("task_concurrency") or 1),
-            available_window_total=max(1, int(available_window_total or 0)),
             threshold=int(picked_raw.get("continuous_error_threshold") or 3),
             timeout_seconds=int(picked_raw.get("timeout_seconds") or 1800),
             create_task_handler=(str(picked_raw.get("create_task_handler") or "").strip() or None),
@@ -137,6 +131,21 @@ class TaskService:
                 await self.db.update_task(task_id, status="completed", progress=100, result=result, set_completed=True)
                 await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
                 await self.db.mark_mapping_success(picked.mapping_id)
+                # Sora：若执行器返回了 nf_check，则用其回写余额/限流信息（覆盖本地扣减，更贴近真实剩余）
+                try:
+                    nf = (result or {}).get("nf_check") if isinstance(result, dict) else None
+                    rate = (nf or {}) if isinstance(nf, dict) else None
+                    if rate and rate.get("remaining_count") is not None:
+                        await self.db.update_task_type_window(
+                            mapping_id=picked.mapping_id,
+                            remaining_quota=int(rate.get("remaining_count") or 0),
+                            sora_remaining_count=int(rate.get("remaining_count") or 0),
+                            sora_rate_limit_reached=bool(rate.get("rate_limit_reached", False)),
+                            sora_access_resets_in_seconds=int(rate.get("access_resets_in_seconds") or 0),
+                            cooldown_until=(str(rate.get("cooldown_until")) if rate.get("cooldown_until") else None),
+                        )
+                except Exception:
+                    pass
                 logger.info("task completed: %s", task_id)
             except asyncio.TimeoutError as t:
                 await self.db.update_task(task_id, status="failed", error_message="任务超时"+str(t), set_completed=True)

@@ -113,6 +113,8 @@ class TaskTypeWindow(BaseModel):
     remaining_quota: int = 0
 
     cooldown_until: Optional[datetime] = None
+    # 连续错误熔断冷却时间（与额度重置时间点 cooldown_until 区分）
+    error_cooldown_until: Optional[datetime] = None
     enabled: bool = True
     deleted: bool = False
     created_at: Optional[datetime] = None

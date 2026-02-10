@@ -30,7 +30,7 @@
       </div>
     </nav>
 
-    <div class="container py-4">
+    <div class="container-fluid py-4">
       <div class="card shadow-sm mb-4">
         <div class="card-body">
           <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -120,6 +120,8 @@
                       <th>窗口</th>
                       <th>空间</th>
                       <th>额度</th>
+                      <th>Sora余额</th>
+                      <th>邀请码</th>
                       <th>状态</th>
                       <th>启用</th>
                       <th>操作</th>
@@ -415,14 +417,17 @@
         const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
         if (!r) return;
         const d = await r.json();
-        state.mappings = d.items || [];
+        // 绑定窗口列表：强制按 id 倒序，保证刷新/获取邀请码后顺序不乱跳
+        state.mappings = (d.items || [])
+          .slice()
+          .sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
         renderMappings();
       }
 
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="6" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无绑定窗口</td></tr>`;
           return;
         }
         renderQuotaQuickSelect();
@@ -440,6 +445,17 @@
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="fw-semibold">${m.remaining_quota}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
+              </div>
+            </td>
+            <td class="mono cell-stack">
+              <div>remaining: <span class="fw-semibold">${m.sora_remaining_count ?? "-"}</span></div>
+              <div>rate_limit: ${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">YES</span>` : `<span class="badge text-bg-success">NO</span>`}</div>
+              <div>reset(s): <span class="fw-semibold">${m.sora_access_resets_in_seconds ?? "-"}</span></div>
+            </td>
+            <td class="mono">
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div class="fw-semibold">${escapeHtml(m.sora_invite_code || "-")}</div>
+                <button class="btn btn-outline-secondary btn-sm" title="刷新邀请码" data-act="refreshInvite" data-mid="${m.id}">⟳</button>
               </div>
             </td>
             <td class="mono cell-stack">
@@ -502,6 +518,9 @@
         if (act === "refreshQuota") {
           return refreshQuota(mappingId);
         }
+        if (act === "refreshInvite") {
+          return refreshInvite(mappingId);
+        }
         if (act === "resetConsecutiveErrors") {
           return resetConsecutiveErrors(mappingId);
         }
@@ -520,6 +539,19 @@
           toast("已删除", "success");
           await loadMappings();
           return;
+        }
+      }
+
+      async function refreshInvite(mappingId) {
+        try {
+          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/refresh-invite-code`, { method: "POST" });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "刷新邀请码失败");
+          toast("邀请码已刷新", "success");
+          await loadMappings();
+        } catch (e) {
+          toast(e.message, "error");
         }
       }
 
@@ -690,7 +722,7 @@
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="8" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));

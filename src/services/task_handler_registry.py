@@ -98,9 +98,49 @@ async def refresh_quota__reset_to_daily(ctx: RefreshQuotaContext) -> int:
         return 0
 
 
+async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
+    """Sora：通过指纹浏览器读取 /backend/nf/check，并把余额字段写回 mapping。"""
+    row = ctx.mapping_row or {}
+    vendor = str(row.get("vendor") or "roxy")
+    base_url = str(row.get("lan_addr") or "")
+    access_key = row.get("access_key")
+    space_id = str(row.get("space_id") or "")
+    window_key = str(row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise RuntimeError("mapping 缺少 vendor/lan_addr/space_id/window_key，无法刷新 Sora 余额")
+
+    # 复用 _SoraBrowserContext（避免重复开浏览器）
+    from .task_executor import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    # 选一个稳定入口页；只用于触发带 Authorization 的请求头捕获
+    target_url = "https://sora.chatgpt.com/explore"
+    info = await sora_ctx.api_nf_check(target_url=target_url)
+
+    remaining = int(info.get("remaining_count") or 0)
+    rate_limit_reached = bool(info.get("rate_limit_reached", False))
+    resets = int(info.get("access_resets_in_seconds") or 0)
+    cooldown_until = info.get("cooldown_until")
+
+    # 写回 DB：remaining_quota 也同步为 remaining_count，保持调度逻辑一致
+    kwargs: Dict[str, Any] = {
+        "mapping_id": int(row.get("id") or 0),
+        "remaining_quota": remaining,
+        "sora_remaining_count": remaining,
+        "sora_rate_limit_reached": rate_limit_reached,
+        "sora_access_resets_in_seconds": resets,
+    }
+    # api_nf_check 会返回 cooldown_until（当前时间+resets 秒），用于表示“额度重置时间点”
+    if cooldown_until:
+        kwargs["cooldown_until"] = str(cooldown_until)
+    await ctx.db.update_task_type_window(**kwargs)
+    return remaining
+
+
 REFRESH_QUOTA_HANDLERS: Dict[str, Tuple[str, RefreshQuotaHandler]] = {
     "noop": ("默认：不刷新（保持当前值）", refresh_quota__noop),
     "reset_to_daily": ("示例：重置为 daily_quota", refresh_quota__reset_to_daily),
+    "sora_nf_check": ("Sora：读取余额 backend/nf/check（更新 remaining_count/限流/重置时间）", refresh_quota__sora_nf_check),
 }
 
 

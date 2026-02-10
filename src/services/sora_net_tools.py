@@ -42,7 +42,7 @@ def sniff_http_transaction(
     - url_regex: 用于匹配完整 URL（建议传完整域名+路径）
     - method: 可选，限制 GET/POST 等（None 表示不限制）
     - timeout_seconds: 监听时长
-    - log_path: 可选日志路径；不传默认写到当前 services/logs.txt
+    - log_path: 可选日志路径；不传默认写到 fpbrowser2api/logs.txt
 
     返回 dict：
     {
@@ -60,7 +60,8 @@ def sniff_http_transaction(
     method_norm = method.upper().strip() if method else None
     deadline = time.time() + max(1.0, float(timeout_seconds))
 
-    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parent / "logs.txt")
+    # 默认写到 fpbrowser2api 根目录，避免在 src/ 下产生提交噪音
+    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
     result: Dict[str, Any] = {
         "seen": False,

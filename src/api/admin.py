@@ -552,6 +552,43 @@ async def refresh_mapping_remaining_quota(mapping_id: int, token: str = Depends(
     return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/refresh-invite-code")
+async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """通过指纹浏览器读取 backend/project_y/invite/mine 并写回 mapping.sora_invite_code。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.task_executor import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    try:
+        info = await sora_ctx.api_invite_mine(target_url="https://sora.chatgpt.com/explore")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"刷新邀请码失败：{e}")
+
+    invite_code = (info or {}).get("invite_code")
+    await db.update_task_type_window(mapping_id=mapping_id, sora_invite_code=str(invite_code or "").strip() or None)
+    return {
+        "success": True,
+        "mapping_id": mapping_id,
+        "invite_code": invite_code,
+        "redeemed_count": info.get("redeemed_count"),
+        "total_count": info.get("total_count"),
+    }
+
+
 @router.delete("/api/admin/task-types/{task_type_id}")
 async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_token)):
     if not db:

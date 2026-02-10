@@ -34,3 +34,8 @@ env/
 __pycache__/
 *.pyc
 *.pyc.*
+
+# 日志文件（运行时生成，避免影响提交）
+/app.log
+/logs.txt
+/data/logs/

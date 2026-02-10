@@ -183,7 +183,14 @@ class Database:
                     consecutive_errors INTEGER DEFAULT 0,
                     daily_quota INTEGER DEFAULT 0,
                     remaining_quota INTEGER DEFAULT 0,
+                    sora_remaining_count INTEGER DEFAULT 0,
+                    sora_rate_limit_reached BOOLEAN DEFAULT 0,
+                    sora_access_resets_in_seconds INTEGER DEFAULT 0,
+                    sora_invite_code TEXT,
+                    -- 额度重置时间点（来自 nf/check：now + access_resets_in_seconds）
                     cooldown_until TIMESTAMP,
+                    -- 连续错误熔断冷却时间（与 cooldown_until 区分）
+                    error_cooldown_until TIMESTAMP,
                     enabled BOOLEAN DEFAULT 1,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -332,6 +339,7 @@ class Database:
                             daily_quota INTEGER DEFAULT 0,
                             remaining_quota INTEGER DEFAULT 0,
                             cooldown_until TIMESTAMP,
+                            error_cooldown_until TIMESTAMP,
                             enabled BOOLEAN DEFAULT 1,
                             deleted BOOLEAN DEFAULT 0,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -348,14 +356,14 @@ class Database:
                             id, task_type_id, window_pk,
                             total_errors, consecutive_errors,
                             daily_quota, remaining_quota,
-                            cooldown_until, enabled, deleted,
+                            cooldown_until, error_cooldown_until, enabled, deleted,
                             created_at, updated_at
                         )
                         SELECT
                             id, task_type_id, window_pk,
                             total_errors, consecutive_errors,
                             daily_quota, remaining_quota,
-                            cooldown_until, enabled, deleted,
+                            cooldown_until, NULL AS error_cooldown_until, enabled, deleted,
                             created_at, updated_at
                         FROM task_type_windows
                         """
@@ -364,6 +372,33 @@ class Database:
                     await db.execute("ALTER TABLE task_type_windows_new RENAME TO task_type_windows")
                     await db.execute("COMMIT")
                     await db.execute("PRAGMA foreign_keys=ON")
+
+                # Sora 扩展字段（余额/邀请码）
+                columns_to_add = [
+                    ("sora_remaining_count", "INTEGER DEFAULT 0"),
+                    ("sora_rate_limit_reached", "BOOLEAN DEFAULT 0"),
+                    ("sora_access_resets_in_seconds", "INTEGER DEFAULT 0"),
+                    ("sora_invite_code", "TEXT"),
+                    ("error_cooldown_until", "TIMESTAMP"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "task_type_windows", col_name):
+                        await db.execute(f"ALTER TABLE task_type_windows ADD COLUMN {col_name} {col_type}")
+
+                # 迁移：旧版 cooldown_until 曾用于“错误冷却”，为避免与“额度重置时间点”混用，
+                # 将其复制到 error_cooldown_until，并清空 cooldown_until（后续由 nf/check 回写）。
+                if await self._column_exists(db, "task_type_windows", "error_cooldown_until"):
+                    try:
+                        await db.execute(
+                            """
+                            UPDATE task_type_windows
+                            SET error_cooldown_until = cooldown_until
+                            WHERE error_cooldown_until IS NULL AND cooldown_until IS NOT NULL
+                            """
+                        )
+                        await db.execute("UPDATE task_type_windows SET cooldown_until = NULL WHERE cooldown_until IS NOT NULL")
+                    except Exception:
+                        pass
 
             # Step 3: 默认行（不覆盖已有）
             await self._ensure_default_rows(db, config_dict=config_dict)
@@ -896,7 +931,8 @@ class Database:
                 JOIN spaces s ON w.space_pk = s.id
                 JOIN browsers b ON s.browser_id = b.id
                 WHERE m.deleted = 0 AND m.task_type_id = ?
-                ORDER BY m.updated_at DESC, m.id DESC
+                -- 绑定窗口排序：按 id 倒序，避免刷新额度/邀请码后因 updated_at 变化导致列表重排
+                ORDER BY m.id DESC
                 """,
                 (task_type_id,),
             )
@@ -947,7 +983,12 @@ class Database:
         deleted: Optional[bool] = None,
         daily_quota: Optional[int] = None,
         remaining_quota: Optional[int] = None,
+        sora_remaining_count: Optional[int] = None,
+        sora_rate_limit_reached: Optional[bool] = None,
+        sora_access_resets_in_seconds: Optional[int] = None,
+        sora_invite_code: Optional[str] = None,
         cooldown_until: Optional[str] = None,  # ISO string or None
+        error_cooldown_until: Optional[str] = None,  # ISO string or None
         total_errors: Optional[int] = None,
         consecutive_errors: Optional[int] = None,
     ) -> None:
@@ -966,8 +1007,18 @@ class Database:
             _set("daily_quota", int(daily_quota))
         if remaining_quota is not None:
             _set("remaining_quota", int(remaining_quota))
+        if sora_remaining_count is not None:
+            _set("sora_remaining_count", int(sora_remaining_count))
+        if sora_rate_limit_reached is not None:
+            _set("sora_rate_limit_reached", 1 if bool(sora_rate_limit_reached) else 0)
+        if sora_access_resets_in_seconds is not None:
+            _set("sora_access_resets_in_seconds", int(sora_access_resets_in_seconds))
+        if sora_invite_code is not None:
+            _set("sora_invite_code", (sora_invite_code or "").strip() or None)
         if cooldown_until is not None:
             _set("cooldown_until", cooldown_until if cooldown_until else None)
+        if error_cooldown_until is not None:
+            _set("error_cooldown_until", error_cooldown_until if error_cooldown_until else None)
         if total_errors is not None:
             _set("total_errors", int(total_errors))
         if consecutive_errors is not None:
@@ -984,38 +1035,6 @@ class Database:
             )
             await db.commit()
 
-    async def count_available_windows(self, task_type_code: str) -> int:
-        """统计某任务类型当前可用窗口数（额度>0、启用、未冷却、未删除）。
-
-        用途：调度层按“可用窗口总数”做任务类型级别并发控制。
-        """
-        code = (task_type_code or "").strip()
-        if not code:
-            return 0
-
-        async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM task_types t
-                JOIN task_type_windows m ON m.task_type_id = t.id
-                JOIN windows w ON m.window_pk = w.id
-                WHERE t.deleted=0 AND t.enabled=1
-                  AND t.code=?
-                  AND m.deleted=0 AND m.enabled=1
-                  AND w.deleted=0 AND w.enabled=1
-                  AND (m.remaining_quota > 0)
-                  AND (m.cooldown_until IS NULL OR m.cooldown_until <= CURRENT_TIMESTAMP)
-                """,
-                (code,),
-            )
-            row = await cur.fetchone()
-            try:
-                return int((row[0] if row else 0) or 0)
-            except Exception:
-                return 0
-
-    
     async def pick_available_window(self, task_type_code: str) -> Optional[Dict[str, Any]]:
         """选择一个可用窗口（额度>0、启用、未冷却、未删除）。
 
@@ -1051,8 +1070,11 @@ class Database:
                   AND t.code=?
                   AND m.deleted=0 AND m.enabled=1
                   AND w.deleted=0 AND w.enabled=1
-                  AND (m.remaining_quota > 0)
-                  AND (m.cooldown_until IS NULL OR m.cooldown_until <= CURRENT_TIMESTAMP)
+                  AND (
+                    (m.remaining_quota > 1)
+                    OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
+                  )
+                  AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
                 ORDER BY m.consecutive_errors ASC, m.remaining_quota DESC, m.updated_at DESC
                 LIMIT 1
                 """,
@@ -1254,9 +1276,9 @@ class Database:
                 UPDATE task_type_windows
                 SET total_errors = total_errors + 1,
                     consecutive_errors = consecutive_errors + 1,
-                    cooldown_until = CASE
+                    error_cooldown_until = CASE
                       WHEN (consecutive_errors + 1) >= ? THEN datetime('now', ?)
-                      ELSE cooldown_until
+                      ELSE error_cooldown_until
                     END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?

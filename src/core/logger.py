@@ -20,9 +20,9 @@ def setup_logging(force_debug: Optional[bool] = None) -> None:
     handlers.append(stream)
 
     if config.log_to_file:
-        log_dir = Path(__file__).parent.parent.parent / "data" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(str(log_dir / "app.log"), encoding="utf-8")
+        # 日志直接写到 fpbrowser2api 根目录，避免在 src/ 或 data/ 下产生提交噪音
+        project_root = Path(__file__).resolve().parents[2]
+        file_handler = logging.FileHandler(str(project_root / "app.log"), encoding="utf-8")
         file_handler.setLevel(level)
         handlers.append(file_handler)
 

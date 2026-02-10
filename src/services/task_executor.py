@@ -11,6 +11,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
@@ -795,7 +796,8 @@ async def _sniff_http_transaction_pw(
     """Playwright 轻量抓包：等待命中 url_regex 的请求响应，并返回 {seen,url,method,status,headers,response_body,log_file}。"""
     url_pat = re.compile(url_regex, flags=re.IGNORECASE)
     method_norm = method.upper().strip() if method else None
-    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parent / "logs.txt")
+    # 默认写到 fpbrowser2api 根目录，避免在 src/ 下产生提交噪音
+    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
     result: Dict[str, Any] = {
         "seen": False,
@@ -871,7 +873,8 @@ async def _sniff_http_transaction_pw(
 
 async def _response_to_tx_pw(resp, *, log_path: Optional[str]) -> Dict[str, Any]:
     """将 Playwright Response 转成旧 sniff_* 兼容结构，并写入日志文件。"""
-    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parent / "logs.txt")
+    # 默认写到 fpbrowser2api 根目录，避免在 src/ 下产生提交噪音
+    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
     tx: Dict[str, Any] = {
         "seen": True,
         "request_id": None,
@@ -1567,7 +1570,7 @@ async def _sora_create_task_pw(
     n_frames: int,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """通过指纹浏览器环境直接调用 /backend/nf/create（不再模拟 UI 输入/点击）。"""
-    log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+    log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
     await page.goto(target_url, wait_until="domcontentloaded")
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=30_000)
@@ -1733,6 +1736,7 @@ class _SoraBrowserContext:
     user_agent: Optional[str] = None
     oai_device_id: Optional[str] = None
     sentinel_token: Optional[str] = None
+    invite_code: Optional[str] = None
 
     async def ensure_open(
         self,
@@ -1824,6 +1828,110 @@ class _SoraBrowserContext:
             await self.page.bring_to_front()
         except Exception:
             pass
+
+    async def _ensure_bearer_token(self, *, target_url: str) -> str:
+        """确保 bearer_token 可用；必要时 goto 触发请求并从 headers 抓取。"""
+        if self.page is None:
+            raise RuntimeError("page 未初始化")
+        
+        if self.bearer_token:
+            return str(self.bearer_token)
+
+        log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        # 尽量用目标页触发后端请求（Sora 页面加载通常会有带 Authorization 的 XHR）
+        try:
+            await self.page.goto(target_url, wait_until="domcontentloaded")
+        except Exception:
+            pass
+        try:
+            await self.page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        except Exception:
+            pass
+
+        info = await _sora_extract_bearer_from_any_post_pw(self.page, timeout_seconds=20.0, log_file=log_file)
+        tok = str(info.get("token") or "").strip()
+        if not tok:
+            raise RuntimeError("未抓到 Bearer token（请确认窗口已登录 Sora）")
+        self.bearer_token = tok
+        try:
+            self.user_agent = str(info.get("user_agent") or "").strip() or self.user_agent
+        except Exception:
+            pass
+        return tok
+
+    async def api_nf_check(self, *, target_url: str) -> Dict[str, Any]:
+        """读取 Sora 余额：GET /backend/nf/check（返回 remaining_count/rate_limit_reached/access_resets_in_seconds）。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        self._schedule_idle_close();
+        async with self.driver_lock:
+            
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = await self._ensure_bearer_token(target_url=target_url)
+            url = _sora_backend_url_from_target(target_url, "/backend/nf/check")
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
+            tx = await _pw_page_fetch_json(self.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+            obj = tx.get("_json") or {}
+            rate = (obj or {}).get("rate_limit_and_credit_balance") or {}
+
+            remaining = int(rate.get("estimated_num_videos_remaining") or 0)
+            resets = int(rate.get("access_resets_in_seconds") or 0)
+            out: Dict[str, Any] = {
+                "remaining_count": remaining,
+                "rate_limit_reached": bool(rate.get("rate_limit_reached", False)),
+                "access_resets_in_seconds": resets,
+                "raw": obj,
+            }
+
+            # cooldown_until：将“重置 remaining_count 还需秒数”加到当前系统时间，得到下一次重置时间点。
+            # 该字段由上层（刷新额度 handler / 任务完成回写处）写回 task_type_windows.cooldown_until。
+            try:
+                dt = datetime.now() + timedelta(seconds=max(0, int(resets or 0)))
+                out["cooldown_until"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+            return out
+
+    async def api_invite_mine(self, *, target_url: str) -> Dict[str, Any]:
+        """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        self._schedule_idle_close()
+        async with self.driver_lock:
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = await self._ensure_bearer_token(target_url=target_url)
+            url = _sora_backend_url_from_target(target_url, "/backend/project_y/invite/mine")
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
+            tx = await _pw_page_fetch_tx(self.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+            status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+            body = str(tx.get("response_body") or "")
+            obj: Any = None
+            try:
+                obj = json.loads(body) if body else None
+            except Exception:
+                obj = None
+
+            # 401 时尝试 bootstrap 再重试一次（参考 token_manager.py）
+            if status == 401:
+                try:
+                    boot_url = _sora_backend_url_from_target(target_url, "/backend/m/bootstrap")
+                    await _pw_page_fetch_tx(self.page, url=boot_url, method="GET", headers=headers, json_data=None, log_file=log_file)
+                    tx2 = await _pw_page_fetch_json(self.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+                    obj = tx2.get("_json")
+                except Exception:
+                    pass
+
+            data = obj if isinstance(obj, dict) else {}
+            invite_code = (data or {}).get("invite_code")
+            self.invite_code = str(invite_code).strip() if invite_code else None
+            return {
+                "supported": bool(self.invite_code),
+                "invite_code": self.invite_code,
+                "redeemed_count": int((data or {}).get("redeemed_count") or 0),
+                "total_count": int((data or {}).get("total_count") or 0),
+                "raw": data,
+            }
 
     def _cancel_idle_close(self) -> None:
         t = self.idle_close_task
@@ -1989,7 +2097,7 @@ class _SoraBrowserContext:
 
                 tx: Optional[Dict[str, Any]] = None
                 # API 轮询 pending：不依赖页面是否自动发请求
-                log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+                log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
                 if not self.bearer_token:
                     # 没有 token 无法轮询，直接报错给所有 watcher
                     for tid, w in list(self.watchers.items()):
@@ -2063,12 +2171,12 @@ class _SoraBrowserContext:
                 if missing_tids:
                     # drafts 查询（一次查询覆盖多个 tid）
                     try:
-                        log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+                        log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
                         drafts = await _sora_api_get_video_drafts_pw(
                             self.page,
                             target_url=str(getattr(self.page, "url", "") or "https://sora.chatgpt.com/drafts"),
                             bearer_token=str(self.bearer_token or ""),
-                            limit=100,
+                            limit=15,
                             log_file=log_file,
                         )
                         items = drafts.get("items", []) if isinstance(drafts, dict) else []
@@ -2115,7 +2223,7 @@ class _SoraBrowserContext:
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         async with self.driver_lock:
-            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             if not self.bearer_token:
                 raise RuntimeError("缺少 bearer_token，无法查询 drafts/发布")
             if not self.sentinel_token:
@@ -2408,6 +2516,12 @@ async def sora_gen_video(
         target_url=target_url,
         drafts_limit=int(payload.get("sora_drafts_limit") or 100),
     )
+    # 成功后顺带读取余额（nf/check）
+    nf_check = None
+    try:
+        nf_check = await ctx.api_nf_check(target_url=target_url)
+    except Exception:
+        nf_check = None
     await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
 
     result: Dict[str, Any] = {
@@ -2417,7 +2531,7 @@ async def sora_gen_video(
         "post_id": publish_result.get("post_id"),
         "share_url": publish_result.get("share_url"),
         "watermark_free_url": publish_result.get("watermark_free_url"),
+        "nf_check": nf_check,
     }
 
     return result
-
