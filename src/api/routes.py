@@ -39,6 +39,13 @@ async def list_task_types(api_key: str = Depends(verify_api_key_header)):
     items = await db.list_task_types()
     return {"success": True, "task_types": [t.model_dump() for t in items]}
 
+@router.get("/v1/task-types-public")
+async def list_task_types(api_key: str = Depends(verify_api_key_header)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    items = await db.list_task_types_public()
+    return {"success": True, "task_types": [t.model_dump() for t in items]}
+
 
 @router.post("/v1/tasks")
 async def create_task(

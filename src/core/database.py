@@ -772,6 +772,14 @@ class Database:
     async def list_task_types(self) -> List[TaskType]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
+            rows = await cur.fetchall()
+            return [TaskType(**dict(r)) for r in rows]
+
+    
+    async def list_task_types_public(self) -> List[TaskType]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM task_types WHERE deleted = 0 And enabled = 1 ORDER BY updated_at DESC, id DESC")
             rows = await cur.fetchall()
             return [TaskType(**dict(r)) for r in rows]
