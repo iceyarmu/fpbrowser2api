@@ -121,7 +121,8 @@
                       <th>窗口</th>
                       <th>空间</th>
                       <th>额度</th>
-                      <th>Sora余额</th>
+                      <th>余额</th>
+                      <th>重置时间</th>
                       <th>邀请码</th>
                       <th>状态</th>
                       <th>启用</th>
@@ -213,9 +214,13 @@
                 <div class="form-text">提示：执行成功会自动清零；这里仅用于人工干预。</div>
               </div>
               <div class="col-12">
-                <label class="form-label">冷却到（cooldown_until）</label>
+                  <label class="form-label">重置时间（cooldown_until）</label>
                 <input class="form-control mono" id="mapEditCooldown" placeholder="例如：2026-02-09 12:34:56（留空清除）" />
               </div>
+                <div class="col-12">
+                  <label class="form-label">冷却到（error_cooldown_until）</label>
+                  <input class="form-control mono" id="mapEditErrorCooldown" placeholder="例如：2026-02-09 12:34:56（留空清除）" />
+                </div>
               <div class="col-12">
                 <div class="form-check form-switch">
                   <input class="form-check-input" type="checkbox" id="mapEditEnabled" />
@@ -227,6 +232,22 @@
           <div class="modal-footer">
             <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
             <button class="btn btn-primary" id="btnSaveMapping">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Window Error List Modal -->
+    <div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="errorModalTitle">错误列表</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="errorModalBody"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
           </div>
         </div>
       </div>
@@ -256,6 +277,7 @@
 
       const winModal = new bootstrap.Modal("#winModal");
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
+      const errorModal = new bootstrap.Modal("#errorModal");
 
       let state = {
         types: [],
@@ -270,6 +292,86 @@
       const ui = {
         closeCountdownByMappingId: new Map(), // mappingId -> { toastEl, toast, timer }
       };
+
+      const errorModalTitle = document.getElementById("errorModalTitle");
+      const errorModalBody = document.getElementById("errorModalBody");
+
+      function badgeForStatus(s) {
+        const v = String(s || "").toLowerCase();
+        if (v === "completed") return `<span class="badge text-bg-success">completed</span>`;
+        if (v === "failed") return `<span class="badge text-bg-danger">failed</span>`;
+        if (v === "running") return `<span class="badge text-bg-primary">running</span>`;
+        if (v === "queued") return `<span class="badge text-bg-secondary">queued</span>`;
+        return `<span class="badge text-bg-light text-dark">${escapeHtml(v || "-")}</span>`;
+      }
+
+      function typeNameByCode(code) {
+        const c = String(code || "");
+        const t = (state.types || []).find(x => String(x.code || "") === c);
+        return String(t?.name || c || "-");
+      }
+
+      async function openWindowErrorModal(windowPk, { windowName = "-", platformAccount = "-" } = {}) {
+        if (!windowPk) {
+          toast("window_pk 无效，无法查询错误列表", "error");
+          return;
+        }
+        errorModalTitle.textContent = `错误列表 · ${platformAccount || "-"} · ${windowName || "-"} · window_pk=${String(windowPk)}`;
+        errorModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        errorModal.show();
+
+        try {
+          const params = new URLSearchParams();
+          params.set("limit", "200");
+          params.set("offset", "0");
+          params.set("window_pk", String(windowPk));
+
+          const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载错误列表失败");
+
+          const items = (d.items || []).filter(x => String(x.error_message || "").trim());
+          if (!items.length) {
+            errorModalBody.innerHTML = `<div class="text-muted small">暂无错误</div>`;
+            return;
+          }
+
+          errorModalBody.innerHTML = `
+            <div class="list-group">
+              ${items.map(x => {
+                const code = x.task_type_code || "-";
+                const typeName = typeNameByCode(code);
+                const err = String(x.error_message || "").trim();
+                return `
+                  <div class="list-group-item">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                      <span class="mono">${escapeHtml(x.created_at || "")}</span>
+                      <span class="text-muted">·</span>
+                      <span class="mono">${escapeHtml(x.task_id || "")}</span>
+                      <span class="text-muted">·</span>
+                      <span>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></span>
+                      <span class="ms-auto">${badgeForStatus(x.status)}</span>
+                    </div>
+                    <pre class="mono small2 mb-0" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(err)}</pre>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+          `;
+        } catch (e) {
+          errorModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载错误列表失败")}</div>`;
+        }
+      }
+
+      async function openErrorModalByMappingId(mappingId) {
+        const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId || ""));
+        if (!m) {
+          toast("找不到该绑定记录", "error");
+          return;
+        }
+        await openWindowErrorModal(m.window_pk, { windowName: m.window_name || "-", platformAccount: m.platform_account || "-" });
+      }
 
       function getRowActionButtons(mappingId, fromEl) {
         const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
@@ -548,7 +650,7 @@
       async function loadMappings() {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="9" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
@@ -564,7 +666,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="9" class="text-muted small">暂无绑定窗口</td></tr>`;
           return;
         }
         renderQuotaQuickSelect();
@@ -597,6 +699,9 @@
               <div>reset(s): <span class="fw-semibold">${m.sora_access_resets_in_seconds ?? "-"}</span></div>
             </td>
             <td class="mono">
+              <div class="fw-semibold">${escapeHtml(m.cooldown_until || "-")}</div>
+            </td>
+            <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="fw-semibold">${escapeHtml(m.sora_invite_code || "-")}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新邀请码" data-act="refreshInvite" data-mid="${m.id}">⟳</button>
@@ -604,7 +709,15 @@
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div>错误：<span class="fw-semibold">${m.consecutive_errors}</span>/${m.total_errors}</div>
+                <div>
+                  <button
+                    class="btn btn-link p-0 mono text-start ${((m.total_errors || 0) > 0 || (m.consecutive_errors || 0) > 0) ? "text-danger" : "text-muted"}"
+                    style="text-decoration: none;"
+                    title="点击查看该窗口错误列表"
+                    data-act="viewErrors"
+                    data-mid="${m.id}"
+                  >错误：<span class="fw-semibold">${m.consecutive_errors}</span>/${m.total_errors}</button>
+                </div>
                 <button
                   class="btn btn-outline-secondary btn-sm py-0 px-1"
                   title="清空连续错误（重置为 0）"
@@ -612,7 +725,7 @@
                   data-mid="${m.id}"
                 >⟲</button>
               </div>
-              <div>冷却：${escapeHtml(m.cooldown_until || "-")}</div>
+              <div>冷却：${escapeHtml(m.error_cooldown_until || "-")}</div>
             </td>
             <td>${m.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
             <td>
@@ -659,6 +772,9 @@
       }
 
       async function openMappingEditor(mappingId, act, el) {
+        if (act === "viewErrors") {
+          return openErrorModalByMappingId(mappingId);
+        }
         if (act === "manualOpen") {
           return manualOpenWindow(mappingId, el);
         }
@@ -775,6 +891,7 @@
         document.getElementById("mapEditRemain").value = String(m.remaining_quota ?? 0);
         document.getElementById("mapEditConsecutive").value = String(m.consecutive_errors ?? 0);
         document.getElementById("mapEditCooldown").value = m.cooldown_until || "";
+        document.getElementById("mapEditErrorCooldown").value = m.error_cooldown_until || "";
         document.getElementById("mapEditEnabled").checked = !!m.enabled;
         mappingEditModal.show();
       }
@@ -787,6 +904,7 @@
             remaining_quota: parseInt(document.getElementById("mapEditRemain").value, 10) || 0,
             consecutive_errors: parseInt(document.getElementById("mapEditConsecutive").value, 10) || 0,
             cooldown_until: (document.getElementById("mapEditCooldown").value || "").trim(),
+            error_cooldown_until: (document.getElementById("mapEditErrorCooldown").value || "").trim(),
             enabled: document.getElementById("mapEditEnabled").checked,
           };
           const r = await adminFetch(`/api/admin/task-type-windows/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
@@ -921,7 +1039,7 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="6" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="9" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -935,7 +1053,7 @@
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="8" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="9" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));

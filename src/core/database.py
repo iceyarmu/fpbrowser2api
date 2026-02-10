@@ -324,6 +324,8 @@ class Database:
 
             # task_type_windows: 移除 max_concurrency（窗口层并发不再配置）
             if await self._table_exists(db, "task_type_windows"):
+                # 是否需要做一次性迁移：旧版 cooldown_until 曾用于“错误冷却”
+                need_cooldown_migration = False
                 if await self._column_exists(db, "task_type_windows", "max_concurrency"):
                     # SQLite 不支持 DROP COLUMN：采用“建新表 -> 拷贝 -> 替换”的方式迁移
                     await db.execute("PRAGMA foreign_keys=OFF")
@@ -372,6 +374,8 @@ class Database:
                     await db.execute("ALTER TABLE task_type_windows_new RENAME TO task_type_windows")
                     await db.execute("COMMIT")
                     await db.execute("PRAGMA foreign_keys=ON")
+                    # 发生过旧表重建：需要进行一次性 cooldown 字段迁移
+                    need_cooldown_migration = True
 
                 # Sora 扩展字段（余额/邀请码）
                 columns_to_add = [
@@ -384,10 +388,16 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_type_windows", col_name):
                         await db.execute(f"ALTER TABLE task_type_windows ADD COLUMN {col_name} {col_type}")
+                        if col_name == "error_cooldown_until":
+                            # 新增 error_cooldown_until 列：需要进行一次性 cooldown 字段迁移
+                            need_cooldown_migration = True
 
                 # 迁移：旧版 cooldown_until 曾用于“错误冷却”，为避免与“额度重置时间点”混用，
-                # 将其复制到 error_cooldown_until，并清空 cooldown_until（后续由 nf/check 回写）。
-                if await self._column_exists(db, "task_type_windows", "error_cooldown_until"):
+                # 将其复制到 error_cooldown_until，并清空 cooldown_until。
+                #
+                # 注意：该迁移必须是“一次性的”。新版中 cooldown_until 用于表示“额度重置时间点”
+                # （来自 nf/check 的 now + access_resets_in_seconds），不能在每次 ensure_schema 时反复清空。
+                if need_cooldown_migration and await self._column_exists(db, "task_type_windows", "error_cooldown_until"):
                     try:
                         await db.execute(
                             """
@@ -1127,6 +1137,7 @@ class Database:
         self,
         task_type_code: Optional[str] = None,
         status: Optional[str] = None,
+        window_pk: Optional[int] = None,
         q: Optional[str] = None,
     ) -> int:
         where: List[str] = ["1=1"]
@@ -1138,6 +1149,9 @@ class Database:
         if status:
             where.append("status = ?")
             params.append(status.strip())
+        if window_pk is not None:
+            where.append("window_pk = ?")
+            params.append(int(window_pk))
         if q:
             qq = f"%{q.strip()}%"
             where.append("(task_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
@@ -1157,6 +1171,7 @@ class Database:
         offset: int = 0,
         task_type_code: Optional[str] = None,
         status: Optional[str] = None,
+        window_pk: Optional[int] = None,
         q: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         lim = max(1, min(200, int(limit or 50)))
@@ -1166,14 +1181,17 @@ class Database:
         params: List[Any] = []
 
         if task_type_code:
-            where.append("task_type_code = ?")
+            where.append("t.task_type_code = ?")
             params.append(task_type_code.strip())
         if status:
-            where.append("status = ?")
+            where.append("t.status = ?")
             params.append(status.strip())
+        if window_pk is not None:
+            where.append("t.window_pk = ?")
+            params.append(int(window_pk))
         if q:
             qq = f"%{q.strip()}%"
-            where.append("(task_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
+            where.append("(t.task_id LIKE ? OR t.prompt LIKE ? OR t.error_message LIKE ?)")
             params.extend([qq, qq, qq])
 
         params.extend([lim, off])
@@ -1183,14 +1201,18 @@ class Database:
             cur = await db.execute(
                 f"""
                 SELECT
-                  task_id,
-                  task_type_code,
-                  status,
-                  error_message,
-                  created_at
-                FROM tasks
+                  t.task_id,
+                  t.task_type_code,
+                  t.status,
+                  t.window_pk,
+                  w.platform_account AS window_account,
+                  t.error_message,
+                  t.result_json,
+                  t.created_at
+                FROM tasks t
+                LEFT JOIN windows w ON w.id = t.window_pk
                 WHERE {' AND '.join(where)}
-                ORDER BY id DESC
+                ORDER BY t.id DESC
                 LIMIT ? OFFSET ?
                 """,
                 params,

@@ -118,6 +118,7 @@ class UpdateTaskTypeWindowRequest(BaseModel):
     daily_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     remaining_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     cooldown_until: Optional[str] = None  # ISO or empty
+    error_cooldown_until: Optional[str] = None  # ISO or empty
     total_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
     consecutive_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
 
@@ -694,6 +695,7 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
         daily_quota=req.daily_quota,
         remaining_quota=req.remaining_quota,
         cooldown_until=req.cooldown_until,
+        error_cooldown_until=req.error_cooldown_until,
         total_errors=req.total_errors,
         consecutive_errors=req.consecutive_errors,
     )
@@ -707,6 +709,7 @@ async def list_tasks(
     offset: int = 0,
     task_type_code: Optional[str] = None,
     status: Optional[str] = None,
+    window_pk: Optional[int] = None,
     q: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
@@ -715,8 +718,8 @@ async def list_tasks(
 
     lim = max(1, min(200, int(limit or 50)))
     off = max(0, int(offset or 0))
-    total = await db.count_tasks(task_type_code=task_type_code, status=status, q=q)
-    items = await db.list_tasks(limit=lim, offset=off, task_type_code=task_type_code, status=status, q=q)
+    total = await db.count_tasks(task_type_code=task_type_code, status=status, window_pk=window_pk, q=q)
+    items = await db.list_tasks(limit=lim, offset=off, task_type_code=task_type_code, status=status, window_pk=window_pk, q=q)
     return {"success": True, "total": total, "limit": lim, "offset": off, "items": items}
 
 

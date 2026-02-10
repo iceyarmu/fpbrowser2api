@@ -94,12 +94,16 @@
       const LS_KEYS = {
         testTaskType: `${LS_PREFIX}test.task_type_code`,
         testPrompt: `${LS_PREFIX}test.prompt`,
+        testLastTaskId: `${LS_PREFIX}test.last_task_id`,
       };
       function lsGet(key) {
         try { return localStorage.getItem(key); } catch { return null; }
       }
       function lsSet(key, val) {
         try { localStorage.setItem(key, val ?? ""); } catch {}
+      }
+      function lsDel(key) {
+        try { localStorage.removeItem(key); } catch {}
       }
 
       let apiKey = null;
@@ -134,6 +138,30 @@
         bar.textContent = `${v}%`;
       }
 
+      function renderTaskSnapshot(taskId, d) {
+        document.getElementById("taskId").textContent = taskId || "-";
+        document.getElementById("status").textContent = d?.status ?? "-";
+        setProgress(d?.progress || 0);
+        document.getElementById("result").textContent = d ? JSON.stringify(d, null, 2) : "";
+      }
+
+      async function fetchAndRenderTask(taskId, { silent = true } = {}) {
+        if (!apiKey) return null;
+        if (!taskId) return null;
+        try {
+          const r = await fetch(`/v1/tasks/${encodeURIComponent(taskId)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "查询失败");
+          renderTaskSnapshot(taskId, d);
+          return d;
+        } catch (e) {
+          if (!silent) toast(e.message, "error");
+          // 如果 task_id 无效/被删除，避免每次切回页面都报错刷屏
+          renderTaskSnapshot(taskId, { status: "unknown", progress: 0, error: e.message });
+          return null;
+        }
+      }
+
       async function submit() {
         try {
           if (!apiKey) throw new Error("API Key 未加载");
@@ -160,6 +188,7 @@
           document.getElementById("status").textContent = "queued";
           document.getElementById("result").textContent = "";
           setProgress(0);
+          lsSet(LS_KEYS.testLastTaskId, d.task_id);
           startPoll(d.task_id);
         } catch (e) {
           toast(e.message, "error");
@@ -175,12 +204,8 @@
         stopPoll();
         pollTimer = setInterval(async () => {
           try {
-            const r = await fetch(`/v1/tasks/${taskId}`, { headers: { Authorization: `Bearer ${apiKey}` } });
-            const d = await r.json();
-            if (!r.ok) throw new Error(d.detail || "查询失败");
-            document.getElementById("status").textContent = d.status;
-            setProgress(d.progress || 0);
-            document.getElementById("result").textContent = JSON.stringify(d, null, 2);
+            const d = await fetchAndRenderTask(taskId, { silent: true });
+            if (!d) return;
             if (d.status === "completed" || d.status === "failed") {
               stopPoll();
             }
@@ -205,6 +230,34 @@
 
         await loadApiKey();
         await loadTaskTypes();
+
+        // 恢复上次 task_id，并自动查询进度（切回页面也会刷新）
+        const lastTaskId = (lsGet(LS_KEYS.testLastTaskId) || "").trim();
+        if (lastTaskId) {
+          document.getElementById("taskId").textContent = lastTaskId;
+          const d = await fetchAndRenderTask(lastTaskId, { silent: true });
+          if (d && d.status !== "completed" && d.status !== "failed") {
+            startPoll(lastTaskId);
+          }
+        }
+
+        async function refreshIfNeeded() {
+          const tid = (lsGet(LS_KEYS.testLastTaskId) || "").trim();
+          if (!tid) return;
+          // 如果正在轮询就不额外触发；否则切回时查询一次并按需继续轮询
+          const d = await fetchAndRenderTask(tid, { silent: true });
+          if (d && (d.status !== "completed" && d.status !== "failed") && !pollTimer) {
+            startPoll(tid);
+          }
+          if (d && (d.status === "completed" || d.status === "failed")) {
+            stopPoll();
+          }
+        }
+
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) refreshIfNeeded();
+        });
+        window.addEventListener("focus", () => refreshIfNeeded());
       }
       init();
     </script>

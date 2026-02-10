@@ -139,7 +139,7 @@ class TaskService:
         candidates = await self.db.list_available_windows_for_pick(task_type_code=task_type_code, limit=80)
         if not candidates:
             return None
-
+        
         async with self._mapping_inflight_lock:
             inflight_snapshot = dict(self._mapping_inflight)
 
