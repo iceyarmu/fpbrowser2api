@@ -95,7 +95,7 @@ class FPBrowserClient:
         force_open: bool = False,
         headless: bool = False,
     ) -> Dict[str, Any]:
-        """打开指纹浏览器窗口，并返回 Selenium 连接信息（debuggerAddress/driver）。
+        """打开指纹浏览器窗口，并返回自动化连接信息（主要是 CDP endpoint：data.http / data.ws）。
 
         约定：
         - 对于 RoxyBrowser：space_id = workspaceId（纯数字），window_key = dirId
@@ -178,7 +178,6 @@ class FPBrowserClient:
         async with self._client() as client:
             headers = self._roxy_headers(token)
             payload = data or {}
-            print(f"url: {url}, headers: {headers}, data: {payload}")
 
             try:
                 req_coro = client.post(url, headers=headers, json=payload)
@@ -197,7 +196,6 @@ class FPBrowserClient:
                 body_text = resp.text
             except Exception:
                 body_text = ""
-            print(f"status: {resp.status_code}, body: {(body_text or '')[:500]}")
 
             resp.raise_for_status()
 

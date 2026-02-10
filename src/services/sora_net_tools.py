@@ -1,7 +1,7 @@
 """
 从 `sora2api/sora_net_tools.py` 移植而来。
 
-用途：提供 Selenium performance log / CDP 的“抓包”工具方法。
+用途：提供“旧 Selenium(performance log/CDP) 方案”的抓包工具方法。
 本次“同步窗口”功能本身不依赖该文件，但按你的要求一并迁移到 `fpbrowser2api/src/services/`，
 方便后续把“窗口打开后的自动化请求抓取/调试”能力接入任务执行器。
 """

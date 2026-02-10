@@ -1,6 +1,6 @@
 """任务执行器（当前先实现“可运行的模拟执行”）。
 
-你后续要接入真实自动化（例如 Selenium/Playwright + 指纹浏览器窗口启动）时，
+你后续要接入真实自动化（例如 Playwright + 指纹浏览器窗口启动）时，
 只需要在这里把 `simulate_*` 替换成真实执行逻辑，并持续调用 `progress_cb` 更新进度即可。
 """
 
@@ -11,12 +11,11 @@ import json
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from .fp_browser_client import FPBrowserClient
-from .sora_net_tools import sniff_get, sniff_post
 
 
 ProgressCB = Callable[[int, Optional[Dict[str, Any]]], Awaitable[None]]
@@ -74,80 +73,64 @@ def _safe_trim(s: Optional[str], max_len: int = 300) -> str:
     return s if len(s) <= max_len else s[:max_len] + "...(truncated)"
 
 
-def _element_text_content(driver, el) -> str:
-    """尽量拿到元素完整文本（包含不可见子节点的 textContent）。"""
+def _append_log(log_file: Path, s: str) -> None:
     try:
-        t = driver.execute_script("return arguments[0].textContent || '';", el)
-        return (t or "").strip()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(s)
+            if not s.endswith("\n"):
+                f.write("\n")
     except Exception:
-        return (getattr(el, "text", "") or "").strip()
+        pass
 
 
-def _find_button_by_regex(driver, pattern: re.Pattern) -> Optional[object]:
-    """在页面所有 button 中查找文本命中 pattern 的按钮。匹配源：textContent + aria-label + title + span。"""
-    try:
-        from selenium.webdriver.common.by import By  # type: ignore
-    except Exception:
-        return None
-
-    buttons = driver.find_elements(By.TAG_NAME, "button")
-    for b in buttons:
-        try:
-            text_content = _element_text_content(driver, b)
-            aria = (b.get_attribute("aria-label") or "").strip()
-            title = (b.get_attribute("title") or "").strip()
-            hay = " ".join([text_content, aria, title]).strip()
-            if hay and pattern.search(hay):
-                return b
-
-            spans = b.find_elements(By.TAG_NAME, "span")
-            for sp in spans:
-                sp_txt = _element_text_content(driver, sp)
-                if sp_txt and pattern.search(sp_txt):
-                    return b
-        except Exception:
-            continue
-    return None
+def _normalize_cdp_endpoint(endpoint: str) -> str:
+    """将指纹浏览器返回的 http/ws 调试地址规范化为 Playwright 可连接的 endpoint。"""
+    s = (endpoint or "").strip()
+    if not s:
+        return ""
+    if s.startswith(("http://", "https://", "ws://", "wss://")):
+        return s
+    # 常见返回：127.0.0.1:9222
+    return "http://" + s
 
 
-def _debug_dump_span_and_button_texts(driver, *, max_items: int = 40) -> None:
+async def _debug_dump_span_and_button_texts_pw(page, *, max_items: int = 40) -> None:
     """找不到按钮时，输出页面上部分 span/button 文本，帮助判断文案/语言/登录态。"""
     try:
-        from selenium.webdriver.common.by import By  # type: ignore
+        spans = await page.eval_on_selector_all(
+            "span",
+            """(els, maxItems) => els
+              .map(e => (e.textContent || '').trim())
+              .filter(t => t)
+              .slice(0, maxItems)""",
+            max_items,
+        )
+        buttons = await page.eval_on_selector_all(
+            "button",
+            """(els, maxItems) => els
+              .map(e => {
+                const t = (e.textContent || '').trim();
+                const aria = (e.getAttribute('aria-label') || '').trim();
+                const title = (e.getAttribute('title') || '').trim();
+                return [t, aria, title].filter(Boolean).join(' / ');
+              })
+              .filter(t => t)
+              .slice(0, maxItems)""",
+            max_items,
+        )
     except Exception:
         return
 
-    print("=== 调试：页面 span 文本采样 ===")
-    spans = driver.find_elements(By.TAG_NAME, "span")
-    shown = 0
-    for sp in spans:
-        if shown >= max_items:
-            break
-        try:
-            txt = _element_text_content(driver, sp)
-            if not txt:
-                continue
-            print("-", _safe_trim(txt, 120))
-            shown += 1
-        except Exception:
-            continue
-
-    print("=== 调试：页面 button 文本采样 ===")
-    buttons = driver.find_elements(By.TAG_NAME, "button")
-    shown = 0
-    for b in buttons:
-        if shown >= max_items:
-            break
-        try:
-            txt = _element_text_content(driver, b)
-            aria = (b.get_attribute("aria-label") or "").strip()
-            if not txt and not aria:
-                continue
-            line = " / ".join([x for x in [_safe_trim(txt, 120), _safe_trim(aria, 120)] if x])
-            print("-", line)
-            shown += 1
-        except Exception:
-            continue
+    try:
+        print("=== 调试：页面 span 文本采样 ===")
+        for t in spans or []:
+            print("-", _safe_trim(str(t), 120))
+        print("=== 调试：页面 button 文本采样 ===")
+        for t in buttons or []:
+            print("-", _safe_trim(str(t), 160))
+    except Exception:
+        return
 
 
 def _normalize_progress(v: Any) -> Optional[float]:
@@ -179,23 +162,778 @@ def _extract_task_obj(payload: Any, task_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _init_selenium_driver(*, debugger_address: str, driver_path: str):
-    """在单线程 executor 内创建 driver（必须在同一线程里后续使用）。"""
-    from selenium import webdriver  # type: ignore
-    from selenium.webdriver.chrome.service import Service  # type: ignore
-
-    chrome_options = webdriver.ChromeOptions()
-    chrome_options.add_experimental_option("debuggerAddress", debugger_address)
-    chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-
-    service = Service(driver_path)
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
-
-
-def _sora_create_task_sync(
+async def _sniff_http_transaction_pw(
+    page,
     *,
-    driver,
+    url_regex: str,
+    method: Optional[str] = None,
+    timeout_seconds: float = 15.0,
+    log_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Playwright 轻量抓包：等待命中 url_regex 的请求响应，并返回 {seen,url,method,status,headers,response_body,log_file}。"""
+    url_pat = re.compile(url_regex, flags=re.IGNORECASE)
+    method_norm = method.upper().strip() if method else None
+    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parent / "logs.txt")
+
+    result: Dict[str, Any] = {
+        "seen": False,
+        "request_id": None,  # Playwright 不暴露 requestId，保留字段以兼容旧结构
+        "url": None,
+        "method": None,
+        "status": None,
+        "response_body": None,
+        "headers": None,
+        "log_file": str(log_file),
+    }
+
+    _append_log(log_file, "\n" + "=" * 100)
+    _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] sniff_start url_regex={url_regex!r} method={method_norm!r}")
+
+    def _pred(resp) -> bool:
+        try:
+            if not url_pat.search(str(resp.url or "")):
+                return False
+            m = str(resp.request.method or "").upper().strip()
+            if method_norm and m != method_norm:
+                return False
+            return True
+        except Exception:
+            return False
+
+    try:
+        resp = await page.wait_for_response(_pred, timeout=max(1.0, float(timeout_seconds)) * 1000.0)
+    except Exception:
+        _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] sniff_end (timeout/no match)")
+        return result
+
+    try:
+        result["seen"] = True
+        result["url"] = str(getattr(resp, "url", "") or "")
+        result["method"] = str(getattr(resp.request, "method", "") or "").upper().strip()
+        try:
+            result["status"] = int(getattr(resp, "status", None))
+        except Exception:
+            result["status"] = None
+        try:
+            result["headers"] = dict(resp.headers or {})
+        except Exception:
+            result["headers"] = None
+
+        _append_log(log_file, "-" * 100)
+        _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] response url={result['url']} status={result['status']} method={result['method']}")
+        try:
+            pd = getattr(resp.request, "post_data", None)
+            if pd:
+                _append_log(log_file, "postData:")
+                _append_log(log_file, str(pd))
+        except Exception:
+            pass
+
+        body_text = ""
+        try:
+            body_text = await resp.text()
+        except Exception:
+            try:
+                b = await resp.body()
+                body_text = b.decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+        result["response_body"] = body_text
+        _append_log(log_file, "responseBody:")
+        _append_log(log_file, str(body_text))
+    finally:
+        _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] sniff_end")
+
+    return result
+
+
+async def _response_to_tx_pw(resp, *, log_path: Optional[str]) -> Dict[str, Any]:
+    """将 Playwright Response 转成旧 sniff_* 兼容结构，并写入日志文件。"""
+    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parent / "logs.txt")
+    tx: Dict[str, Any] = {
+        "seen": True,
+        "request_id": None,
+        "url": None,
+        "method": None,
+        "status": None,
+        "response_body": None,
+        "headers": None,
+        "log_file": str(log_file),
+    }
+
+    try:
+        tx["url"] = str(getattr(resp, "url", "") or "")
+    except Exception:
+        tx["url"] = None
+
+    try:
+        tx["method"] = str(getattr(resp.request, "method", "") or "").upper().strip()
+    except Exception:
+        tx["method"] = None
+
+    try:
+        tx["status"] = int(getattr(resp, "status", None))
+    except Exception:
+        tx["status"] = None
+
+    try:
+        tx["headers"] = dict(resp.headers or {})
+    except Exception:
+        tx["headers"] = None
+
+    body_text = ""
+    try:
+        body_text = await resp.text()
+    except Exception:
+        try:
+            b = await resp.body()
+            body_text = b.decode("utf-8", errors="replace")
+        except Exception:
+            body_text = ""
+
+    tx["response_body"] = body_text
+
+    _append_log(log_file, "\n" + "=" * 100)
+    _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] response")
+    _append_log(log_file, f"url: {tx['url']}")
+    _append_log(log_file, f"method: {tx['method']}")
+    _append_log(log_file, f"status: {tx['status']}")
+    try:
+        pd = getattr(resp.request, "post_data", None)
+        if pd:
+            _append_log(log_file, "postData:")
+            _append_log(log_file, str(pd))
+    except Exception:
+        pass
+    _append_log(log_file, "responseBody:")
+    _append_log(log_file, str(body_text))
+    _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] end")
+
+    return tx
+
+
+async def _pw_pick_first_visible(loc, *, max_items: int = 12):
+    """从 locator 列表中挑选第一个可见元素。返回 locator.nth(i) 或 None。"""
+    try:
+        cnt = await loc.count()
+    except Exception:
+        cnt = 0
+    n = max(0, min(int(cnt or 0), int(max_items)))
+    for i in range(n):
+        it = loc.nth(i)
+        try:
+            if await it.is_visible():
+                return it
+        except Exception:
+            continue
+    return None
+
+
+async def _pw_get_editable_value(el) -> str:
+    """尽量读取输入控件当前值（textarea/input/contenteditable/role=textbox）。"""
+    # textarea/input
+    try:
+        v = await el.input_value()
+        if v is not None:
+            return str(v)
+    except Exception:
+        pass
+    # 通用：value / innerText / textContent
+    try:
+        v = await el.evaluate(
+            """(e) => {
+              try {
+                if (typeof e.value === 'string') return e.value;
+              } catch (err) {}
+              try {
+                if (e.isContentEditable) return (e.innerText || '');
+              } catch (err) {}
+              return (e.textContent || '');
+            }"""
+        )
+        return str(v or "")
+    except Exception:
+        return ""
+
+
+def _pw_list_frames(page) -> list[Any]:
+    """安全获取 page.frames 列表（包含主 frame）。"""
+    try:
+        frames = list(getattr(page, "frames", []) or [])
+    except Exception:
+        frames = []
+    # Playwright 的 page.frames 通常包含 main_frame；这里兜底确保至少有一个可用对象
+    if not frames:
+        try:
+            mf = getattr(page, "main_frame", None)
+            if mf is not None:
+                frames = [mf]
+        except Exception:
+            frames = []
+    return frames
+
+
+async def _pw_debug_dump_page_overview(page, *, log_file: Path, max_text: int = 600) -> None:
+    """当关键元素找不到时，写入页面/frames 的概览到日志，辅助判断登录态/重定向/拦截页。"""
+    try:
+        url = str(getattr(page, "url", "") or "")
+    except Exception:
+        url = ""
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+    _append_log(log_file, f"[sora][debug] page url={_safe_trim(url, 240)!r} title={_safe_trim(title, 240)!r}")
+
+    frames = _pw_list_frames(page)
+    _append_log(log_file, f"[sora][debug] frames count={len(frames)}")
+    for idx, fr in enumerate(frames[:8]):
+        try:
+            fr_url = str(getattr(fr, "url", "") or "")
+        except Exception:
+            fr_url = ""
+        _append_log(log_file, f"[sora][debug] frame[{idx}] url={_safe_trim(fr_url, 260)!r}")
+        # body 文本采样（可能跨域/不可访问，失败则跳过）
+        try:
+            t = await fr.locator("body").inner_text(timeout=1500)
+            t = (t or "").strip()
+            if t:
+                _append_log(log_file, f"[sora][debug] frame[{idx}] body_text_sample={_safe_trim(t, max_text)!r}")
+        except Exception:
+            pass
+
+
+async def _pw_find_prompt_candidate_in_frame(fr) -> tuple[Optional[str], Any]:
+    """在指定 frame 内寻找可见的 prompt 输入控件。返回 (kind, locator) 或 (None, None)。"""
+    # 候选输入控件：Sora UI 可能是 textarea，也可能是 contenteditable/role=textbox/input
+    candidates: list[tuple[str, Any]] = [
+        ("textarea", fr.locator("textarea")),
+        ('role=textbox', fr.get_by_role("textbox")),
+        ('div[role="textbox"]', fr.locator('div[role="textbox"]')),
+        ('[contenteditable="true"]', fr.locator('[contenteditable="true"]')),
+        # 兜底：普通 input（有些 UI 会用 input+自动扩展）
+        ('input[type="text/search"]', fr.locator('input[type="text"], input[type="search"], input:not([type])')),
+        # 兜底：通过 placeholder/aria-label/data-testid 关键词匹配
+        (
+            "prompt_hint_attrs",
+            fr.locator(
+                '[placeholder*="Describe" i], [placeholder*="Prompt" i], [placeholder*="描述" i], [placeholder*="提示" i], '
+                '[aria-label*="Describe" i], [aria-label*="Prompt" i], [aria-label*="描述" i], '
+                '[data-testid*="prompt" i], [name*="prompt" i]'
+            ),
+        ),
+    ]
+
+    for k, loc in candidates:
+        el = await _pw_pick_first_visible(loc)
+        if el is not None:
+            return k, el
+    return None, None
+
+
+def _pw_is_probably_navigable_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    if not u:
+        return True
+    if u.startswith(("http://", "https://", "about:blank")):
+        return True
+    # 不建议用这些页面做自动化入口页（通常无法 goto 或 DOM 不符合预期）
+    if u.startswith(("chrome://", "edge://", "chrome-extension://", "moz-extension://", "devtools://", "view-source:")):
+        return False
+    return False
+
+
+async def _pw_pick_working_page_from_context(ctx) -> Any:
+    """从 context.pages 中挑一个“可用页面”；否则创建新页。"""
+    try:
+        pages = list(getattr(ctx, "pages", []) or [])
+    except Exception:
+        pages = []
+
+    best = None
+    best_score = -10
+    for p in pages:
+        try:
+            u = str(getattr(p, "url", "") or "")
+        except Exception:
+            u = ""
+        if not _pw_is_probably_navigable_url(u):
+            continue
+        score = 0
+        if u.startswith(("http://", "https://")):
+            score += 10
+        if u.startswith("about:blank") or not u:
+            score += 3
+        # 尽量避开“空白但已打开很久”的页（无法可靠判断，这里保守给小分）
+        if score > best_score:
+            best_score = score
+            best = p
+
+    if best is not None:
+        return best
+    return await ctx.new_page()
+
+
+async def _sora_fill_prompt_pw(page, *, prompt: str, log_file: Path) -> Dict[str, Any]:
+    """多策略写入 prompt，并做读回校验；返回调试信息 dict。"""
+    info: Dict[str, Any] = {
+        "ok": False,
+        "kind": None,
+        "value_len": 0,
+        "value_sample": "",
+        "frame_url": None,
+        "frame_idx": None,
+    }
+
+    # 先确保 body 出现（有些页面 domcontentloaded 但 body/主 UI 还没挂载）
+    try:
+        await page.wait_for_selector("body", timeout=20_000)
+    except Exception:
+        pass
+
+    # 在所有 frames 中找输入框（包含 main frame + iframes）
+    # 注意：Sora 前端可能需要一点时间渲染，因此轮询等待一段时间
+    el = None
+    kind = None
+    fr_url = None
+    fr_idx: Optional[int] = None
+    deadline = time.time() + 25.0
+    while time.time() < deadline and el is None:
+        frames = _pw_list_frames(page)
+        for i, fr in enumerate(frames):
+            k, candidate = await _pw_find_prompt_candidate_in_frame(fr)
+            if candidate is not None:
+                el = candidate
+                kind = k
+                try:
+                    fr_url = str(getattr(fr, "url", "") or "")
+                except Exception:
+                    fr_url = None
+                fr_idx = i
+                break
+        if el is None:
+            # 给 SPA 渲染一点时间；同时尽量等一次 networkidle（失败则忽略）
+            try:
+                await page.wait_for_load_state("networkidle", timeout=1500)
+            except Exception:
+                pass
+            await page.wait_for_timeout(350)
+
+    if el is None:
+        await _debug_dump_span_and_button_texts_pw(page, max_items=40)
+        await _pw_debug_dump_page_overview(page, log_file=log_file)
+        # 额外：截图与 HTML 片段（帮助判断是否登录页/拦截页/空白页/被重定向）
+        try:
+            png = log_file.with_suffix(".prompt_not_found.png")
+            await page.screenshot(path=str(png), full_page=True)
+            _append_log(log_file, f"[sora][debug] screenshot_saved={str(png)!r}")
+        except Exception as e:
+            _append_log(log_file, f"[sora][debug] screenshot_failed={e}")
+        try:
+            html = await page.content()
+            _append_log(log_file, f"[sora][debug] html_sample={_safe_trim(html, 1200)!r}")
+        except Exception as e:
+            _append_log(log_file, f"[sora][debug] page.content failed: {e}")
+
+        # 这类错误大概率是登录态/权限/站点变化/拦截页导致，不应计入窗口连续错误
+        raise NonPenalizedTaskError("未找到可用的 prompt 输入框（textarea/textbox/contenteditable/input/placeholder 均未命中）")
+
+    # 尝试 fill（优先），失败再退回键盘输入
+    async def _verify() -> bool:
+        cur = (await _pw_get_editable_value(el)).strip()
+        info["value_len"] = len(cur or "")
+        info["value_sample"] = _safe_trim(cur, 120)
+        return (cur == (prompt or "").strip()) and bool(cur)
+
+    try:
+        await el.scroll_into_view_if_needed()
+    except Exception:
+        pass
+    try:
+        await el.click(timeout=10_000)
+    except Exception:
+        pass
+
+    filled = False
+    try:
+        # 尽量先清空再写入
+        try:
+            await el.fill("")
+        except Exception:
+            pass
+        await el.fill(prompt)
+        filled = True
+    except Exception:
+        filled = False
+
+    if not filled or not await _verify():
+        # 键盘兜底：Ctrl+A Backspace + insert_text
+        try:
+            await el.click(timeout=10_000)
+        except Exception:
+            pass
+        try:
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+        except Exception:
+            pass
+        try:
+            # insert_text 比 type 更像“粘贴”，更稳定且更快
+            await page.keyboard.insert_text(prompt)
+        except Exception:
+            # 最后再退到 type
+            try:
+                await page.keyboard.type(prompt, delay=5)
+            except Exception:
+                pass
+
+    # 触发一次 input/change 事件（部分 SPA 需要）
+    try:
+        await el.dispatch_event("input")
+    except Exception:
+        pass
+    try:
+        await el.dispatch_event("change")
+    except Exception:
+        pass
+
+    # 给前端一点时间更新按钮状态
+    await page.wait_for_timeout(300)
+
+    ok = await _verify()
+    info["ok"] = bool(ok)
+    info["kind"] = kind
+    info["frame_url"] = fr_url
+    info["frame_idx"] = fr_idx
+    _append_log(
+        log_file,
+        f"[sora] prompt_fill kind={kind!r} frame_idx={fr_idx!r} frame_url={_safe_trim(str(fr_url or ''), 220)!r} ok={info['ok']} "
+        f"value_len={info['value_len']} sample={info['value_sample']!r}",
+    )
+    return info
+
+
+async def _pw_is_actionable_button(btn) -> bool:
+    try:
+        if not await btn.is_visible():
+            return False
+    except Exception:
+        return False
+    # is_enabled 对非原生 button 有时会抛异常；所以多策略判断
+    try:
+        if await btn.is_enabled():
+            return True
+    except Exception:
+        pass
+    try:
+        aria_disabled = await btn.get_attribute("aria-disabled")
+        if str(aria_disabled or "").strip().lower() in ("true", "1", "yes"):
+            return False
+    except Exception:
+        pass
+    try:
+        disabled = await btn.get_attribute("disabled")
+        if disabled is not None:
+            return False
+    except Exception:
+        pass
+    # 兜底：可见即认为可点（交由 click 处理）
+    return True
+
+
+async def _pw_wait_button_actionable(btn, *, timeout_seconds: float, log_file: Path) -> None:
+    deadline = time.time() + max(0.5, float(timeout_seconds))
+    last_reason = ""
+    while time.time() < deadline:
+        try:
+            await btn.wait_for(state="visible", timeout=2_000)
+        except Exception:
+            last_reason = "not_visible"
+            await asyncio.sleep(0.2)
+            continue
+        try:
+            if await _pw_is_actionable_button(btn):
+                return
+            last_reason = "not_actionable"
+        except Exception:
+            last_reason = "check_failed"
+        await asyncio.sleep(0.2)
+    _append_log(log_file, f"[sora] wait_button_actionable timeout reason={last_reason}")
+
+
+async def _pw_click_button_robust(page, btn, *, log_file: Path) -> None:
+    """多策略点击（普通→force→dispatch_event→js click）。"""
+    try:
+        await btn.scroll_into_view_if_needed()
+    except Exception:
+        pass
+    try:
+        await btn.click(timeout=10_000)
+        _append_log(log_file, "[sora] click: locator.click ok")
+        return
+    except Exception as e1:
+        _append_log(log_file, f"[sora] click: locator.click failed: {e1}")
+
+    try:
+        await btn.click(timeout=10_000, force=True)
+        _append_log(log_file, "[sora] click: locator.click(force) ok")
+        return
+    except Exception as e2:
+        _append_log(log_file, f"[sora] click: locator.click(force) failed: {e2}")
+
+    try:
+        await btn.dispatch_event("click")
+        _append_log(log_file, "[sora] click: dispatch_event ok")
+        return
+    except Exception as e3:
+        _append_log(log_file, f"[sora] click: dispatch_event failed: {e3}")
+
+    # 坐标点击兜底：某些复杂 UI 覆盖层会导致 locator.click 行为异常
+    try:
+        box = await btn.bounding_box()
+    except Exception:
+        box = None
+    if box and box.get("width") and box.get("height"):
+        try:
+            x = float(box["x"]) + float(box["width"]) / 2.0
+            y = float(box["y"]) + float(box["height"]) / 2.0
+            await page.mouse.click(x, y, delay=50)
+            _append_log(log_file, f"[sora] click: mouse.click center=({x:.1f},{y:.1f}) ok")
+            return
+        except Exception as e5:
+            _append_log(log_file, f"[sora] click: mouse.click failed: {e5}")
+
+    # 最后：JS click（需要 elementHandle）
+    try:
+        h = await btn.element_handle()
+    except Exception:
+        h = None
+    if h is not None:
+        try:
+            await page.evaluate("(el) => el.click()", h)
+            _append_log(log_file, "[sora] click: js el.click() ok")
+            return
+        except Exception as e4:
+            _append_log(log_file, f"[sora] click: js el.click() failed: {e4}")
+
+    raise RuntimeError("create 按钮点击失败（多策略点击均失败）")
+
+
+async def _pw_debug_dump_clickables_pw(page, *, log_file: Path, max_items: int = 60) -> None:
+    """把页面各 frame 中可疑 button/role=button 文本与属性写入日志（用于定位真实按钮文案/属性）。"""
+    frames = _pw_list_frames(page)
+    _append_log(log_file, f"[sora][debug] dump_clickables frames={len(frames)} max_items={max_items}")
+    for idx, fr in enumerate(frames[:10]):
+        try:
+            fr_url = str(getattr(fr, "url", "") or "")
+        except Exception:
+            fr_url = ""
+        _append_log(log_file, f"[sora][debug] frame[{idx}] url={_safe_trim(fr_url, 260)!r}")
+        try:
+            items = await fr.eval_on_selector_all(
+                "button, [role='button']",
+                """(els, maxItems) => {
+                  const out = [];
+                  for (const e of els) {
+                    if (out.length >= maxItems) break;
+                    try {
+                      const t = (e.textContent || '').trim();
+                      const aria = (e.getAttribute('aria-label') || '').trim();
+                      const title = (e.getAttribute('title') || '').trim();
+                      const tid = (e.getAttribute('data-testid') || '').trim();
+                      const dis = e.hasAttribute('disabled');
+                      const ariaDis = (e.getAttribute('aria-disabled') || '').trim();
+                      const tag = (e.tagName || '').toLowerCase();
+                      const typ = (e.getAttribute('type') || '').trim();
+                      const cls = (e.getAttribute('class') || '').trim();
+                      const s = [
+                        `tag=${tag}`,
+                        typ ? `type=${typ}` : '',
+                        t ? `text=${t}` : '',
+                        aria ? `aria=${aria}` : '',
+                        title ? `title=${title}` : '',
+                        tid ? `testid=${tid}` : '',
+                        dis ? 'disabled=true' : '',
+                        ariaDis ? `aria-disabled=${ariaDis}` : '',
+                        cls ? `class=${cls}` : '',
+                      ].filter(Boolean).join(' | ');
+                      if (s) out.push(s);
+                    } catch (err) {}
+                  }
+                  return out;
+                }""",
+                max_items,
+            )
+        except Exception:
+            items = []
+        for it in items or []:
+            _append_log(log_file, f"[sora][debug] - {_safe_trim(str(it), 500)}")
+
+
+async def _pw_focus_prompt_input_pw(page, *, log_file: Path) -> None:
+    """尽量把焦点放回 prompt 输入框，便于键盘提交。"""
+    frames = _pw_list_frames(page)
+    for fr in frames:
+        k, el = await _pw_find_prompt_candidate_in_frame(fr)
+        if el is None:
+            continue
+        try:
+            await el.scroll_into_view_if_needed()
+        except Exception:
+            pass
+        try:
+            await el.click(timeout=5_000)
+            _append_log(log_file, f"[sora] focus_prompt ok kind={k!r}")
+            return
+        except Exception:
+            continue
+    _append_log(log_file, "[sora] focus_prompt failed (no candidate clickable)")
+
+
+async def _pw_find_create_button_pw(
+    page,
+    *,
+    primary_regex: str,
+    log_file: Path,
+    timeout_seconds: float = 12.0,
+    prefer_frame_idx: Optional[int] = None,
+) -> Any:
+    """跨 frame 查找 create/submit 按钮。优先 primary_regex，其次常见兜底关键词。返回 locator 或 None。"""
+    deadline = time.time() + max(0.5, float(timeout_seconds))
+    # primary: 用户传入（例如 Create video）
+    try:
+        primary_pat = re.compile(primary_regex, flags=re.IGNORECASE)
+    except Exception:
+        primary_pat = re.compile(re.escape(str(primary_regex or "")), flags=re.IGNORECASE)
+
+    # fallback：常见文案（尽量不太激进）
+    fallback_pats = [
+        re.compile(r"^\s*Create\s+video\s*$", flags=re.IGNORECASE),
+        re.compile(r"\bCreate\b", flags=re.IGNORECASE),
+        re.compile(r"\bGenerate\b", flags=re.IGNORECASE),
+        re.compile(r"\bSend\b", flags=re.IGNORECASE),
+        re.compile(r"创建\s*视频|生成\s*视频|创建|生成|发送|提交", flags=re.IGNORECASE),
+    ]
+
+    # 常见 icon 按钮会放在 aria-label/title/testid 里
+    attr_css = [
+        # create / generate / send
+        "button[aria-label*='create' i], button[title*='create' i], button[data-testid*='create' i]",
+        "button[aria-label*='generate' i], button[title*='generate' i], button[data-testid*='generate' i]",
+        "button[aria-label*='send' i], button[title*='send' i], button[data-testid*='send' i]",
+        "[role='button'][aria-label*='create' i], [role='button'][title*='create' i], [role='button'][data-testid*='create' i]",
+        "[role='button'][aria-label*='send' i], [role='button'][title*='send' i], [role='button'][data-testid*='send' i]",
+        # 中文关键字
+        "button[aria-label*='生成' i], button[aria-label*='创建' i], button[aria-label*='发送' i]",
+        "button[title*='生成' i], button[title*='创建' i], button[title*='发送' i]",
+        "[role='button'][aria-label*='生成' i], [role='button'][aria-label*='创建' i], [role='button'][aria-label*='发送' i]",
+    ]
+
+    while time.time() < deadline:
+        frames = _pw_list_frames(page)
+        # 优先在 prompt 所在 frame 查找（更贴近真实提交按钮所在区域）
+        if prefer_frame_idx is not None:
+            try:
+                i = int(prefer_frame_idx)
+            except Exception:
+                i = -1
+            if 0 <= i < len(frames):
+                frames = [frames[i]] + [f for j, f in enumerate(frames) if j != i]
+        for fr in frames:
+            # 1) primary regex by role/name
+            try:
+                loc = fr.get_by_role("button", name=primary_pat)
+                el = await _pw_pick_first_visible(loc)
+                if el is not None:
+                    return el
+            except Exception:
+                pass
+            # 2) primary regex by text
+            try:
+                loc = fr.locator("button").filter(has_text=primary_pat)
+                el = await _pw_pick_first_visible(loc)
+                if el is not None:
+                    return el
+            except Exception:
+                pass
+
+            # 3) fallback patterns
+            for pat in fallback_pats:
+                try:
+                    loc = fr.get_by_role("button", name=pat)
+                    el = await _pw_pick_first_visible(loc)
+                    if el is not None:
+                        return el
+                except Exception:
+                    pass
+                try:
+                    loc = fr.locator("button").filter(has_text=pat)
+                    el = await _pw_pick_first_visible(loc)
+                    if el is not None:
+                        return el
+                except Exception:
+                    pass
+
+            # 4) attribute-based css (icon button)
+            for css in attr_css:
+                try:
+                    loc = fr.locator(css)
+                    el = await _pw_pick_first_visible(loc)
+                    if el is not None:
+                        return el
+                except Exception:
+                    pass
+
+        await page.wait_for_timeout(350)
+
+    _append_log(log_file, f"[sora] create_button not found within {timeout_seconds}s regex={primary_regex!r}")
+    return None
+
+
+async def _pw_log_recent_posts(page, *, seconds: float, log_file: Path) -> None:
+    """记录短时间内页面发出的所有 POST 请求 URL（用于判断是否真的触发了提交以及真实接口路径）。"""
+    secs = max(0.2, float(seconds))
+    seen: list[str] = []
+
+    def _on_request(req) -> None:
+        try:
+            m = str(getattr(req, "method", "") or "").upper().strip()
+            if m != "POST":
+                return
+            u = str(getattr(req, "url", "") or "")
+            if u:
+                seen.append(u)
+        except Exception:
+            return
+
+    try:
+        page.on("request", _on_request)
+    except Exception:
+        return
+    try:
+        await page.wait_for_timeout(int(secs * 1000))
+    finally:
+        try:
+            page.off("request", _on_request)
+        except Exception:
+            pass
+
+    if not seen:
+        _append_log(log_file, f"[sora][debug] recent_posts({secs:.1f}s): none")
+        return
+    # 去重保序
+    uniq: list[str] = []
+    for u in seen:
+        if u not in uniq:
+            uniq.append(u)
+    _append_log(log_file, f"[sora][debug] recent_posts({secs:.1f}s) count={len(uniq)}")
+    for u in uniq[:40]:
+        _append_log(log_file, f"[sora][debug] POST {u}")
+
+
+async def _sora_create_task_pw(
+    *,
+    page,
     prompt: str,
     target_url: str,
     create_button_text_regex: str,
@@ -204,67 +942,193 @@ def _sora_create_task_sync(
     monitor_log_path: Optional[str],
 ) -> Tuple[str, Dict[str, Any]]:
     """在页面上创建任务并抓取 POST /backend/nf/create 响应，返回 task_id。"""
-    from selenium.webdriver.common.by import By  # type: ignore
-    from selenium.webdriver.support.ui import WebDriverWait  # type: ignore
-    from selenium.webdriver.support import expected_conditions as EC  # type: ignore
-
-    wait = WebDriverWait(driver, 30)
-    driver.get(target_url)
+    log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+    await page.goto(target_url, wait_until="domcontentloaded")
     try:
-        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+        await page.wait_for_load_state("domcontentloaded", timeout=30_000)
     except Exception:
         pass
 
-    textarea = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "textarea")))
-    try:
-        if not textarea.is_displayed():
-            for el in driver.find_elements(By.CSS_SELECTOR, "textarea"):
-                if el.is_displayed():
-                    textarea = el
-                    break
-    except Exception as e:
-        pass
+    _append_log(log_file, "\n" + "=" * 100)
+    _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [sora] create_task start url={target_url!r}")
+    _append_log(log_file, f"[sora] monitor_seconds={monitor_seconds} monitor_url_regex={monitor_url_regex!r} create_btn_regex={create_button_text_regex!r}")
 
-    textarea.click()
-    try:
-        textarea.clear()
-    except Exception:
-        pass
-    textarea.send_keys(prompt)
-    time.sleep(2.0)
-
-    pattern = re.compile(create_button_text_regex, flags=re.IGNORECASE)
-    btn = None
-    try:
-        btn = wait.until(lambda d: _find_button_by_regex(d, pattern))
-    except Exception:
-        btn = _find_button_by_regex(driver, pattern)
-
-    if not btn:
-        _debug_dump_span_and_button_texts(driver, max_items=40)
-        raise RuntimeError(f"未找到创建按钮：regex={create_button_text_regex!r}")
-
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-    except Exception:
-        pass
-    try:
-        btn.click()
-    except Exception:
-        try:
-            driver.execute_script("arguments[0].click();", btn)
-        except Exception as e:
-            raise RuntimeError(f"按钮点击失败：{e}")
-
-    create_tx = sniff_post(
-        driver,
-        url_regex=monitor_url_regex,
-        timeout_seconds=monitor_seconds,
-        log_path=monitor_log_path,
+    prompt_info = await _sora_fill_prompt_pw(page, prompt=prompt, log_file=log_file)
+    if not bool(prompt_info.get("ok")):
+        # 没写进去就别点了，直接给更明确的错误（同时不计惩罚）
+        raise NonPenalizedTaskError(f"prompt 未成功写入输入框：{prompt_info}")
+    await asyncio.sleep(3)
+    btn0 = await _pw_find_create_button_pw(
+        page,
+        primary_regex=create_button_text_regex,
+        log_file=log_file,
+        timeout_seconds=15.0,
+        prefer_frame_idx=prompt_info.get("frame_idx"),
     )
-    if not create_tx.get("seen"):
-        # 这类错误多为登录态/权限/站点变化导致，通常不应计入窗口连续错误
-        raise NonPenalizedTaskError("未监控到匹配的 POST 请求（可能未登录/无权限/接口地址变化/按钮未真正触发）")
+    if btn0 is None:
+        # 先把页面可疑按钮都写入日志，方便你调整 regex/定位
+        await _pw_debug_dump_clickables_pw(page, log_file=log_file, max_items=80)
+        # 不立即失败：后面还会尝试键盘提交兜底
+    else:
+        try:
+            txt = await btn0.inner_text()
+        except Exception:
+            txt = ""
+        _append_log(log_file, f"[sora] create_button picked text={_safe_trim(txt, 120)!r}")
+        await _pw_wait_button_actionable(btn0, timeout_seconds=15.0, log_file=log_file)
+
+    # URL 匹配做更宽容的兜底：用户传入 regex 为主；若包含 backend/nf/create 字样则追加路径级匹配
+    url_pats = []
+    try:
+        url_pats.append(re.compile(monitor_url_regex, flags=re.IGNORECASE))
+    except Exception:
+        url_pats.append(re.compile(re.escape(str(monitor_url_regex or "")), flags=re.IGNORECASE))
+    try:
+        raw = str(monitor_url_regex or "").replace("\\", "")
+        if "backend/nf/create" in raw:
+            url_pats.append(re.compile(r"/backend/nf/create(\b|/|\?|$)", flags=re.IGNORECASE))
+    except Exception:
+        pass
+
+    def _pred(resp) -> bool:
+        try:
+            u = str(resp.url or "")
+            ok_url = False
+            for p in url_pats:
+                if p.search(u):
+                    ok_url = True
+                    break
+            if not ok_url:
+                return False
+            return str(resp.request.method or "").upper().strip() == "POST"
+        except Exception:
+            return False
+
+    def _pred_req(req) -> bool:
+        try:
+            u = str(getattr(req, "url", "") or "")
+            ok_url = False
+            for p in url_pats:
+                if p.search(u):
+                    ok_url = True
+                    break
+            if not ok_url:
+                return False
+            return str(getattr(req, "method", "") or "").upper().strip() == "POST"
+        except Exception:
+            return False
+
+    resp = None
+    # 触发策略：按钮点击 -> Ctrl+Enter -> Enter（逐个尝试直到命中 POST）
+    deadline = time.time() + max(1.0, float(monitor_seconds))
+    attempts: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+    if btn0 is not None:
+        attempts.append(("click_button", lambda: _pw_click_button_robust(page, btn0, log_file=log_file)))
+
+    async def _press_ctrl_enter():
+        await _pw_focus_prompt_input_pw(page, log_file=log_file)
+        try:
+            await page.keyboard.press("Control+Enter")
+        except Exception:
+            # 某些环境按键名差异，兜底 Enter
+            await page.keyboard.press("Enter")
+        _append_log(log_file, "[sora] submit: pressed Control+Enter")
+
+    async def _press_enter():
+        await _pw_focus_prompt_input_pw(page, log_file=log_file)
+        await page.keyboard.press("Enter")
+        _append_log(log_file, "[sora] submit: pressed Enter")
+
+    attempts.append(("ctrl_enter", _press_ctrl_enter))
+    attempts.append(("enter", _press_enter))
+
+    last_err: Optional[Exception] = None
+    for name, trigger in attempts:
+        remain = deadline - time.time()
+        if remain <= 1.0:
+            break
+        try:
+            _append_log(log_file, f"[sora] try_trigger name={name} remain={remain:.2f}s")
+            # 先抓 request 再拿 response（比 expect_response 更不容易漏）
+            req_task = asyncio.create_task(page.wait_for_request(_pred_req, timeout=int(remain * 1000.0)))
+            try:
+                await trigger()
+            except Exception as te:
+                last_err = te
+                _append_log(log_file, f"[sora] trigger {name} failed: {te}")
+                if not req_task.done():
+                    req_task.cancel()
+                continue
+            try:
+                req = await req_task
+                try:
+                    req_url = str(getattr(req, "url", "") or "")
+                except Exception:
+                    req_url = ""
+                _append_log(log_file, f"[sora] got_request after trigger={name} url={_safe_trim(req_url, 240)!r}")
+                try:
+                    resp = await req.response()
+                except Exception:
+                    resp = None
+                if resp is not None and _pred(resp):
+                    _append_log(log_file, f"[sora] got_response(via request.response) trigger={name}")
+                else:
+                    _append_log(log_file, f"[sora] response missing/unmatched trigger={name} -> will fallback")
+                    resp = None
+                break
+            except Exception as we:
+                last_err = we
+                _append_log(log_file, f"[sora] wait_for_request after trigger={name} failed: {we}")
+                # 记录触发后短时间内有没有任何 POST（帮助判断“到底点到没”）
+                try:
+                    await _pw_log_recent_posts(page, seconds=2.0, log_file=log_file)
+                except Exception:
+                    pass
+                continue
+        except Exception as e:
+            last_err = e
+            continue
+
+    if resp is None:
+        # 兜底：再用 sniff 等待一次（避免“response 已发生但 expect_response 没匹配/错过”的情况）
+        if last_err is not None:
+            _append_log(log_file, f"[sora] wait/trigger failed (final): {last_err}")
+        try:
+            tx = await _sniff_http_transaction_pw(
+                page,
+                url_regex=str(monitor_url_regex or ""),
+                method="POST",
+                timeout_seconds=max(1.0, float(max(1.0, deadline - time.time()))),
+                log_path=str(log_file),
+            )
+        except Exception:
+            tx = {}
+        if (tx or {}).get("seen"):
+            body_text = (tx or {}).get("response_body") or ""
+            task_id = None
+            try:
+                payload_obj = json.loads(body_text) if body_text else {}
+                task_id = (payload_obj or {}).get("id") or (payload_obj or {}).get("task_id")
+            except Exception:
+                task_id = None
+            if task_id:
+                _append_log(log_file, f"[sora] fallback sniff ok task_id={task_id}")
+                return str(task_id), dict(tx)
+
+        # 这类错误多为登录态/权限/站点变化/按钮没真正触发；不计入窗口连续错误
+        try:
+            cur_url = str(getattr(page, "url", "") or "")
+        except Exception:
+            cur_url = ""
+        raise NonPenalizedTaskError(
+            "未监控到匹配的 POST 请求/响应（可能未登录/无权限/接口地址变化/按钮未真正触发）"
+            + f" monitor_url_regex={monitor_url_regex!r} page_url={_safe_trim(cur_url, 200)!r} prompt_fill={prompt_info}"
+        )
+
+    if resp is None:
+        raise NonPenalizedTaskError("未监控到匹配的 POST 响应（create 已触发但未抓到 response）")
+
+    create_tx = await _response_to_tx_pw(resp, log_path=monitor_log_path)
 
     status = create_tx.get("status")
     body_text = create_tx.get("response_body") or ""
@@ -293,72 +1157,6 @@ def _sora_create_task_sync(
     return str(task_id), create_tx
 
 
-def _sora_monitor_progress_sync(
-    *,
-    driver,
-    task_id: str,
-    pending_url_regex: str,
-    max_wait_seconds: float,
-    monitor_log_path: Optional[str],
-    progress_notify: Callable[[int, Optional[Dict[str, Any]]], None],
-    poll_interval_seconds: float = 1.0,
-) -> Dict[str, Any]:
-    """被动抓取 GET /backend/nf/pending/v2 响应，直到 progress_pct>=1.0 或超时。"""
-    deadline = time.time() + max(1.0, float(max_wait_seconds))
-    last_print_at = 0.0
-    last_status = None
-    last_progress = None
-    last_sent_progress_int = -1
-
-    while time.time() < deadline:
-        tx = sniff_get(
-            driver,
-            url_regex=pending_url_regex,
-            timeout_seconds=10,
-            log_path=monitor_log_path,
-        )
-        body = (tx or {}).get("response_body") or ""
-        payload_obj = None
-        try:
-            payload_obj = json.loads(body) if body else None
-        except Exception:
-            payload_obj = None
-
-        task_obj = _extract_task_obj(payload_obj, task_id)
-        if not task_obj:
-            now = time.time()
-            if now - last_print_at >= 5.0:
-                print(f"[进度] 已捕获 pending/v2 响应，但未包含 task_id={task_id}（可能是列表未包含该任务）")
-                last_print_at = now
-            time.sleep(max(0.2, float(poll_interval_seconds)))
-            continue
-
-        status = task_obj.get("status")
-        progress_pct = _normalize_progress(task_obj.get("progress_pct"))
-        now = time.time()
-        changed = (status != last_status) or (progress_pct != last_progress)
-
-        if progress_pct is not None:
-            p_int = int(max(0.0, min(1.0, float(progress_pct))) * 100.0)
-            if p_int != last_sent_progress_int:
-                progress_notify(p_int, {"status": status, "task_id": task_id})
-                last_sent_progress_int = p_int
-
-        if changed or (now - last_print_at >= 1.0):
-            print(f"[进度] id={task_id} status={status} progress_pct={progress_pct}")
-            last_print_at = now
-            last_status = status
-            last_progress = progress_pct
-
-        if progress_pct is not None and float(progress_pct) >= 1.0:
-            time.sleep(3.0)
-            return {"task_id": task_id, "status": status, "progress_pct": progress_pct, "done": True, "last_tx": tx}
-
-        time.sleep(max(0.2, float(poll_interval_seconds)))
-
-    return {"task_id": task_id, "status": last_status, "progress_pct": last_progress, "done": False}
-
-
 @dataclass
 class _SoraWatcher:
     task_id: str
@@ -380,12 +1178,13 @@ class _SoraBrowserContext:
     window_key: str
     fp_client: FPBrowserClient
 
-    executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
-    driver: Any = None  # 仅能在 executor 线程内调用
-    debugger_address: Optional[str] = None
-    driver_path: Optional[str] = None
+    playwright: Any = None
+    browser: Any = None
+    context: Any = None
+    page: Any = None
+    cdp_endpoint: Optional[str] = None
     last_used_at: float = field(default_factory=lambda: time.time())
-    # 创建任务必须串行（create_lock），driver 操作互斥（driver_lock）
+    # 创建任务必须串行（create_lock），页面操作互斥（driver_lock）
     create_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     driver_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -412,10 +1211,15 @@ class _SoraBrowserContext:
         force_open: bool = False,
         headless: bool = False,
     ) -> None:
-        """确保窗口已打开且 driver 已连接。driver 的所有调用必须在 executor 线程里发生。"""
+        """确保窗口已打开且 Playwright 已通过 CDP 连接到指纹浏览器。"""
         self.last_used_at = time.time()
-        if self.driver is not None:
+        if self.browser is not None and self.page is not None:
             return
+
+        try:
+            from playwright.async_api import async_playwright  # type: ignore
+        except Exception as e:
+            raise RuntimeError(f"Playwright 未安装或导入失败，请先安装依赖：pip install playwright；并执行：python -m playwright install chromium；错误：{e}")
 
         rsp = await self.fp_client.browser_open(
             vendor=self.vendor,
@@ -430,19 +1234,66 @@ class _SoraBrowserContext:
         if (rsp or {}).get("code") != 0:
             raise RuntimeError(f"browser_open 失败：{rsp}")
         data = (rsp or {}).get("data") or {}
-        debugger_address = (data.get("http") or "").strip()
-        driver_path = (data.get("driver") or "").strip()
-        if not debugger_address or not driver_path:
-            raise RuntimeError(f"browser_open 返回缺少 http(driver debuggerAddress) 或 driver(chromedriver path)：{rsp}")
+        raw_endpoint = str(data.get("http") or data.get("ws") or "").strip()
+        debugger_address = _normalize_cdp_endpoint(raw_endpoint)
+        if not debugger_address:
+            raise RuntimeError(f"browser_open 返回缺少 http/ws(CDP endpoint)：{rsp}")
 
-        self.debugger_address = debugger_address
-        self.driver_path = driver_path
+        self.cdp_endpoint = debugger_address
 
-        loop = asyncio.get_running_loop()
-        self.driver = await loop.run_in_executor(
-            self.executor,
-            lambda: _init_selenium_driver(debugger_address=debugger_address, driver_path=driver_path),
-        )
+        # 建立/复用 Playwright 连接
+        if self.playwright is None:
+            self.playwright = await async_playwright().start()
+
+        try:
+            self.browser = await self.playwright.chromium.connect_over_cdp(debugger_address)
+        except Exception as e:
+            # 连接失败时清理并抛出
+            try:
+                await self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
+            self.browser = None
+            raise RuntimeError(f"连接指纹浏览器 CDP 失败：endpoint={debugger_address} err={e}") from e
+
+        # 尽量复用现有 context/page（指纹浏览器通常已有默认 context）
+        try:
+            ctxs = list(getattr(self.browser, "contexts", []) or [])
+        except Exception:
+            ctxs = []
+        if ctxs:
+            # 选择一个“更像正常页面”的 context（避免落到扩展/devtools 专用 context）
+            best_ctx = None
+            best_score = -1
+            for c in ctxs:
+                try:
+                    pages = list(getattr(c, "pages", []) or [])
+                except Exception:
+                    pages = []
+                score = 0
+                for p in pages:
+                    try:
+                        u = str(getattr(p, "url", "") or "")
+                    except Exception:
+                        u = ""
+                    if u.startswith(("http://", "https://")):
+                        score += 2
+                    elif u.startswith("about:blank") or not u:
+                        score += 1
+                if score > best_score:
+                    best_score = score
+                    best_ctx = c
+            self.context = best_ctx or ctxs[0]
+        else:
+            self.context = await self.browser.new_context()
+
+        # 关键：不要盲选 pages[-1]，优先挑可导航的 http(s)/about:blank 页面，否则新建
+        self.page = await _pw_pick_working_page_from_context(self.context)
+        try:
+            await self.page.bring_to_front()
+        except Exception:
+            pass
 
     def _cancel_idle_close(self) -> None:
         t = self.idle_close_task
@@ -482,9 +1333,7 @@ class _SoraBrowserContext:
         self.idle_close_task = asyncio.create_task(_job())
 
     async def close_and_drop(self) -> None:
-        print("ctx close_and_drop")
         await self.close()
-        print(f"browser_close-----3-----")
         _drop_ctx(self.cache_key)
 
     async def create_task(
@@ -511,18 +1360,14 @@ class _SoraBrowserContext:
             try:
                 await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
                 async with self.driver_lock:
-                    loop = asyncio.get_running_loop()
-                    return await loop.run_in_executor(
-                        self.executor,
-                        lambda: _sora_create_task_sync(
-                            driver=self.driver,
-                            prompt=prompt,
-                            target_url=target_url,
-                            create_button_text_regex=create_button_text_regex,
-                            monitor_seconds=monitor_seconds,
-                            monitor_url_regex=monitor_url_regex,
-                            monitor_log_path=monitor_log_path,
-                        ),
+                    return await _sora_create_task_pw(
+                        page=self.page,
+                        prompt=prompt,
+                        target_url=target_url,
+                        create_button_text_regex=create_button_text_regex,
+                        monitor_seconds=monitor_seconds,
+                        monitor_url_regex=monitor_url_regex,
+                        monitor_log_path=monitor_log_path,
                     )
             finally:
                 # create 结束后，如果当前没有任何任务在该 ctx 上跑，启动空闲自动回收
@@ -597,18 +1442,18 @@ class _SoraBrowserContext:
                         self.watchers.pop(tid, None)
                     return
 
-                tx = None
+                tx: Optional[Dict[str, Any]] = None
                 async with self.driver_lock:
-                    loop = asyncio.get_running_loop()
-                    tx = await loop.run_in_executor(
-                        self.executor,
-                        lambda: sniff_get(
-                            self.driver,
+                    try:
+                        tx = await _sniff_http_transaction_pw(
+                            self.page,
                             url_regex=str(self.pending_url_regex or ""),
+                            method="GET",
                             timeout_seconds=float(self.sniff_timeout_seconds),
                             log_path=self.monitor_log_path,
-                        ),
-                    )
+                        )
+                    except Exception:
+                        tx = None
 
                 body = (tx or {}).get("response_body") or ""
                 payload_obj: Any = None
@@ -662,7 +1507,6 @@ class _SoraBrowserContext:
         self.monitor_task = None
         if t and not t.done():
             t.cancel()
-        loop = asyncio.get_running_loop()
 
         try:
             await self.fp_client.browser_close(
@@ -677,15 +1521,25 @@ class _SoraBrowserContext:
                 print(f"browser_close failed: {e}")
             except Exception:
                 pass
-        print(f"browser_close-----4-----")
-        drv = self.driver
-        self.driver = None
-        if drv is not None:
-            try:
-                await loop.run_in_executor(self.executor, lambda: drv.quit())
-                print(f"browser_close-----4-----")
-            except Exception:
-                pass
+
+        # 断开 Playwright 连接（如果指纹浏览器已关闭，这里也会自然失败，吞掉即可）
+        br = self.browser
+        self.browser = None
+        self.context = None
+        self.page = None
+        try:
+            if br is not None:
+                await br.close()
+        except Exception:
+            pass
+
+        pw = self.playwright
+        self.playwright = None
+        try:
+            if pw is not None:
+                await pw.stop()
+        except Exception:
+            pass
 
 
 _CTX_LOCK = threading.Lock()
@@ -698,11 +1552,9 @@ def _ctx_key(vendor: str, base_url: str, space_id: str, window_key: str) -> str:
 
 def _drop_ctx(cache_key: str) -> None:
     k = (cache_key or "").strip()
-    print(f"_drop_ctx----------{k}")
     if not k:
         return
     with _CTX_LOCK:
-        print(f"_drop_ctx-----1-----{k}")
         _SORA_CTXS.pop(k, None)
 
 
@@ -715,11 +1567,9 @@ def _get_or_create_ctx(
     window_key: str,
 ) -> _SoraBrowserContext:
     k = _ctx_key(vendor, base_url, space_id, window_key)
-    print(f"_get_or_create_ctx----------{k}")
     with _CTX_LOCK:
         ctx = _SORA_CTXS.get(k)
         if ctx is None:
-            print(f"_get_or_create_ctx-----1----{k}")
             ctx = _SoraBrowserContext(
                 cache_key=k,
                 vendor=(vendor or "roxy").strip().lower(),
@@ -746,7 +1596,7 @@ async def sora_gen_video(
     window_key: str,
     timeout_seconds: float,
 ) -> Dict[str, Any]:
-    """Sora 生视频：复用同一指纹浏览器窗口 + Selenium driver，拆分“创建任务”和“进度轮询”。
+    """Sora 生视频：复用同一指纹浏览器窗口 + Playwright(CDP) 轻量连接，拆分“创建任务”和“进度轮询”。
 
     参数来源：
     - 运行时浏览器参数来自 TaskService（picked window / browser / space）
@@ -757,8 +1607,8 @@ async def sora_gen_video(
     if not prompt:
         raise ValueError("payload.prompt 不能为空")
 
-    # Selenium 行为配置（可从 payload 覆盖；默认值与 roxy_sora_automation.py 保持一致）
-    target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/explore").strip()
+    # Playwright 行为配置（可从 payload 覆盖；默认值与 roxy_sora_automation.py 保持一致）
+    target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
     create_button_text_regex = str(payload.get("sora_create_video_regex") or r"^\s*Create\s+video\s*$").strip()
     monitor_seconds = float(payload.get("sora_monitor_seconds") or 8.0)
     monitor_url_regex = str(payload.get("sora_monitor_url_regex") or r"https://sora\.chatgpt\.com/backend/nf/create").strip()
@@ -779,9 +1629,9 @@ async def sora_gen_video(
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
 
     try:
-        from selenium import webdriver  # type: ignore  # noqa: F401
+        from playwright.async_api import async_playwright  # type: ignore  # noqa: F401
     except Exception as e:
-        raise RuntimeError(f"Selenium 未安装或导入失败，请先安装依赖：pip install selenium；错误：{e}")
+        raise RuntimeError(f"Playwright 未安装或导入失败，请先安装依赖：pip install playwright；并执行：python -m playwright install chromium；错误：{e}")
 
     await progress_cb(0, {"stage": "create_task"})
     task_id, create_tx = await ctx.create_task(
