@@ -18,7 +18,11 @@ FPBrowser2API（Python/FastAPI）项目说明与约定
     - services/
       - fp_browser_client.py: 指纹浏览器局域网 API 适配层（同步窗口信息的入口）
       - task_service.py: 任务调度（窗口挑选、并发/额度/冷却、后台执行）
-      - task_executor.py: 任务执行器（当前为模拟进度；接入真实自动化的核心扩展点）
+      - image_task_executor.py: 图片任务执行器（当前为模拟进度；后续接入真实图片生成）
+      - video_task_executor.py: 视频任务执行器（当前为模拟进度；后续接入真实视频生成）
+      - sora_browser_context.py: Sora 窗口复用上下文（token 抓取、pending 轮询、nf_check、invite 等通用能力）
+      - sora_task_executor.py: Sora 任务执行入口（sora_gen_video）
+      - task_executor.py: 旧版 Sora helper 实现（供 sora_* 模块复用；后续可再拆分/迁移）
   - static/
     - login.html: 登录页
     - system.html: 系统配置页
@@ -40,7 +44,11 @@ FPBrowser2API（Python/FastAPI）项目说明与约定
   - 首次启动写入默认管理员与 system_config、默认任务类型（gen_video / gen_image）
 
 4) 真实自动化接入点（后续增强）
-- 目前任务执行为“模拟进度”，真实执行请在 src/services/task_executor.py 内实现：
-  - 基于 window_pk 关联到空间与指纹浏览器信息（vendor/base_url/access_key）
-  - 按任务类型（gen_video / gen_image）调用你的浏览器自动化逻辑
+- 目前 gen_image/gen_video 仍为“模拟进度”，真实执行建议分别在：
+  - src/services/image_task_executor.py
+  - src/services/video_task_executor.py
+  内实现并持续调用 progress_cb 更新进度。
+- Sora 的真实自动化执行入口在：
+  - src/services/sora_task_executor.py（执行入口）
+  - src/services/sora_browser_context.py（窗口复用与通用 API）
 

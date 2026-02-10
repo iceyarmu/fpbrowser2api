@@ -95,7 +95,7 @@ class FPBrowserClient:
         force_open: bool = False,
         headless: bool = False,
     ) -> Dict[str, Any]:
-        """打开指纹浏览器窗口，并返回 Selenium 连接信息（debuggerAddress/driver）。
+        """打开指纹浏览器窗口，并返回自动化连接信息（主要是 CDP endpoint：data.http / data.ws）。
 
         约定：
         - 对于 RoxyBrowser：space_id = workspaceId（纯数字），window_key = dirId
@@ -149,6 +149,69 @@ class FPBrowserClient:
             dir_id=window_key,
         )
 
+    async def is_window_open(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        window_key: str,
+    ) -> bool:
+        """查询窗口是否已打开（RoxyBrowser：GET /browser/connection_info）。
+
+        参考文档：
+        - 已打开窗口进程信息：/browser/connection_info
+          https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E5%B7%B2%E6%89%93%E5%BC%80%E7%AA%97%E5%8F%A3%E8%BF%9B%E7%A8%8B%E4%BF%A1%E6%81%AF
+
+        返回：
+        - True：窗口已打开（能查到对应 dirId 的连接信息）
+        - False：未打开或查询失败
+        """
+        info = await self.get_open_window_connection_info(
+            vendor=vendor,
+            base_url=base_url,
+            access_key=access_key,
+            window_key=window_key,
+        )
+        return info is not None
+
+    async def get_open_window_connection_info(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        window_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        """获取“已打开窗口”的连接信息条目（包含 http/ws/pid 等）。找不到则返回 None。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        window_key = (window_key or "").strip()
+        if not base_url or not window_key:
+            raise RuntimeError("get_open_window_connection_info 参数不足：base_url/window_key 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 connection_info，请设置为 roxy")
+
+        rsp = await self._roxy_get(
+            base_url,
+            access_key,
+            "/browser/connection_info",
+            {"dirIds": window_key},
+        )
+        if (rsp or {}).get("code") != 0:
+            return None
+        data = (rsp or {}).get("data")
+        if not isinstance(data, list):
+            return None
+        for it in data:
+            if not isinstance(it, dict):
+                continue
+            did = str(it.get("dirId") or "").strip()
+            if did and did == window_key:
+                return it
+        return None
+
     # -------------------- RoxyBrowser --------------------
     def _roxy_headers(self, token: Optional[str]) -> Dict[str, str]:
         h = {"Content-Type": "application/json"}
@@ -178,7 +241,6 @@ class FPBrowserClient:
         async with self._client() as client:
             headers = self._roxy_headers(token)
             payload = data or {}
-            print(f"url: {url}, headers: {headers}, data: {payload}")
 
             try:
                 req_coro = client.post(url, headers=headers, json=payload)
@@ -197,7 +259,6 @@ class FPBrowserClient:
                 body_text = resp.text
             except Exception:
                 body_text = ""
-            print(f"status: {resp.status_code}, body: {(body_text or '')[:500]}")
 
             resp.raise_for_status()
 

@@ -1,7 +1,7 @@
 """
 从 `sora2api/sora_net_tools.py` 移植而来。
 
-用途：提供 Selenium performance log / CDP 的“抓包”工具方法。
+用途：提供“旧 Selenium(performance log/CDP) 方案”的抓包工具方法。
 本次“同步窗口”功能本身不依赖该文件，但按你的要求一并迁移到 `fpbrowser2api/src/services/`，
 方便后续把“窗口打开后的自动化请求抓取/调试”能力接入任务执行器。
 """
@@ -42,7 +42,7 @@ def sniff_http_transaction(
     - url_regex: 用于匹配完整 URL（建议传完整域名+路径）
     - method: 可选，限制 GET/POST 等（None 表示不限制）
     - timeout_seconds: 监听时长
-    - log_path: 可选日志路径；不传默认写到当前 services/logs.txt
+    - log_path: 可选日志路径；不传默认写到 fpbrowser2api/logs.txt
 
     返回 dict：
     {
@@ -60,7 +60,8 @@ def sniff_http_transaction(
     method_norm = method.upper().strip() if method else None
     deadline = time.time() + max(1.0, float(timeout_seconds))
 
-    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parent / "logs.txt")
+    # 默认写到 fpbrowser2api 根目录，避免在 src/ 下产生提交噪音
+    log_file = Path(log_path) if log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
     result: Dict[str, Any] = {
         "seen": False,

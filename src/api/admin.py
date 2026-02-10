@@ -118,6 +118,7 @@ class UpdateTaskTypeWindowRequest(BaseModel):
     daily_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     remaining_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     cooldown_until: Optional[str] = None  # ISO or empty
+    error_cooldown_until: Optional[str] = None  # ISO or empty
     total_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
     consecutive_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
 
@@ -552,6 +553,108 @@ async def refresh_mapping_remaining_quota(mapping_id: int, token: str = Depends(
     return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/refresh-invite-code")
+async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """通过指纹浏览器读取 backend/project_y/invite/mine 并写回 mapping.sora_invite_code。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    try:
+        info = await sora_ctx.api_invite_mine(target_url="https://sora.chatgpt.com/explore")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"刷新邀请码失败：{e}")
+
+    invite_code = (info or {}).get("invite_code")
+    await db.update_task_type_window(mapping_id=mapping_id, sora_invite_code=str(invite_code or "").strip() or None)
+    return {
+        "success": True,
+        "mapping_id": mapping_id,
+        "invite_code": invite_code,
+        "redeemed_count": info.get("redeemed_count"),
+        "total_count": info.get("total_count"),
+    }
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
+async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """手动打开窗口并禁止 _schedule_idle_close 自动关闭（保持窗口常驻）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    # 先禁止自动关闭，再确保已打开（避免 ensure_open / 其它调用尾部 schedule 进来）
+    sora_ctx.idle_close_disabled = True
+    try:
+        sora_ctx._cancel_idle_close()
+    except Exception:
+        pass
+    try:
+        await sora_ctx.ensure_open(args=[], force_open=False, headless=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
+
+    return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": True}
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/manual-close")
+async def manual_close_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """取消“保持打开”并触发一次 _schedule_idle_close（不会立刻关闭，避免影响正在运行的任务）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
+
+    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx.idle_close_disabled = False
+    try:
+        sora_ctx._schedule_idle_close()
+    except Exception:
+        pass
+
+    return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": False}
+
+
 @router.delete("/api/admin/task-types/{task_type_id}")
 async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_token)):
     if not db:
@@ -592,6 +695,7 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
         daily_quota=req.daily_quota,
         remaining_quota=req.remaining_quota,
         cooldown_until=req.cooldown_until,
+        error_cooldown_until=req.error_cooldown_until,
         total_errors=req.total_errors,
         consecutive_errors=req.consecutive_errors,
     )
@@ -605,6 +709,7 @@ async def list_tasks(
     offset: int = 0,
     task_type_code: Optional[str] = None,
     status: Optional[str] = None,
+    window_pk: Optional[int] = None,
     q: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
@@ -613,8 +718,8 @@ async def list_tasks(
 
     lim = max(1, min(200, int(limit or 50)))
     off = max(0, int(offset or 0))
-    total = await db.count_tasks(task_type_code=task_type_code, status=status, q=q)
-    items = await db.list_tasks(limit=lim, offset=off, task_type_code=task_type_code, status=status, q=q)
+    total = await db.count_tasks(task_type_code=task_type_code, status=status, window_pk=window_pk, q=q)
+    items = await db.list_tasks(limit=lim, offset=off, task_type_code=task_type_code, status=status, window_pk=window_pk, q=q)
     return {"success": True, "total": total, "limit": lim, "offset": off, "items": items}
 
 
