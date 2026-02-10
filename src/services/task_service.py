@@ -234,9 +234,6 @@ class TaskService:
                     # 默认按图片模拟（包括 gen_image 以及其它未实现类型）
                     result = await asyncio.wait_for(simulate_image_task(prompt, None, progress_cb), timeout=float(picked.timeout_seconds))
 
-                await self.db.update_task(task_id, status="completed", progress=100, result=result, set_completed=True)
-                await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
-                await self.db.mark_mapping_success(picked.mapping_id)
                 # Sora：若执行器返回了 nf_check，则用其回写余额/限流信息（覆盖本地扣减，更贴近真实剩余）
                 try:
                     nf = (result or {}).get("nf_check") if isinstance(result, dict) else None
@@ -252,6 +249,11 @@ class TaskService:
                         )
                 except Exception:
                     pass
+                # 清空一下result中的nf_check，避免敏感信息泄露
+                result["nf_check"] = None
+                await self.db.update_task(task_id, status="completed", progress=100, result=result, set_completed=True)
+                await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
+                await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
             except asyncio.TimeoutError as t:
                 await self.db.update_task(task_id, status="failed", error_message="任务超时"+str(t), set_completed=True)
