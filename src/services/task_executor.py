@@ -483,6 +483,66 @@ async def _pw_page_fetch_tx(
     return tx
 
 
+async def _pw_page_fetch_json(
+    page,
+    *,
+    url: str,
+    method: str,
+    headers: Dict[str, str],
+    json_data: Optional[Dict[str, Any]],
+    log_file: Path,
+) -> Dict[str, Any]:
+    """页面内 fetch 并解析 JSON（失败则抛出带 response 文本摘要的异常）。"""
+    tx = await _pw_page_fetch_tx(page, url=url, method=method, headers=headers, json_data=json_data, log_file=log_file)
+    body = str(tx.get("response_body") or "")
+    try:
+        obj = json.loads(body) if body else None
+    except Exception:
+        obj = None
+    if obj is None and (tx.get("status") not in (204,)):
+        raise RuntimeError(f"fetch_json 解析失败：status={tx.get('status')} body={_safe_trim(body, 600)}")
+    tx["_json"] = obj
+    return tx
+
+
+async def _sora_api_get_video_drafts_pw(page, *, target_url: str, bearer_token: str, limit: int, log_file: Path) -> Dict[str, Any]:
+    """GET /backend/project_y/profile/drafts?limit=..."""
+    url = _sora_backend_url_from_target(target_url, f"/backend/project_y/profile/drafts?limit={int(limit)}")
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "OAI-Language": "en-US",
+    }
+    tx = await _pw_page_fetch_json(page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+    obj = tx.get("_json")
+    return obj if isinstance(obj, dict) else {}
+
+
+async def _sora_api_post_project_y_post_pw(
+    page,
+    *,
+    target_url: str,
+    bearer_token: str,
+    sentinel_token: str,
+    generation_id: str,
+    log_file: Path,
+) -> Dict[str, Any]:
+    """POST /backend/project_y/post（发布草稿，获取 post_id）。"""
+    url = _sora_backend_url_from_target(target_url, "/backend/project_y/post")
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "OpenAI-Sentinel-Token": str(sentinel_token),
+        "Content-Type": "application/json",
+        "OAI-Language": "en-US",
+    }
+    payload = {
+        "attachments_to_create": [{"generation_id": str(generation_id), "kind": "sora"}],
+        "post_text": "",
+    }
+    tx = await _pw_page_fetch_json(page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+    obj = tx.get("_json")
+    return obj if isinstance(obj, dict) else {}
+
+
 def _normalize_cdp_endpoint(endpoint: str) -> str:
     """将指纹浏览器返回的 http/ws 调试地址规范化为 Playwright 可连接的 endpoint。"""
     s = (endpoint or "").strip()
@@ -1451,6 +1511,7 @@ class _SoraWatcher:
     last_sent_progress: int = -1
     last_status: Any = None
     last_progress_pct: Optional[float] = None
+    miss_pending_count: int = 0
 
 
 @dataclass
@@ -1784,10 +1845,17 @@ class _SoraBrowserContext:
                         if isinstance(it, dict) and it.get("id") is not None:
                             index[str(it.get("id"))] = it
 
+                # 如果 pending 中找不到任务，按 generation_handler.py 的逻辑：去 drafts 里找（表示已完成或被转移）
+                missing_tids: list[str] = []
                 for tid, w in list(self.watchers.items()):
                     task_obj = index.get(str(tid)) if index else _extract_task_obj(payload_obj, str(tid))
                     if not task_obj:
+                        w.miss_pending_count += 1
+                        # 连续两次 pending 未命中就尝试 drafts（减少频率）
+                        if w.miss_pending_count >= 2:
+                            missing_tids.append(str(tid))
                         continue
+                    w.miss_pending_count = 0
 
                     status = task_obj.get("status")
                     progress_pct = _normalize_progress(task_obj.get("progress_pct"))
@@ -1808,6 +1876,41 @@ class _SoraBrowserContext:
                             w.future.set_result({"task_id": tid, "status": status, "progress_pct": progress_pct, "done": True})
                         self.watchers.pop(tid, None)
 
+                if missing_tids:
+                    # drafts 查询（一次查询覆盖多个 tid）
+                    try:
+                        log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+                        drafts = await _sora_api_get_video_drafts_pw(
+                            self.page,
+                            target_url=str(getattr(self.page, "url", "") or "https://sora.chatgpt.com/drafts"),
+                            bearer_token=str(self.bearer_token or ""),
+                            limit=100,
+                            log_file=log_file,
+                        )
+                        items = drafts.get("items", []) if isinstance(drafts, dict) else []
+                    except Exception as e:
+                        items = []
+                        try:
+                            _append_log(log_file, f"[sora][drafts] fetch failed: {e}")
+                        except Exception:
+                            pass
+
+                    if isinstance(items, list) and items:
+                        by_task: Dict[str, Dict[str, Any]] = {}
+                        for it in items:
+                            if isinstance(it, dict) and it.get("task_id") is not None:
+                                by_task[str(it.get("task_id"))] = it
+                        for tid in list(missing_tids):
+                            it = by_task.get(str(tid))
+                            if not it:
+                                continue
+                            # 找到 drafts 记录即认为任务已结束（成功/违规/失败由上层 finalize 决定）
+                            if tid in self.watchers:
+                                w = self.watchers.get(tid)
+                                if w and not w.future.done():
+                                    w.future.set_result({"task_id": tid, "status": "completed", "progress_pct": 1.0, "done": True, "draft": it})
+                                self.watchers.pop(tid, None)
+
                 if not self.watchers:
                     return
 
@@ -1815,6 +1918,133 @@ class _SoraBrowserContext:
         finally:
             if not self.watchers:
                 self._schedule_idle_close()
+
+    async def finalize_video_and_publish(
+        self,
+        *,
+        task_id: str,
+        prompt: str,
+        target_url: str,
+        drafts_limit: int = 100,
+    ) -> Dict[str, Any]:
+        """任务完成后：从 drafts 找到对应视频 → 发布草稿（去水印）→ 返回 {post_id, urls, draft}。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        async with self.driver_lock:
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+            if not self.bearer_token:
+                raise RuntimeError("缺少 bearer_token，无法查询 drafts/发布")
+            if not self.sentinel_token:
+                # 兜底：现生成一次 sentinel（复用指纹浏览器 context）
+                self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.page, device_id=self.oai_device_id, log_file=log_file)
+            if not self.sentinel_token:
+                raise RuntimeError("缺少 sentinel_token，无法发布草稿")
+
+            def _get_item_task_id(it: Dict[str, Any]) -> str:
+                # 兼容不同字段命名/嵌套结构
+                try:
+                    v = it.get("task_id")
+                    if v:
+                        return str(v)
+                except Exception:
+                    pass
+                try:
+                    v = it.get("taskId")
+                    if v:
+                        return str(v)
+                except Exception:
+                    pass
+                try:
+                    t = it.get("task")
+                    if isinstance(t, dict) and t.get("id"):
+                        return str(t.get("id"))
+                except Exception:
+                    pass
+                return ""
+
+            # drafts 可能会延迟入库：轮询最多 60s
+            drafts_wait_seconds = 60.0
+            drafts_poll_interval = 3.0
+            deadline = time.time() + drafts_wait_seconds
+            draft_item: Optional[Dict[str, Any]] = None
+            last_items_sample: list[str] = []
+            attempt = 0
+            while time.time() < deadline and draft_item is None:
+                attempt += 1
+                drafts = await _sora_api_get_video_drafts_pw(
+                    self.page,
+                    target_url=target_url,
+                    bearer_token=str(self.bearer_token),
+                    limit=int(drafts_limit),
+                    log_file=log_file,
+                )
+                items = drafts.get("items", []) if isinstance(drafts, dict) else []
+                if not isinstance(items, list):
+                    items = []
+
+                # 采样一下 drafts 中的 task_id 方便排查
+                last_items_sample = []
+                for it in items[:20]:
+                    if isinstance(it, dict):
+                        tid = _get_item_task_id(it)
+                        if tid:
+                            last_items_sample.append(tid)
+
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    if _get_item_task_id(it) == str(task_id):
+                        draft_item = it
+                        break
+
+                _append_log(
+                    log_file,
+                    f"[sora][drafts] poll attempt={attempt} found={bool(draft_item)} items={len(items)} "
+                    f"sample_task_ids={_safe_trim(','.join(last_items_sample), 260)!r}",
+                )
+
+                if draft_item is not None:
+                    break
+                await asyncio.sleep(float(drafts_poll_interval))
+
+            if not draft_item:
+                raise RuntimeError(
+                    f"草稿箱未找到任务对应视频（已轮询 {drafts_wait_seconds:.0f}s）：task_id={task_id} "
+                    f"sample_task_ids={_safe_trim(','.join(last_items_sample), 260)}"
+                )
+
+            generation_id = str(draft_item.get("id") or "").strip()
+            if not generation_id:
+                raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
+
+            # 发布草稿（去水印）
+            post_resp = await _sora_api_post_project_y_post_pw(
+                self.page,
+                target_url=target_url,
+                bearer_token=str(self.bearer_token),
+                sentinel_token=str(self.sentinel_token),
+                generation_id=generation_id,
+                log_file=log_file,
+            )
+            post_id = ""
+            try:
+                post_id = str(((post_resp or {}).get("post") or {}).get("id") or "").strip()
+            except Exception:
+                post_id = ""
+            if not post_id:
+                raise RuntimeError(f"发布草稿失败：未返回 post_id resp={_safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)}")
+
+            share_url = f"https://sora.chatgpt.com/p/{post_id}"
+            watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
+
+            return {
+                "task_id": str(task_id),
+                "generation_id": generation_id,
+                "post_id": post_id,
+                "share_url": share_url,
+                "watermark_free_url": watermark_free_url,
+                "draft": draft_item,
+            }
 
     async def close(self) -> None:
         """关闭窗口与 driver（谨慎：会影响同窗口后续复用）。"""
@@ -1975,11 +2205,18 @@ async def sora_gen_video(
         idle_close_seconds=idle_close_seconds,
     )
 
-    await progress_cb(100, {"stage": "done", "task_id": task_id})
+    await progress_cb(95, {"stage": "drafts_and_publish", "task_id": task_id})
+    publish_result = await ctx.finalize_video_and_publish(
+        task_id=task_id,
+        prompt=prompt,
+        target_url=target_url,
+        drafts_limit=int(payload.get("sora_drafts_limit") or 100),
+    )
+    await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
 
     result: Dict[str, Any] = {
         "type": "video",
-        "message": "Sora 任务已创建并监控完成",
+        "message": "Sora 任务已创建、监控完成，并已从草稿箱发布（去水印）",
         "task_id": task_id,
         "prompt": prompt,
         "create_tx": {
@@ -1988,6 +2225,13 @@ async def sora_gen_video(
             "log_file": create_tx.get("log_file"),
         },
         "progress": progress_result,
+        "publish": {
+            "post_id": publish_result.get("post_id"),
+            "share_url": publish_result.get("share_url"),
+            "watermark_free_url": publish_result.get("watermark_free_url"),
+            "generation_id": publish_result.get("generation_id"),
+        },
+        "draft": publish_result.get("draft"),
         "outputs": [],
     }
 
