@@ -25,6 +25,25 @@ python main.py
 
 默认监听：`http://127.0.0.1:8002`
 
+## 启动/停止/重启（服务脚本）
+
+参考 `flow2api/sora2api_service.sh`，本项目提供同风格脚本：
+
+- Linux/Mac（或 Git Bash）：
+
+```bash
+cd fpbrowser2api
+chmod +x ./fpbrowser2api_service.sh
+./fpbrowser2api_service.sh start|stop|restart|status
+```
+
+- Windows PowerShell：
+
+```powershell
+cd fpbrowser2api
+powershell -ExecutionPolicy Bypass -File .\fpbrowser2api_service.ps1 start|stop|restart|status
+```
+
 ## 管理后台
 
 - 登录页：`/login`
