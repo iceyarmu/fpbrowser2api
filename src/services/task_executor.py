@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from uuid import uuid4
+from urllib.parse import urlparse
 
 from .fp_browser_client import FPBrowserClient
 
@@ -82,6 +84,403 @@ def _append_log(log_file: Path, s: str) -> None:
                 f.write("\n")
     except Exception:
         pass
+
+
+def _mask_secret(s: Optional[str], *, head: int = 8, tail: int = 6) -> str:
+    if not s:
+        return ""
+    s = str(s)
+    if len(s) <= head + tail + 3:
+        return s[: max(1, min(len(s), head))] + "...(masked)"
+    return s[:head] + "...(masked)..." + s[-tail:]
+
+
+async def _sora_extract_bearer_from_any_post_pw(page, *, timeout_seconds: float, log_file: Path) -> Dict[str, Any]:
+    """监听任意 POST 请求，从 headers 提取 Authorization: Bearer <token>。
+
+    返回：
+    {
+      "seen": bool,
+      "authorization": "Bearer xxx" | None,
+      "token": "xxx" | None,
+      "user_agent": str|None,
+      "url": str|None
+    }
+    """
+    result: Dict[str, Any] = {"seen": False, "authorization": None, "token": None, "user_agent": None, "url": None}
+    loop = asyncio.get_running_loop()
+    fut: "asyncio.Future[Dict[str, Any]]" = loop.create_future()
+
+    def _on_request(req) -> None:
+        if fut.done():
+            return
+        try:
+            m = str(getattr(req, "method", "") or "").upper().strip()
+            if m != "POST" and m != "GET":
+                return
+            headers = getattr(req, "headers", None) or {}
+            auth = headers.get("authorization") or headers.get("Authorization")
+            if not auth:
+                return
+            auth = str(auth).strip()
+            if not auth.lower().startswith("bearer "):
+                return
+            tok = auth.split(" ", 1)[1].strip()
+            if not tok:
+                return
+            ua = headers.get("user-agent") or headers.get("User-Agent")
+            try:
+                u = str(getattr(req, "url", "") or "")
+            except Exception:
+                u = ""
+            fut.set_result(
+                {
+                    "seen": True,
+                    "authorization": auth,
+                    "token": tok,
+                    "user_agent": str(ua or "") or None,
+                    "url": u or None,
+                }
+            )
+        except Exception:
+            return
+
+    try:
+        page.on("request", _on_request)
+    except Exception as e:
+        _append_log(log_file, f"[sora][token] attach request listener failed: {e}")
+        return result
+
+    try:
+        data = await asyncio.wait_for(fut, timeout=max(1.0, float(timeout_seconds)))
+        result.update(data or {})
+        _append_log(
+            log_file,
+            f"[sora][token] bearer_captured url={_safe_trim(str(result.get('url') or ''), 240)!r} "
+            f"ua={_safe_trim(str(result.get('user_agent') or ''), 120)!r} "
+            f"auth={_mask_secret(str(result.get('authorization') or ''), head=15, tail=15)!r}",
+        )
+        return result
+    except Exception as e:
+        _append_log(log_file, f"[sora][token] bearer capture timeout/failed: {e}")
+        # 顺手记录一下近期 POST，方便判断“页面到底有没有 POST”
+        try:
+            await _pw_log_recent_posts(page, seconds=2.0, log_file=log_file)
+        except Exception:
+            pass
+        return result
+    finally:
+        try:
+            page.off("request", _on_request)
+        except Exception:
+            pass
+
+
+async def _sora_generate_sentinel_token_in_fp_context_pw(page, *, device_id: Optional[str], log_file: Path) -> Optional[str]:
+    """在“指纹浏览器的同一 context”中，用 __sentinel__ hack 生成 SentinelToken（参考 sora_client.py）。"""
+    try:
+        ctx = page.context
+    except Exception:
+        ctx = None
+    if ctx is None:
+        _append_log(log_file, "[sora][sentinel] page.context unavailable")
+        return None
+
+    # 优先从 cookie 取 oai-did（若无则随机一个）
+    did = (device_id or "").strip() if device_id else ""
+    if not did:
+        try:
+            cookies = await ctx.cookies("https://sora.chatgpt.com")
+        except Exception:
+            cookies = []
+        for c in cookies or []:
+            try:
+                if str(c.get("name") or "") == "oai-did" and c.get("value"):
+                    did = str(c["value"])
+                    break
+            except Exception:
+                continue
+    if not did:
+        did = str(uuid4())
+
+    inject_html = "<!DOCTYPE html><html><head><script src=\"https://chatgpt.com/backend-api/sentinel/sdk.js\"></script></head><body></body></html>"
+
+    try:
+        p2 = await ctx.new_page()
+    except Exception as e:
+        _append_log(log_file, f"[sora][sentinel] new_page failed: {e}")
+        return None
+
+    async def handle_route(route):
+        try:
+            url = str(route.request.url or "")
+        except Exception:
+            url = ""
+        try:
+            if "__sentinel__" in url:
+                await route.fulfill(status=200, content_type="text/html", body=inject_html)
+                return
+            # 放行 sentinel sdk / 调用链；其余资源 abort，降低加载量
+            if ("/sentinel/" in url) or ("chatgpt.com" in url) or ("sora.chatgpt.com" in url):
+                await route.continue_()
+                return
+            await route.abort()
+        except Exception:
+            try:
+                await route.continue_()
+            except Exception:
+                pass
+
+    try:
+        try:
+            await p2.route("**/*", handle_route)
+        except Exception:
+            pass
+        _append_log(log_file, f"[sora][sentinel] loading sdk under did={did!r}")
+        await p2.goto("https://sora.chatgpt.com/__sentinel__", wait_until="load", timeout=30_000)
+        await p2.wait_for_function("typeof SentinelSDK !== 'undefined' && typeof SentinelSDK.token === 'function'", timeout=15_000)
+        token = await p2.evaluate(
+            """async (did) => {
+              try {
+                return await SentinelSDK.token('sora_2_create_task', did);
+              } catch (e) {
+                return 'ERROR: ' + (e && e.message ? e.message : String(e));
+              }
+            }""",
+            did,
+        )
+        token_s = str(token or "")
+        if token_s and not token_s.startswith("ERROR"):
+            _append_log(log_file, f"[sora][sentinel] token_ok value={_mask_secret(token_s, head=15, tail=15)!r}")
+            return token_s
+        _append_log(log_file, f"[sora][sentinel] token_error value={_safe_trim(token_s, 300)!r}")
+        return None
+    except Exception as e:
+        _append_log(log_file, f"[sora][sentinel] generate failed: {e}")
+        return None
+    finally:
+        try:
+            await p2.close()
+        except Exception:
+            pass
+
+
+def _sora_backend_url_from_target(target_url: str, path: str) -> str:
+    """根据 target_url 组合 sora backend URL（默认 host 同源）。"""
+    try:
+        p = urlparse(str(target_url or "").strip())
+        scheme = p.scheme or "https"
+        netloc = p.netloc or "sora.chatgpt.com"
+        return f"{scheme}://{netloc}{path}"
+    except Exception:
+        return "https://sora.chatgpt.com" + str(path)
+
+
+async def _pw_get_user_agent(page) -> Optional[str]:
+    try:
+        ua = await page.evaluate("() => navigator.userAgent")
+        ua = str(ua or "").strip()
+        return ua or None
+    except Exception:
+        return None
+
+
+async def _pw_api_post_json(ctx, *, url: str, headers: Dict[str, str], json_data: Dict[str, Any], log_file: Path) -> Dict[str, Any]:
+    """使用 BrowserContext.request 发 POST JSON，返回兼容 tx 结构。"""
+    tx: Dict[str, Any] = {
+        "seen": True,
+        "request_id": None,
+        "url": url,
+        "method": "POST",
+        "status": None,
+        "response_body": None,
+        "headers": None,
+        "log_file": str(log_file),
+    }
+    req_ctx = None
+    try:
+        req_ctx = getattr(ctx, "request", None)
+    except Exception:
+        req_ctx = None
+    if req_ctx is None:
+        raise RuntimeError("context.request 不可用，无法发起 API 请求")
+
+    resp = None
+    try:
+        try:
+            resp = await req_ctx.post(url, headers=headers, json=json_data, timeout=30_000)
+        except TypeError:
+            # 兼容旧版本参数
+            resp = await req_ctx.post(url, headers=headers, data=json.dumps(json_data), timeout=30_000)
+    except Exception as e:
+        _append_log(log_file, f"[sora][api] POST failed url={url!r} err={e}")
+        raise
+
+    try:
+        try:
+            tx["status"] = int(getattr(resp, "status", None))
+        except Exception:
+            tx["status"] = None
+        try:
+            tx["headers"] = dict(await resp.headers())
+        except Exception:
+            try:
+                tx["headers"] = dict(getattr(resp, "headers", None) or {})
+            except Exception:
+                tx["headers"] = None
+        body_text = ""
+        try:
+            body_text = await resp.text()
+        except Exception:
+            try:
+                b = await resp.body()
+                body_text = b.decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+        tx["response_body"] = body_text
+        _append_log(log_file, f"[sora][api] POST url={url!r} status={tx['status']}")
+        _append_log(log_file, f"[sora][api] response_body={_safe_trim(body_text, 800)!r}")
+        return tx
+    finally:
+        try:
+            await resp.dispose()
+        except Exception:
+            pass
+
+
+async def _pw_api_get(ctx, *, url: str, headers: Dict[str, str], log_file: Path) -> Dict[str, Any]:
+    tx: Dict[str, Any] = {
+        "seen": True,
+        "request_id": None,
+        "url": url,
+        "method": "GET",
+        "status": None,
+        "response_body": None,
+        "headers": None,
+        "log_file": str(log_file),
+    }
+    req_ctx = None
+    try:
+        req_ctx = getattr(ctx, "request", None)
+    except Exception:
+        req_ctx = None
+    if req_ctx is None:
+        raise RuntimeError("context.request 不可用，无法发起 API 请求")
+
+    resp = None
+    try:
+        resp = await req_ctx.get(url, headers=headers, timeout=30_000)
+    except Exception as e:
+        _append_log(log_file, f"[sora][api] GET failed url={url!r} err={e}")
+        raise
+
+    try:
+        try:
+            tx["status"] = int(getattr(resp, "status", None))
+        except Exception:
+            tx["status"] = None
+        try:
+            tx["headers"] = dict(await resp.headers())
+        except Exception:
+            try:
+                tx["headers"] = dict(getattr(resp, "headers", None) or {})
+            except Exception:
+                tx["headers"] = None
+        body_text = ""
+        try:
+            body_text = await resp.text()
+        except Exception:
+            try:
+                b = await resp.body()
+                body_text = b.decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+        tx["response_body"] = body_text
+        return tx
+    finally:
+        try:
+            await resp.dispose()
+        except Exception:
+            pass
+
+
+async def _pw_page_fetch_tx(
+    page,
+    *,
+    url: str,
+    method: str,
+    headers: Dict[str, str],
+    json_data: Optional[Dict[str, Any]],
+    log_file: Path,
+) -> Dict[str, Any]:
+    """在“浏览器页面上下文”里 fetch（走指纹浏览器自己的网络栈/代理/DNS），返回兼容 tx 结构。
+
+    重要：浏览器侧无法设置 User-Agent/Host/Cookie 等受限 header，这些会由浏览器自动携带。
+    """
+    tx: Dict[str, Any] = {
+        "seen": True,
+        "request_id": None,
+        "url": url,
+        "method": str(method or "GET").upper().strip(),
+        "status": None,
+        "response_body": None,
+        "headers": None,
+        "log_file": str(log_file),
+    }
+
+    # 去掉浏览器禁止设置的 headers（避免 fetch 直接抛 TypeError）
+    blocked = {"user-agent", "host", "cookie", "content-length", "accept-encoding", "connection", "origin", "referer"}
+    safe_headers: Dict[str, str] = {}
+    for k, v in (headers or {}).items():
+        if not k:
+            continue
+        lk = str(k).strip().lower()
+        if lk in blocked:
+            continue
+        safe_headers[str(k)] = str(v)
+
+    try:
+        res = await page.evaluate(
+            """async (args) => {
+              const { url, method, headers, body } = args;
+              const init = {
+                method,
+                headers: headers || {},
+                credentials: 'include',
+              };
+              if (body !== null && body !== undefined) {
+                init.body = JSON.stringify(body);
+              }
+              const resp = await fetch(url, init);
+              const text = await resp.text();
+              const hdrs = {};
+              try {
+                for (const [k, v] of resp.headers.entries()) hdrs[k] = v;
+              } catch (e) {}
+              return { status: resp.status, text, headers: hdrs };
+            }""",
+            {"url": url, "method": tx["method"], "headers": safe_headers, "body": json_data},
+        )
+    except Exception as e:
+        _append_log(log_file, f"[sora][page_fetch] fetch failed url={url!r} err={e}")
+        raise
+
+    try:
+        tx["status"] = int((res or {}).get("status")) if (res or {}).get("status") is not None else None
+    except Exception:
+        tx["status"] = None
+    try:
+        tx["response_body"] = str((res or {}).get("text") or "")
+    except Exception:
+        tx["response_body"] = ""
+    try:
+        tx["headers"] = dict((res or {}).get("headers") or {})
+    except Exception:
+        tx["headers"] = None
+
+    _append_log(log_file, f"[sora][page_fetch] {tx['method']} url={url!r} status={tx['status']}")
+    _append_log(log_file, f"[sora][page_fetch] body={_safe_trim(str(tx.get('response_body') or ''), 800)!r}")
+    return tx
 
 
 def _normalize_cdp_endpoint(endpoint: str) -> str:
@@ -940,8 +1339,8 @@ async def _sora_create_task_pw(
     monitor_seconds: float,
     monitor_url_regex: str,
     monitor_log_path: Optional[str],
-) -> Tuple[str, Dict[str, Any]]:
-    """在页面上创建任务并抓取 POST /backend/nf/create 响应，返回 task_id。"""
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """通过指纹浏览器环境直接调用 /backend/nf/create（不再模拟 UI 输入/点击）。"""
     log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
     await page.goto(target_url, wait_until="domcontentloaded")
     try:
@@ -949,186 +1348,64 @@ async def _sora_create_task_pw(
     except Exception:
         pass
 
+    # 新增：打开目标页后，从指纹浏览器 Network 抓 Bearer + 生成 Sentinel（后续用于直接 nf/create POST）
+    # 安全起见：这里只打印脱敏值；完整值保存在变量中供下一步请求使用
+    bearer_info = await _sora_extract_bearer_from_any_post_pw(page, timeout_seconds=20.0, log_file=log_file)
+    bearer_token = str(bearer_info.get("token") or "").strip() or None
+    user_agent = str(bearer_info.get("user_agent") or "").strip() or None
+    if not user_agent:
+        user_agent = await _pw_get_user_agent(page)
+    sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(page, device_id=None, log_file=log_file)
+
+    print(f"[sora][debug] bearer_token={_mask_secret(bearer_token or '', head=15, tail=15)} len={len(bearer_token or '')}")
+    print(f"[sora][debug] sentinel_token={_mask_secret(sentinel_token or '', head=15, tail=15)} len={len(sentinel_token or '')}")
+
+    if not bearer_token:
+        raise NonPenalizedTaskError("未能从指纹浏览器 Network 抓到 Bearer token（请确保已登录且页面会发出带 Authorization 的请求）")
+    if not sentinel_token:
+        raise NonPenalizedTaskError("未能生成 SentinelToken（__sentinel__ SDK 注入失败/被拦截）")
+
+    # 从 SentinelToken JSON 里提取 device_id（与 sora_client.py 行为一致）
+    oai_device_id = None
+    try:
+        sentinel_data = json.loads(str(sentinel_token))
+        if isinstance(sentinel_data, dict):
+            oai_device_id = str(sentinel_data.get("id") or "").strip() or None
+    except Exception:
+        oai_device_id = None
+    if not oai_device_id:
+        oai_device_id = str(uuid4())
+
+    # 构造 nf/create payload（参考 sora2api/sora_client.py 的 remix_video / generate_storyboard）
+    create_payload: Dict[str, Any] = {
+        "kind": "video",
+        "prompt": prompt,
+        "inpaint_items": [],
+        "remix_target_id": None,
+        "cameo_ids": [],
+        "cameo_replacements": {},
+        "model": "sy_8",
+        "orientation": "portrait",
+        "n_frames": 300,
+        "style_id": None,
+    }
+
+    create_url = _sora_backend_url_from_target(target_url, "/backend/nf/create")
+    headers: Dict[str, str] = {
+        "Authorization": f"Bearer {bearer_token}",
+        "OpenAI-Sentinel-Token": str(sentinel_token),
+        "Content-Type": "application/json",
+        "OAI-Language": "en-US",
+        "OAI-Device-Id": str(oai_device_id),
+    }
+
     _append_log(log_file, "\n" + "=" * 100)
-    _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [sora] create_task start url={target_url!r}")
-    _append_log(log_file, f"[sora] monitor_seconds={monitor_seconds} monitor_url_regex={monitor_url_regex!r} create_btn_regex={create_button_text_regex!r}")
+    _append_log(log_file, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [sora][api] nf/create start url={create_url!r}")
+    _append_log(log_file, f"[sora][api] ua={_safe_trim(headers.get('User-Agent') or '', 140)!r} device_id={oai_device_id!r}")
+    _append_log(log_file, f"[sora][api] payload={_safe_trim(json.dumps(create_payload, ensure_ascii=False), 1200)!r}")
 
-    prompt_info = await _sora_fill_prompt_pw(page, prompt=prompt, log_file=log_file)
-    if not bool(prompt_info.get("ok")):
-        # 没写进去就别点了，直接给更明确的错误（同时不计惩罚）
-        raise NonPenalizedTaskError(f"prompt 未成功写入输入框：{prompt_info}")
-    await asyncio.sleep(3)
-    btn0 = await _pw_find_create_button_pw(
-        page,
-        primary_regex=create_button_text_regex,
-        log_file=log_file,
-        timeout_seconds=15.0,
-        prefer_frame_idx=prompt_info.get("frame_idx"),
-    )
-    if btn0 is None:
-        # 先把页面可疑按钮都写入日志，方便你调整 regex/定位
-        await _pw_debug_dump_clickables_pw(page, log_file=log_file, max_items=80)
-        # 不立即失败：后面还会尝试键盘提交兜底
-    else:
-        try:
-            txt = await btn0.inner_text()
-        except Exception:
-            txt = ""
-        _append_log(log_file, f"[sora] create_button picked text={_safe_trim(txt, 120)!r}")
-        await _pw_wait_button_actionable(btn0, timeout_seconds=15.0, log_file=log_file)
-
-    # URL 匹配做更宽容的兜底：用户传入 regex 为主；若包含 backend/nf/create 字样则追加路径级匹配
-    url_pats = []
-    try:
-        url_pats.append(re.compile(monitor_url_regex, flags=re.IGNORECASE))
-    except Exception:
-        url_pats.append(re.compile(re.escape(str(monitor_url_regex or "")), flags=re.IGNORECASE))
-    try:
-        raw = str(monitor_url_regex or "").replace("\\", "")
-        if "backend/nf/create" in raw:
-            url_pats.append(re.compile(r"/backend/nf/create(\b|/|\?|$)", flags=re.IGNORECASE))
-    except Exception:
-        pass
-
-    def _pred(resp) -> bool:
-        try:
-            u = str(resp.url or "")
-            ok_url = False
-            for p in url_pats:
-                if p.search(u):
-                    ok_url = True
-                    break
-            if not ok_url:
-                return False
-            return str(resp.request.method or "").upper().strip() == "POST"
-        except Exception:
-            return False
-
-    def _pred_req(req) -> bool:
-        try:
-            u = str(getattr(req, "url", "") or "")
-            ok_url = False
-            for p in url_pats:
-                if p.search(u):
-                    ok_url = True
-                    break
-            if not ok_url:
-                return False
-            return str(getattr(req, "method", "") or "").upper().strip() == "POST"
-        except Exception:
-            return False
-
-    resp = None
-    # 触发策略：按钮点击 -> Ctrl+Enter -> Enter（逐个尝试直到命中 POST）
-    deadline = time.time() + max(1.0, float(monitor_seconds))
-    attempts: list[tuple[str, Callable[[], Awaitable[None]]]] = []
-    if btn0 is not None:
-        attempts.append(("click_button", lambda: _pw_click_button_robust(page, btn0, log_file=log_file)))
-
-    async def _press_ctrl_enter():
-        await _pw_focus_prompt_input_pw(page, log_file=log_file)
-        try:
-            await page.keyboard.press("Control+Enter")
-        except Exception:
-            # 某些环境按键名差异，兜底 Enter
-            await page.keyboard.press("Enter")
-        _append_log(log_file, "[sora] submit: pressed Control+Enter")
-
-    async def _press_enter():
-        await _pw_focus_prompt_input_pw(page, log_file=log_file)
-        await page.keyboard.press("Enter")
-        _append_log(log_file, "[sora] submit: pressed Enter")
-
-    attempts.append(("ctrl_enter", _press_ctrl_enter))
-    attempts.append(("enter", _press_enter))
-
-    last_err: Optional[Exception] = None
-    for name, trigger in attempts:
-        remain = deadline - time.time()
-        if remain <= 1.0:
-            break
-        try:
-            _append_log(log_file, f"[sora] try_trigger name={name} remain={remain:.2f}s")
-            # 先抓 request 再拿 response（比 expect_response 更不容易漏）
-            req_task = asyncio.create_task(page.wait_for_request(_pred_req, timeout=int(remain * 1000.0)))
-            try:
-                await trigger()
-            except Exception as te:
-                last_err = te
-                _append_log(log_file, f"[sora] trigger {name} failed: {te}")
-                if not req_task.done():
-                    req_task.cancel()
-                continue
-            try:
-                req = await req_task
-                try:
-                    req_url = str(getattr(req, "url", "") or "")
-                except Exception:
-                    req_url = ""
-                _append_log(log_file, f"[sora] got_request after trigger={name} url={_safe_trim(req_url, 240)!r}")
-                try:
-                    resp = await req.response()
-                except Exception:
-                    resp = None
-                if resp is not None and _pred(resp):
-                    _append_log(log_file, f"[sora] got_response(via request.response) trigger={name}")
-                else:
-                    _append_log(log_file, f"[sora] response missing/unmatched trigger={name} -> will fallback")
-                    resp = None
-                break
-            except Exception as we:
-                last_err = we
-                _append_log(log_file, f"[sora] wait_for_request after trigger={name} failed: {we}")
-                # 记录触发后短时间内有没有任何 POST（帮助判断“到底点到没”）
-                try:
-                    await _pw_log_recent_posts(page, seconds=2.0, log_file=log_file)
-                except Exception:
-                    pass
-                continue
-        except Exception as e:
-            last_err = e
-            continue
-
-    if resp is None:
-        # 兜底：再用 sniff 等待一次（避免“response 已发生但 expect_response 没匹配/错过”的情况）
-        if last_err is not None:
-            _append_log(log_file, f"[sora] wait/trigger failed (final): {last_err}")
-        try:
-            tx = await _sniff_http_transaction_pw(
-                page,
-                url_regex=str(monitor_url_regex or ""),
-                method="POST",
-                timeout_seconds=max(1.0, float(max(1.0, deadline - time.time()))),
-                log_path=str(log_file),
-            )
-        except Exception:
-            tx = {}
-        if (tx or {}).get("seen"):
-            body_text = (tx or {}).get("response_body") or ""
-            task_id = None
-            try:
-                payload_obj = json.loads(body_text) if body_text else {}
-                task_id = (payload_obj or {}).get("id") or (payload_obj or {}).get("task_id")
-            except Exception:
-                task_id = None
-            if task_id:
-                _append_log(log_file, f"[sora] fallback sniff ok task_id={task_id}")
-                return str(task_id), dict(tx)
-
-        # 这类错误多为登录态/权限/站点变化/按钮没真正触发；不计入窗口连续错误
-        try:
-            cur_url = str(getattr(page, "url", "") or "")
-        except Exception:
-            cur_url = ""
-        raise NonPenalizedTaskError(
-            "未监控到匹配的 POST 请求/响应（可能未登录/无权限/接口地址变化/按钮未真正触发）"
-            + f" monitor_url_regex={monitor_url_regex!r} page_url={_safe_trim(cur_url, 200)!r} prompt_fill={prompt_info}"
-        )
-
-    if resp is None:
-        raise NonPenalizedTaskError("未监控到匹配的 POST 响应（create 已触发但未抓到 response）")
-
-    create_tx = await _response_to_tx_pw(resp, log_path=monitor_log_path)
+    # 使用“页面内 fetch”发起 nf/create（走指纹浏览器网络栈，避免 APIRequestContext IPv6/DNS/代理差异）
+    create_tx = await _pw_page_fetch_tx(page, url=create_url, method="POST", headers=headers, json_data=create_payload, log_file=log_file)
 
     status = create_tx.get("status")
     body_text = create_tx.get("response_body") or ""
@@ -1154,7 +1431,15 @@ async def _sora_create_task_pw(
     if status_i != 200 or not task_id:
         raise RuntimeError(f"create 未成功或未解析到任务ID：status={status_i} body={_safe_trim(body_text, 400)}")
 
-    return str(task_id), create_tx
+    auth_state: Dict[str, Any] = {
+        "bearer_token": bearer_token,
+        "sentinel_token": sentinel_token,
+        "user_agent": user_agent,
+        "oai_device_id": oai_device_id,
+        "create_url": create_url,
+    }
+
+    return str(task_id), create_tx, auth_state
 
 
 @dataclass
@@ -1203,6 +1488,12 @@ class _SoraBrowserContext:
     browser_open_args: list[str] = field(default_factory=list)
     browser_force_open: bool = False
     browser_headless: bool = False
+
+    # API 模式所需的鉴权信息（从指纹浏览器 network 抓取）
+    bearer_token: Optional[str] = None
+    user_agent: Optional[str] = None
+    oai_device_id: Optional[str] = None
+    sentinel_token: Optional[str] = None
 
     async def ensure_open(
         self,
@@ -1360,7 +1651,7 @@ class _SoraBrowserContext:
             try:
                 await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
                 async with self.driver_lock:
-                    return await _sora_create_task_pw(
+                    task_id, create_tx, auth_state = await _sora_create_task_pw(
                         page=self.page,
                         prompt=prompt,
                         target_url=target_url,
@@ -1369,6 +1660,15 @@ class _SoraBrowserContext:
                         monitor_url_regex=monitor_url_regex,
                         monitor_log_path=monitor_log_path,
                     )
+                    # 保存 API 鉴权信息，供后续 pending 轮询使用（不写入日志/结果，避免泄露）
+                    try:
+                        self.bearer_token = auth_state.get("bearer_token")
+                        self.sentinel_token = auth_state.get("sentinel_token")
+                        self.user_agent = auth_state.get("user_agent")
+                        self.oai_device_id = auth_state.get("oai_device_id")
+                    except Exception:
+                        pass
+                    return task_id, create_tx
             finally:
                 # create 结束后，如果当前没有任何任务在该 ctx 上跑，启动空闲自动回收
                 if not self.watchers:
@@ -1443,16 +1743,32 @@ class _SoraBrowserContext:
                     return
 
                 tx: Optional[Dict[str, Any]] = None
+                # API 轮询 pending：不依赖页面是否自动发请求
+                log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parent / "logs.txt")
+                if not self.bearer_token:
+                    # 没有 token 无法轮询，直接报错给所有 watcher
+                    for tid, w in list(self.watchers.items()):
+                        if not w.future.done():
+                            w.future.set_exception(RuntimeError("缺少 bearer_token，无法轮询 pending（create 未成功抓取鉴权信息）"))
+                        self.watchers.pop(tid, None)
+                    return
+
+                try:
+                    pending_url = _sora_backend_url_from_target(getattr(self.page, "url", "") or "https://sora.chatgpt.com", "/backend/nf/pending/v2")
+                except Exception:
+                    pending_url = "https://sora.chatgpt.com/backend/nf/pending/v2"
+
+                headers: Dict[str, str] = {
+                    "Authorization": f"Bearer {self.bearer_token}",
+                    "OAI-Language": "en-US",
+                    "OAI-Device-Id": str(self.oai_device_id or ""),
+                }
+
                 async with self.driver_lock:
                     try:
-                        tx = await _sniff_http_transaction_pw(
-                            self.page,
-                            url_regex=str(self.pending_url_regex or ""),
-                            method="GET",
-                            timeout_seconds=float(self.sniff_timeout_seconds),
-                            log_path=self.monitor_log_path,
-                        )
-                    except Exception:
+                        tx = await _pw_page_fetch_tx(self.page, url=pending_url, method="GET", headers=headers, json_data=None, log_file=log_file)
+                    except Exception as e:
+                        _append_log(log_file, f"[sora][api] pending poll failed: {e}")
                         tx = None
 
                 body = (tx or {}).get("response_body") or ""
