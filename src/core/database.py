@@ -23,6 +23,7 @@ from .models import (
     SystemConfig,
     Task,
     TaskType,
+    TaskTypePublic,
     TaskTypeWindow,
     WindowInfo,
 )
@@ -777,12 +778,12 @@ class Database:
             return [TaskType(**dict(r)) for r in rows]
 
     
-    async def list_task_types_public(self) -> List[TaskType]:
+    async def list_task_types_public(self) -> List[TaskTypePublic]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT id, name, code,timeout_seconds,created_at FROM task_types WHERE deleted = 0 And enabled = 1 ORDER BY updated_at DESC, id DESC")
+            cur = await db.execute("SELECT id, name, code,timeout_seconds, created_at,enabled FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
             rows = await cur.fetchall()
-            return [TaskType(**dict(r)) for r in rows]
+            return [TaskTypePublic(**dict(r)) for r in rows]
 
     async def create_task_type(
         self,
