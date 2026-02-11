@@ -1142,38 +1142,73 @@ class Database:
                         await db.execute("PRAGMA busy_timeout=3000")
                     except Exception:
                         pass
+                    # 兼容旧版 SQLite：部分版本不支持「CTE 内含 UPDATE/RETURNING」语法；
+                    # 这里改为同一事务中：先挑选 mapping，再条件 UPDATE 预占并发槽位，最后 SELECT 详情。
+                    await db.execute("BEGIN IMMEDIATE")
 
+                    # Step 1: 按排序挑选 1 个 mapping_id，并取出本次更新需要的并发/阈值参数
                     cur = await db.execute(
                         """
-                        WITH picked AS (
-                          SELECT
-                            m.id AS mapping_id
-                          FROM task_types t
-                          JOIN task_type_windows m ON m.task_type_id = t.id
-                          JOIN windows w ON m.window_pk = w.id
-                          JOIN spaces s ON w.space_pk = s.id
-                          JOIN browsers b ON s.browser_id = b.id
-                          WHERE t.deleted=0 AND t.enabled=1
-                            AND t.code=?
-                            AND m.deleted=0 AND m.enabled=1
-                            AND w.deleted=0 AND w.enabled=1
-                            AND (
-                              (m.remaining_quota > 1)
-                              OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
-                            )
-                            AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
-                            AND (m.consecutive_errors < t.continuous_error_threshold)
-                            AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                          ORDER BY m.consecutive_errors ASC, m.remaining_quota ASC, m.updated_at DESC
-                          LIMIT 1
-                        ),
-                        upd AS (
-                          UPDATE task_type_windows
-                          SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                              updated_at = CURRENT_TIMESTAMP
-                          WHERE id = (SELECT mapping_id FROM picked)
-                          RETURNING id AS mapping_id
-                        )
+                        SELECT
+                          m.id AS mapping_id,
+                          t.concurrency AS task_concurrency,
+                          t.continuous_error_threshold
+                        FROM task_types t
+                        JOIN task_type_windows m ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        JOIN spaces s ON w.space_pk = s.id
+                        JOIN browsers b ON s.browser_id = b.id
+                        WHERE t.deleted=0 AND t.enabled=1
+                          AND t.code=?
+                          AND m.deleted=0 AND m.enabled=1
+                          AND w.deleted=0 AND w.enabled=1
+                          AND (
+                            (m.remaining_quota > 1)
+                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
+                          )
+                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (m.consecutive_errors < t.continuous_error_threshold)
+                          AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
+                        ORDER BY m.consecutive_errors ASC, m.remaining_quota ASC, m.updated_at DESC
+                        LIMIT 1
+                        """,
+                        (code,),
+                    )
+                    picked = await cur.fetchone()
+                    if not picked:
+                        await db.execute("ROLLBACK")
+                        return None
+
+                    mapping_id = int(picked["mapping_id"])
+                    task_concurrency = max(1, int(picked["task_concurrency"] or 1))
+                    threshold = max(1, int(picked["continuous_error_threshold"] or 1))
+
+                    # Step 2: 条件 UPDATE，确保并发/健康度/额度约束仍成立（在同一事务内保证原子性）
+                    cur2 = await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                          AND deleted = 0 AND enabled = 1
+                          AND (consecutive_errors < ?)
+                          AND (COALESCE(inflight_slots, 0) < ?)
+                          AND (
+                            (remaining_quota > 1)
+                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
+                          )
+                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
+                        """,
+                        (mapping_id, threshold, task_concurrency),
+                    )
+                    if int(cur2.rowcount or 0) <= 0:
+                        # 理论上在 IMMEDIATE 事务内不太会发生，但为了稳健性（以及未来条件调整）保留兜底
+                        await db.execute("ROLLBACK")
+                        continue
+
+                    # Step 3: 返回 join 后的上下文字段（与旧实现一致）
+                    cur3 = await db.execute(
+                        """
                         SELECT
                           m.*,
                           t.code AS task_code,
@@ -1191,17 +1226,17 @@ class Database:
                           b.lan_addr,
                           b.vendor,
                           b.access_key
-                        FROM upd
-                        JOIN task_type_windows m ON m.id = upd.mapping_id
+                        FROM task_type_windows m
                         JOIN task_types t ON m.task_type_id = t.id
                         JOIN windows w ON m.window_pk = w.id
                         JOIN spaces s ON w.space_pk = s.id
                         JOIN browsers b ON s.browser_id = b.id
+                        WHERE m.id = ?
                         LIMIT 1
                         """,
-                        (code,),
+                        (mapping_id,),
                     )
-                    row = await cur.fetchone()
+                    row = await cur3.fetchone()
                     await db.commit()
                     return dict(row) if row else None
             except Exception as e:
@@ -1213,51 +1248,6 @@ class Database:
                     continue
                 raise
         return None
-
-    async def try_reserve_mapping_slot(self, mapping_id: int, task_concurrency: int) -> bool:
-        """尝试为某个 task_type_windows(mapping) 预占 1 个并发槽位。
-
-        特点：
-        - 使用 DB 原子 UPDATE 保证并发下不会超过 task_concurrency（即 task_types.concurrency）
-        - 兼容多进程/多实例（不依赖 Python 进程内锁）
-        - remaining_quota 只代表额度；并发限制以 task_types.concurrency 为准
-        - remaining_quota == 1 表示窗口已用完（不可再用）
-        """
-        mid = int(mapping_id)
-        max_c = max(1, int(task_concurrency or 1))
-
-        # SQLite 高并发下可能出现 "database is locked"；做少量快速重试
-        for _ in range(3):
-            try:
-                async with aiosqlite.connect(self.db_path) as db:
-                    await db.execute("PRAGMA foreign_keys=ON")
-                    cur = await db.execute(
-                        """
-                        UPDATE task_type_windows
-                        SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                          AND deleted = 0 AND enabled = 1
-                          AND (COALESCE(inflight_slots, 0) < ?)
-                          AND (
-                            (remaining_quota > 1)
-                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
-                          )
-                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
-                        """,
-                        (mid, max_c),
-                    )
-                    await db.commit()
-                    return int(cur.rowcount or 0) > 0
-            except Exception as e:
-                # 仅对锁竞争做轻量重试，其他异常直接抛出便于定位
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
-                    continue
-                raise
-        return False
 
     async def release_mapping_slot(self, mapping_id: int) -> None:
         """释放 1 个预占并发槽位（下限到 0，避免异常时减成负数）。"""
