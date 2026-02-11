@@ -215,7 +215,7 @@
 
         // bind buttons
         treeContainer.querySelectorAll("[data-action]").forEach(btn => {
-          btn.addEventListener("click", () => handleAction(btn.dataset.action, btn.dataset));
+          btn.addEventListener("click", (e) => handleAction(btn.dataset.action, btn.dataset, e.currentTarget));
         });
       }
 
@@ -253,9 +253,9 @@
 
       function renderSpace(s) {
         const sid = `s_${s.id}`;
-        const table = renderWindowsTable(s.windows || []);
+        const table = renderWindowsTable(s.windows || [], s.id);
         return `
-          <div class="card mb-3">
+          <div class="card mb-3" data-role="spaceCard" data-space-pk="${s.id}">
             <div class="card-header d-flex flex-wrap gap-2 align-items-center">
               <div class="fw-semibold">${escapeHtml(s.name)}</div>
               <span class="badge text-bg-light mono border">#${s.id}</span>
@@ -266,13 +266,16 @@
               <button class="btn btn-primary btn-sm" type="button" data-action="sync_space" data-space_pk="${s.id}">同步窗口</button>
             </div>
             <div class="card-body">
-              ${table}
+              <div class="mb-2" data-role="syncProgress" data-space-pk="${s.id}"></div>
+              <div data-role="windowsWrap" data-space-pk="${s.id}">
+                ${table}
+              </div>
             </div>
           </div>
         `;
       }
 
-      function renderWindowsTable(windows) {
+      function renderWindowsTable(windows, spacePk) {
         if (!windows.length) return `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
         return `
           <div class="table-responsive">
@@ -290,7 +293,7 @@
                   <th>删除</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk ?? ""))}">
                 ${windows.map(w => `
                   <tr class="small2">
                     <td class="mono text-muted">#${escapeHtml(String(w.id ?? "-"))}</td>
@@ -310,7 +313,7 @@
         `;
       }
 
-      function handleAction(action, ds) {
+      function handleAction(action, ds, fromEl) {
         if (action === "edit_browser") {
           const b = JSON.parse(decodeURIComponent(ds.browser));
           openBrowserModal("edit", b);
@@ -324,8 +327,121 @@
         } else if (action === "delete_space") {
           deleteSpace(parseInt(ds.space_pk, 10));
         } else if (action === "sync_space") {
-          syncSpace(parseInt(ds.space_pk, 10));
+          syncSpace(parseInt(ds.space_pk, 10), fromEl);
         }
+      }
+
+      function setBtnBusy(btn, busy, { loadingText = "处理中" } = {}) {
+        if (!btn) return;
+        if (busy) {
+          if (btn.dataset.origHtml == null) btn.dataset.origHtml = btn.innerHTML;
+          btn.disabled = true;
+          btn.innerHTML = `
+            <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+            <span>${escapeHtml(loadingText)}</span>
+          `;
+          return;
+        }
+        btn.disabled = false;
+        if (btn.dataset.origHtml != null) btn.innerHTML = btn.dataset.origHtml;
+      }
+
+      function getSpaceDom(spacePk) {
+        const progress = document.querySelector(`[data-role="syncProgress"][data-space-pk="${spacePk}"]`);
+        const wrap = document.querySelector(`[data-role="windowsWrap"][data-space-pk="${spacePk}"]`);
+        const tbody = document.querySelector(`[data-role="windowsTbody"][data-space-pk="${spacePk}"]`);
+        return { progress, wrap, tbody };
+      }
+
+      function setSpaceProgress(spacePk, { current = 0, total = 0, text = "" } = {}) {
+        const { progress } = getSpaceDom(spacePk);
+        if (!progress) return;
+        if (!text) {
+          progress.innerHTML = "";
+          return;
+        }
+        const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((current / total) * 100))) : 0;
+        progress.innerHTML = `
+          <div class="small text-muted mb-1">${escapeHtml(text)}</div>
+          <div class="progress" style="height: 6px;">
+            <div class="progress-bar" role="progressbar" style="width: ${pct}%"></div>
+          </div>
+        `;
+      }
+
+      function ensureWindowsTableSkeleton(spacePk) {
+        const { wrap, tbody } = getSpaceDom(spacePk);
+        if (!wrap) return null;
+        if (tbody) return tbody;
+        wrap.innerHTML = `
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr class="small2">
+                  <th>窗口ID</th>
+                  <th>窗口名称</th>
+                  <th>账号</th>
+                  <th>网址</th>
+                  <th>代理</th>
+                  <th>国家</th>
+                  <th>到期</th>
+                  <th>启用</th>
+                  <th>删除</th>
+                </tr>
+              </thead>
+              <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk))}"></tbody>
+            </table>
+          </div>
+        `;
+        return document.querySelector(`[data-role="windowsTbody"][data-space-pk="${spacePk}"]`);
+      }
+
+      function rowHtmlForWindow(w) {
+        return `
+          <tr class="small2">
+            <td class="mono text-muted">#${escapeHtml(String(w.id ?? "-"))}</td>
+            <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
+            <td>${escapeHtml(w.platform_account || "-")}</td>
+            <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+            <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
+            <td>${escapeHtml(w.proxy_country || "-")}</td>
+            <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
+            <td>${w.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+            <td>${w.deleted ? `<span class="badge text-bg-danger">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+          </tr>
+        `;
+      }
+
+      async function renderWindowsIncrementally(spacePk, windows) {
+        const { wrap } = getSpaceDom(spacePk);
+        if (!wrap) return;
+        if (!windows || !windows.length) {
+          wrap.innerHTML = `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
+          setSpaceProgress(spacePk, { text: "" });
+          return;
+        }
+        const tb = ensureWindowsTableSkeleton(spacePk);
+        if (!tb) return;
+        tb.innerHTML = "";
+
+        const total = windows.length;
+        let idx = 0;
+        const chunkSize = total <= 200 ? 1 : 10;
+
+        setSpaceProgress(spacePk, { current: 0, total, text: `加载窗口：0/${total}` });
+
+        await new Promise(resolve => {
+          const pump = () => {
+            const end = Math.min(total, idx + chunkSize);
+            let html = "";
+            for (; idx < end; idx += 1) html += rowHtmlForWindow(windows[idx]);
+            if (html) tb.insertAdjacentHTML("beforeend", html);
+            setSpaceProgress(spacePk, { current: end, total, text: `加载窗口：${end}/${total}` });
+            if (end >= total) return resolve();
+            window.setTimeout(pump, 0);
+          };
+          pump();
+        });
       }
 
       function openProjectModal(mode) {
@@ -464,17 +580,35 @@
         await loadTree();
       }
 
-      async function syncSpace(spacePk) {
+      async function syncSpace(spacePk, fromEl) {
+        let btn = fromEl;
+        if (!btn) btn = document.querySelector(`button[data-action="sync_space"][data-space_pk="${spacePk}"]`);
         try {
-          toast("正在同步窗口...", "info");
+          setBtnBusy(btn, true, { loadingText: "同步中" });
+          setSpaceProgress(spacePk, { current: 0, total: 1, text: "正在同步窗口（可能较慢）..." });
+
           const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-windows`, { method: "POST" });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "同步失败");
+
+          setSpaceProgress(spacePk, { current: 0, total: 1, text: "同步完成，正在加载窗口列表..." });
+
+          const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
+          if (!r2) return;
+          const d2 = await r2.json();
+          if (!r2.ok) throw new Error(d2.detail || "加载窗口列表失败");
+
+          await renderWindowsIncrementally(spacePk, d2.windows || []);
+
           toast(d.message || "同步完成", "success");
-          await loadTree();
+          setSpaceProgress(spacePk, { current: 1, total: 1, text: `完成：${(d2.windows || []).length} 条窗口` });
+          window.setTimeout(() => setSpaceProgress(spacePk, { text: "" }), 1500);
         } catch (e) {
+          setSpaceProgress(spacePk, { current: 0, total: 1, text: `同步失败：${e.message || "未知错误"}` });
           toast(e.message, "error");
+        } finally {
+          setBtnBusy(btn, false);
         }
       }
 

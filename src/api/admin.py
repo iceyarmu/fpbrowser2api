@@ -214,6 +214,26 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
     }
 
 
+@router.get("/api/admin/ui-defaults")
+async def get_ui_defaults(token: str = Depends(verify_admin_token)):
+    """给管理台前端提供的默认值（避免页面写死 magic number）。"""
+    try:
+        # dataclass 字段默认值，无需实例化（SoraSession 需要 pw_ctx 参数）
+        from ..services.sora_task_executor import SoraSession  # type: ignore
+
+        idle_close_seconds_default = float(SoraSession.__dataclass_fields__["idle_close_seconds"].default)  # type: ignore[attr-defined]
+    except Exception:
+        idle_close_seconds_default = 30.0
+
+    return {
+        "success": True,
+        "defaults": {
+            # 点击“关闭”后，会触发 _schedule_idle_close；这里的默认倒计时提示应与执行器默认值一致
+            "idle_close_seconds": idle_close_seconds_default,
+        },
+    }
+
+
 @router.post("/api/admin/system-config")
 async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depends(verify_admin_token)):
     if not db:
@@ -571,11 +591,11 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
+    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
-    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     try:
-        info = await sora_ctx.api_invite_mine(target_url="https://sora.chatgpt.com/explore")
+        info = await sora_ctx.api_invite_mine(target_url="https://sora.chatgpt.com/drafts")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"刷新邀请码失败：{e}")
 
@@ -608,9 +628,9 @@ async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verif
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
+    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
-    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     # 先禁止自动关闭，再确保已打开（避免 ensure_open / 其它调用尾部 schedule 进来）
     sora_ctx.idle_close_disabled = True
     try:
@@ -643,9 +663,9 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.sora_browser_context import _get_or_create_ctx  # type: ignore
+    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
-    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     sora_ctx.idle_close_disabled = False
     try:
         sora_ctx._schedule_idle_close()
