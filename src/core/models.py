@@ -100,6 +100,13 @@ class TaskType(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class TaskTypePublic(BaseModel):
+    id: Optional[int] = None
+    name: str
+    code: str  # 英文唯一
+    # 动态函数 key（来自 services/task_handler_registry.py）
+    enabled: bool = True
+    created_at: Optional[datetime] = None
 
 class TaskTypeWindow(BaseModel):
     id: Optional[int] = None
