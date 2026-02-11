@@ -515,11 +515,6 @@ async def _sora_create_task_pw(
     except Exception:
         status_i = None
 
-    if status_i == 400:
-        raise NonPenalizedTaskError(
-            f"create 未成功或未解析到任务ID：status={status_i} body={safe_trim(body_text, 400)}",
-            status_code=status_i,
-        )
     if status_i != 200 or not task_id:
         raise RuntimeError(f"create 未成功或未解析到任务ID：status={status_i} body={safe_trim(body_text, 400)}")
 
