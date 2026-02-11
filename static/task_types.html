@@ -125,6 +125,7 @@
                       <th>重置时间</th>
                       <th>邀请码</th>
                       <th>状态</th>
+                      <th>占用</th>
                       <th>启用</th>
                       <th>操作</th>
                     </tr>
@@ -664,7 +665,7 @@
       async function loadMappings() {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="9" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
@@ -680,7 +681,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="9" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无绑定窗口</td></tr>`;
           return;
         }
         renderQuotaQuickSelect();
@@ -740,6 +741,9 @@
                 >⟲</button>
               </div>
               <div>冷却：${escapeHtml(m.error_cooldown_until || "-")}</div>
+            </td>
+            <td class="mono">
+              <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
             </td>
             <td>${m.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
             <td>
@@ -1062,7 +1066,7 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="9" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -1076,7 +1080,7 @@
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="9" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));

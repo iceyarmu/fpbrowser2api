@@ -113,6 +113,10 @@ class TaskTypeWindow(BaseModel):
     task_type_id: int
     window_pk: int  # WindowInfo.id
 
+    # 运行中/已预占的并发槽位（用于高并发下的“窗口级”并发限制）
+    # 说明：必须由 DB 原子 UPDATE 控制增减，避免多进程/多实例下超卖
+    inflight_slots: int = 0
+
     total_errors: int = 0
     consecutive_errors: int = 0
 

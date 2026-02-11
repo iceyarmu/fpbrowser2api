@@ -180,6 +180,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_type_id INTEGER NOT NULL,
                     window_pk INTEGER NOT NULL,
+                    inflight_slots INTEGER DEFAULT 0,
                     total_errors INTEGER DEFAULT 0,
                     consecutive_errors INTEGER DEFAULT 0,
                     daily_quota INTEGER DEFAULT 0,
@@ -337,6 +338,7 @@ class Database:
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             task_type_id INTEGER NOT NULL,
                             window_pk INTEGER NOT NULL,
+                            inflight_slots INTEGER DEFAULT 0,
                             total_errors INTEGER DEFAULT 0,
                             consecutive_errors INTEGER DEFAULT 0,
                             daily_quota INTEGER DEFAULT 0,
@@ -357,6 +359,7 @@ class Database:
                         """
                         INSERT INTO task_type_windows_new (
                             id, task_type_id, window_pk,
+                            inflight_slots,
                             total_errors, consecutive_errors,
                             daily_quota, remaining_quota,
                             cooldown_until, error_cooldown_until, enabled, deleted,
@@ -364,6 +367,7 @@ class Database:
                         )
                         SELECT
                             id, task_type_id, window_pk,
+                            0 AS inflight_slots,
                             total_errors, consecutive_errors,
                             daily_quota, remaining_quota,
                             cooldown_until, NULL AS error_cooldown_until, enabled, deleted,
@@ -380,6 +384,7 @@ class Database:
 
                 # Sora 扩展字段（余额/邀请码）
                 columns_to_add = [
+                    ("inflight_slots", "INTEGER DEFAULT 0"),
                     ("sora_remaining_count", "INTEGER DEFAULT 0"),
                     ("sora_rate_limit_reached", "BOOLEAN DEFAULT 0"),
                     ("sora_access_resets_in_seconds", "INTEGER DEFAULT 0"),
@@ -1058,8 +1063,8 @@ class Database:
         """返回可用于调度挑选的窗口候选列表（按健康度/额度排序）。
 
         说明：
-        - 并发控制不在 DB 层完成（需要结合内存中的 semaphore 状态）。
-        - 调度器可基于本列表做负载均衡挑选，并跳过已满载窗口。
+        - 并发控制在 DB 层完成：通过 inflight_slots 原子增减，支持多进程/多实例。
+        - 这里会过滤掉已满载（inflight_slots >= task_types.concurrency）的 mapping。
         """
         lim = max(1, min(500, int(limit or 50)))
         async with aiosqlite.connect(self.db_path) as db:
@@ -1068,6 +1073,10 @@ class Database:
                 """
                 SELECT
                   m.*,
+                  CASE
+                    WHEN (m.remaining_quota > 1) THEN 1
+                    ELSE 0
+                  END AS has_quota_now,
                   t.code AS task_code,
                   t.concurrency AS task_concurrency,
                   t.continuous_error_threshold,
@@ -1097,7 +1106,8 @@ class Database:
                     OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
                   )
                   AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
-                ORDER BY m.consecutive_errors ASC, m.remaining_quota DESC, m.updated_at DESC
+                  AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
+                ORDER BY has_quota_now DESC, m.consecutive_errors ASC, m.remaining_quota ASC, m.updated_at DESC
                 LIMIT ?
                 """,
                 (task_type_code.strip(), lim),
@@ -1105,13 +1115,178 @@ class Database:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def pick_available_window(self, task_type_code: str) -> Optional[Dict[str, Any]]:
-        """选择一个可用窗口（额度>0、启用、未冷却、未删除）。
+    async def pick_and_reserve_window_for_task(self, task_type_code: str) -> Optional[Dict[str, Any]]:
+        """挑选 1 个窗口并原子预占 1 个并发槽位（一步完成）。
 
-        注意：并发控制在调度器层完成；这里仅做 DB 条件筛选 + 简单排序。
+        目标：
+        - 避免 TaskService “先查一批候选 -> 再循环 try_reserve” 的高并发抖动
+        - 把“排序挑选 + 并发预占”压缩为单次 DB 写入（单条 SQL）
+        - remaining_quota 只代表额度：remaining_quota == 1 表示不可用；并发限制以 task_types.concurrency 为准
+
+        返回：
+        - 成功：返回 join 后的窗口信息 dict（与 list_available_windows_for_pick 字段一致）
+        - 失败：返回 None
         """
-        items = await self.list_available_windows_for_pick(task_type_code=task_type_code, limit=1)
-        return items[0] if items else None
+        code = (task_type_code or "").strip()
+        if not code:
+            return None
+
+        # SQLite 高并发下可能出现 "database is locked"；做少量快速重试
+        for _ in range(3):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    db.row_factory = aiosqlite.Row
+                    await db.execute("PRAGMA foreign_keys=ON")
+                    # busy_timeout 可以显著减少高并发瞬时锁冲突失败
+                    try:
+                        await db.execute("PRAGMA busy_timeout=3000")
+                    except Exception:
+                        pass
+
+                    cur = await db.execute(
+                        """
+                        WITH picked AS (
+                          SELECT
+                            m.id AS mapping_id
+                          FROM task_types t
+                          JOIN task_type_windows m ON m.task_type_id = t.id
+                          JOIN windows w ON m.window_pk = w.id
+                          JOIN spaces s ON w.space_pk = s.id
+                          JOIN browsers b ON s.browser_id = b.id
+                          WHERE t.deleted=0 AND t.enabled=1
+                            AND t.code=?
+                            AND m.deleted=0 AND m.enabled=1
+                            AND w.deleted=0 AND w.enabled=1
+                            AND (
+                              (m.remaining_quota > 1)
+                              OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
+                            )
+                            AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
+                            AND (m.consecutive_errors < t.continuous_error_threshold)
+                            AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
+                          ORDER BY m.consecutive_errors ASC, m.remaining_quota ASC, m.updated_at DESC
+                          LIMIT 1
+                        ),
+                        upd AS (
+                          UPDATE task_type_windows
+                          SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                              updated_at = CURRENT_TIMESTAMP
+                          WHERE id = (SELECT mapping_id FROM picked)
+                          RETURNING id AS mapping_id
+                        )
+                        SELECT
+                          m.*,
+                          t.code AS task_code,
+                          t.concurrency AS task_concurrency,
+                          t.continuous_error_threshold,
+                          t.timeout_seconds,
+                          t.create_task_handler,
+                          w.window_key,
+                          w.window_name,
+                          w.platform_account,
+                          w.platform_url,
+                          s.id AS space_pk,
+                          s.space_id AS space_id,
+                          b.id AS browser_pk,
+                          b.lan_addr,
+                          b.vendor,
+                          b.access_key
+                        FROM upd
+                        JOIN task_type_windows m ON m.id = upd.mapping_id
+                        JOIN task_types t ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        JOIN spaces s ON w.space_pk = s.id
+                        JOIN browsers b ON s.browser_id = b.id
+                        LIMIT 1
+                        """,
+                        (code,),
+                    )
+                    row = await cur.fetchone()
+                    await db.commit()
+                    return dict(row) if row else None
+            except Exception as e:
+                # 仅对锁竞争做轻量重试，其他异常直接抛出便于定位
+                if "database is locked" in str(e).lower():
+                    import asyncio
+
+                    await asyncio.sleep(0.01)
+                    continue
+                raise
+        return None
+
+    async def try_reserve_mapping_slot(self, mapping_id: int, task_concurrency: int) -> bool:
+        """尝试为某个 task_type_windows(mapping) 预占 1 个并发槽位。
+
+        特点：
+        - 使用 DB 原子 UPDATE 保证并发下不会超过 task_concurrency（即 task_types.concurrency）
+        - 兼容多进程/多实例（不依赖 Python 进程内锁）
+        - remaining_quota 只代表额度；并发限制以 task_types.concurrency 为准
+        - remaining_quota == 1 表示窗口已用完（不可再用）
+        """
+        mid = int(mapping_id)
+        max_c = max(1, int(task_concurrency or 1))
+
+        # SQLite 高并发下可能出现 "database is locked"；做少量快速重试
+        for _ in range(3):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute("PRAGMA foreign_keys=ON")
+                    cur = await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                          AND deleted = 0 AND enabled = 1
+                          AND (COALESCE(inflight_slots, 0) < ?)
+                          AND (
+                            (remaining_quota > 1)
+                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
+                          )
+                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
+                        """,
+                        (mid, max_c),
+                    )
+                    await db.commit()
+                    return int(cur.rowcount or 0) > 0
+            except Exception as e:
+                # 仅对锁竞争做轻量重试，其他异常直接抛出便于定位
+                if "database is locked" in str(e).lower():
+                    import asyncio
+
+                    await asyncio.sleep(0.01)
+                    continue
+                raise
+        return False
+
+    async def release_mapping_slot(self, mapping_id: int) -> None:
+        """释放 1 个预占并发槽位（下限到 0，避免异常时减成负数）。"""
+        mid = int(mapping_id)
+        for _ in range(3):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute("PRAGMA foreign_keys=ON")
+                    await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET inflight_slots = CASE
+                              WHEN COALESCE(inflight_slots, 0) >= 1 THEN COALESCE(inflight_slots, 0) - 1
+                              ELSE 0
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (mid,),
+                    )
+                    await db.commit()
+                    return
+            except Exception as e:
+                if "database is locked" in str(e).lower():
+                    import asyncio
+
+                    await asyncio.sleep(0.01)
+                    continue
+                raise
 
     # ---------- tasks ----------
     async def create_task(self, task: Task) -> int:
