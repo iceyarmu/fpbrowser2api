@@ -109,12 +109,12 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
     if not base_url or not space_id or not window_key:
         raise RuntimeError("mapping 缺少 vendor/lan_addr/space_id/window_key，无法刷新 Sora 余额")
 
-    # 复用 _SoraBrowserContext（避免重复开浏览器）
-    from .sora_browser_context import _get_or_create_ctx  # type: ignore
+    # 复用 SoraSession（避免重复开浏览器）
+    from .sora_task_executor import get_or_create_sora_session  # type: ignore
 
-    sora_ctx = _get_or_create_ctx(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     # 选一个稳定入口页；只用于触发带 Authorization 的请求头捕获
-    target_url = "https://sora.chatgpt.com/explore"
+    target_url = "https://sora.chatgpt.com/drafts"
     info = await sora_ctx.api_nf_check(target_url=target_url)
 
     remaining = int(info.get("remaining_count") or 0)

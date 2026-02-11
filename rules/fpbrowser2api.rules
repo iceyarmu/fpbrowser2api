@@ -20,9 +20,9 @@ FPBrowser2API（Python/FastAPI）项目说明与约定
       - task_service.py: 任务调度（窗口挑选、并发/额度/冷却、后台执行）
       - image_task_executor.py: 图片任务执行器（当前为模拟进度；后续接入真实图片生成）
       - video_task_executor.py: 视频任务执行器（当前为模拟进度；后续接入真实视频生成）
-      - sora_browser_context.py: Sora 窗口复用上下文（token 抓取、pending 轮询、nf_check、invite 等通用能力）
-      - sora_task_executor.py: Sora 任务执行入口（sora_gen_video）
-      - task_executor.py: 旧版 Sora helper 实现（供 sora_* 模块复用；后续可再拆分/迁移）
+      - playwright_broswer_context.py: 通用指纹浏览器 Playwright 上下文（开窗/连CDP/挑页/page内fetch）
+      - sora_task_executor.py: Sora 执行器（sora_gen_video + SoraSession：nf/create、pending、drafts/publish、nf_check、invite）
+      - jimeng_task_executor.py: 即梦执行器（预留骨架；复用 playwright_broswer_context.py）
   - static/
     - login.html: 登录页
     - system.html: 系统配置页

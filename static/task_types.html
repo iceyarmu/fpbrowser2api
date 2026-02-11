@@ -291,6 +291,7 @@
       // ---- 仅用于本页交互（不入 state 持久化）----
       const ui = {
         closeCountdownByMappingId: new Map(), // mappingId -> { toastEl, toast, timer }
+        idleCloseSecondsDefault: 30, // 从后端 ui-defaults 动态读取
       };
 
       const errorModalTitle = document.getElementById("errorModalTitle");
@@ -513,6 +514,19 @@
         renderHandlerSelects();
       }
 
+      async function loadUiDefaults() {
+        try {
+          const r = await adminFetch("/api/admin/ui-defaults");
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载 UI 默认值失败");
+          const secs = parseInt(d?.defaults?.idle_close_seconds, 10);
+          if (!Number.isNaN(secs) && secs >= 0) ui.idleCloseSecondsDefault = secs;
+        } catch {
+          // ignore，使用默认 30
+        }
+      }
+
       function renderQuotaQuickSelect() {
         const sel = document.getElementById("quotaHandlerQuick");
         const quotaHandlerKey = state.current?.refresh_quota_handler || "";
@@ -689,7 +703,7 @@
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div class="fw-semibold">${m.remaining_quota}</div>
+                <div class="fw-semibold" data-role="remainingQuota" data-mid="${m.id}">${m.remaining_quota}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
               </div>
             </td>
@@ -703,7 +717,7 @@
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div class="fw-semibold">${escapeHtml(m.sora_invite_code || "-")}</div>
+                <div class="fw-semibold" data-role="inviteCode" data-mid="${m.id}">${escapeHtml(m.sora_invite_code || "-")}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新邀请码" data-act="refreshInvite" data-mid="${m.id}">⟳</button>
               </div>
             </td>
@@ -810,14 +824,23 @@
 
       async function refreshInvite(mappingId) {
         try {
+          const { refreshInviteBtn } = getRowActionButtons(mappingId);
+          setBtnBusy(refreshInviteBtn, true, { loadingText: "刷新中", keepWidth: false });
           const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/refresh-invite-code`, { method: "POST" });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "刷新邀请码失败");
+          const code = (d.invite_code == null || String(d.invite_code).trim() === "") ? "-" : String(d.invite_code);
+          const el = document.querySelector(`[data-role="inviteCode"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = code;
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (m) m.sora_invite_code = code === "-" ? null : code;
           toast("邀请码已刷新", "success");
-          await loadMappings();
         } catch (e) {
           toast(e.message, "error");
+        } finally {
+          const { refreshInviteBtn } = getRowActionButtons(mappingId);
+          setBtnBusy(refreshInviteBtn, false);
         }
       }
 
@@ -853,7 +876,7 @@
         showCloseCountdownToast({
           mappingId,
           windowName: m?.window_name || "-",
-          seconds: 3,
+          seconds: ui.idleCloseSecondsDefault ?? 30,
           onCancel: () => {
             // 用户撤销/关闭提示：恢复按钮可点击
             if (openBtn) openBtn.disabled = false;
@@ -1072,18 +1095,30 @@
 
       async function refreshQuota(mappingId) {
         try {
+          const { refreshQuotaBtn } = getRowActionButtons(mappingId);
+          setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
           const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "刷新失败");
-          toast(`已刷新：remaining_quota=${d.remaining_quota}`, "success");
-          await loadMappings();
+          const v = (d.remaining_quota ?? 0);
+          const el = document.querySelector(`[data-role="remainingQuota"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = String(v);
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (m) m.remaining_quota = v;
+          toast(`已刷新：remaining_quota=${v}`, "success");
         } catch (e) {
           toast(e.message, "error");
+        } finally {
+          const { refreshQuotaBtn } = getRowActionButtons(mappingId);
+          setBtnBusy(refreshQuotaBtn, false);
         }
       }
 
-      loadHandlerOptions().then(loadTypes);
+      Promise.resolve()
+        .then(loadUiDefaults)
+        .then(loadHandlerOptions)
+        .then(loadTypes);
     </script>
   </body>
 </html>
