@@ -164,15 +164,29 @@ class TaskService:
                 await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
                 await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
-            except asyncio.TimeoutError as t:
-                await self.db.update_task(task_id, status="failed", error_message="任务超时"+str(t), set_completed=True)
-                await self.db.mark_mapping_error(picked.mapping_id, threshold=picked.threshold, cooldown_seconds=1800)
-                logger.warning("task timeout: %s", str(t))
             except Exception as e:
-                await self.db.update_task(task_id, status="failed", error_message=str(e), set_completed=True)
+                # 失败：尽量把“是否不扣罚(no_penalty)”等信息写入 result_json，便于上游做退款/分类。
+                no_penalty = bool(getattr(e, "no_penalty", False))
+                status_code = getattr(e, "status_code", None)
+                err_result: Dict[str, Any] = {
+                    "error_type": e.__class__.__name__,
+                    "no_penalty": no_penalty,
+                }
+                if status_code is not None:
+                    try:
+                        err_result["status_code"] = int(status_code)
+                    except Exception:
+                        err_result["status_code"] = str(status_code)
+                await self.db.update_task(
+                    task_id,
+                    status="failed",
+                    error_message=str(e),
+                    result=err_result,
+                    set_completed=True,
+                )
                 # 某些错误不应计入“窗口连续错误”（例如：Sora create 400 invalid_request、未抓到 POST 等环境/请求错误）
                 # 执行器侧会抛出带 no_penalty=true 的异常（或同名属性），这里做兼容判断。
-                if not bool(getattr(e, "no_penalty", False)):
+                if not no_penalty:
                     await self.db.mark_mapping_error(picked.mapping_id, threshold=picked.threshold, cooldown_seconds=1800)
                 logger.exception("task failed: %s err=%s", task_id, e)
             finally:
