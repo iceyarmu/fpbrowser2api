@@ -461,7 +461,28 @@ async def _sora_create_task_pw(
 
     inpaint_items: list[Dict[str, Any]] = []
     if first_image_url:
-        img_bytes, img_headers = _download_bytes_local(first_image_url, timeout_seconds=30.0, user_agent=user_agent)
+        try:
+            img_bytes, img_headers = _download_bytes_local(first_image_url, timeout_seconds=30.0, user_agent=user_agent)
+        except Exception as e:
+            raise NonPenalizedTaskError(
+                f"首帧图片下载失败（请检查图片地址是否正确/可访问）：url={safe_trim(str(first_image_url), 400)!r} err={e}"
+            ) from e
+
+        if not img_bytes:
+            raise NonPenalizedTaskError(
+                f"首帧图片下载失败：下载内容为空（可能图片地址错误/无权限/已过期）：url={safe_trim(str(first_image_url), 400)!r}"
+            )
+
+        # 明显不是图片的响应（常见：返回 HTML 错误页/JSON 错误体）
+        ct = ""
+        try:
+            ct = str((img_headers or {}).get("content-type") or (img_headers or {}).get("Content-Type") or "").lower()
+        except Exception:
+            ct = ""
+        if ("text/html" in ct) or ("application/json" in ct):
+            raise NonPenalizedTaskError(
+                f"首帧图片下载失败：响应 Content-Type={safe_trim(ct, 120)!r}，疑似非图片（请检查图片地址）：url={safe_trim(str(first_image_url), 400)!r}"
+            )
         filename, mime_type = _guess_image_filename_and_mime(img_headers)
         media_id = await _sora_api_upload_image_bytes_pw(
             page,
