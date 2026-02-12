@@ -61,7 +61,11 @@
               <h5 class="card-title">任务进度</h5>
               <div class="mb-2">
                 <div class="text-muted small">task_id</div>
-                <div class="mono" id="taskId">-</div>
+                <div class="input-group">
+                  <input class="form-control mono" id="taskIdInput" placeholder="输入 task_id 后点击查询" />
+                  <button class="btn btn-outline-secondary" id="btnQuery">查询</button>
+                </div>
+                <div class="text-muted small mt-1">可手动输入任意 task_id 单次查询（不会自动提交任务）。</div>
               </div>
               <div class="mb-3">
                 <div class="progress" role="progressbar">
@@ -108,6 +112,7 @@
 
       let apiKey = null;
       let pollTimer = null;
+      let autoPollEnabled = true; // 提交任务默认自动轮询；手动“查询”则视为单次查询
 
       async function loadApiKey() {
         const r = await adminFetch("/api/admin/system-config");
@@ -139,7 +144,8 @@
       }
 
       function renderTaskSnapshot(taskId, d) {
-        document.getElementById("taskId").textContent = taskId || "-";
+        const input = document.getElementById("taskIdInput");
+        if (input) input.value = taskId || "";
         document.getElementById("status").textContent = d?.status ?? "-";
         setProgress(d?.progress || 0);
         document.getElementById("result").textContent = d ? JSON.stringify(d, null, 2) : "";
@@ -184,11 +190,13 @@
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "提交失败");
           toast("提交成功", "success");
-          document.getElementById("taskId").textContent = d.task_id;
+          const input = document.getElementById("taskIdInput");
+          if (input) input.value = d.task_id;
           document.getElementById("status").textContent = "queued";
           document.getElementById("result").textContent = "";
           setProgress(0);
           lsSet(LS_KEYS.testLastTaskId, d.task_id);
+          autoPollEnabled = true;
           startPoll(d.task_id);
         } catch (e) {
           toast(e.message, "error");
@@ -217,6 +225,26 @@
 
       document.getElementById("btnSubmit").addEventListener("click", submit);
 
+      function getTaskIdFromInput() {
+        const el = document.getElementById("taskIdInput");
+        return (el?.value || "").trim();
+      }
+
+      async function queryOnce() {
+        try {
+          const tid = getTaskIdFromInput();
+          if (!tid) throw new Error("请输入 task_id");
+          autoPollEnabled = false;
+          stopPoll(); // 明确单次查询，不保留轮询
+          lsSet(LS_KEYS.testLastTaskId, tid);
+          await fetchAndRenderTask(tid, { silent: false });
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      }
+
+      document.getElementById("btnQuery").addEventListener("click", queryOnce);
+
       async function init() {
         // 文本内容回填（无需等待接口）
         const promptEl = document.getElementById("prompt");
@@ -234,7 +262,8 @@
         // 恢复上次 task_id，并自动查询进度（切回页面也会刷新）
         const lastTaskId = (lsGet(LS_KEYS.testLastTaskId) || "").trim();
         if (lastTaskId) {
-          document.getElementById("taskId").textContent = lastTaskId;
+          const input = document.getElementById("taskIdInput");
+          if (input) input.value = lastTaskId;
           const d = await fetchAndRenderTask(lastTaskId, { silent: true });
           if (d && d.status !== "completed" && d.status !== "failed") {
             startPoll(lastTaskId);
@@ -246,7 +275,7 @@
           if (!tid) return;
           // 如果正在轮询就不额外触发；否则切回时查询一次并按需继续轮询
           const d = await fetchAndRenderTask(tid, { silent: true });
-          if (d && (d.status !== "completed" && d.status !== "failed") && !pollTimer) {
+          if (autoPollEnabled && d && (d.status !== "completed" && d.status !== "failed") && !pollTimer) {
             startPoll(tid);
           }
           if (d && (d.status === "completed" || d.status === "failed")) {
@@ -258,6 +287,14 @@
           if (!document.hidden) refreshIfNeeded();
         });
         window.addEventListener("focus", () => refreshIfNeeded());
+
+        // 便捷：task_id 输入框回车单次查询
+        const taskIdInput = document.getElementById("taskIdInput");
+        if (taskIdInput) {
+          taskIdInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") queryOnce();
+          });
+        }
       }
       init();
     </script>
