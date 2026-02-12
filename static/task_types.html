@@ -11,6 +11,22 @@
       .cell-stack > div { line-height: 1.25; }
       .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .btn-w-72 { min-width: 72px; }
+
+      /* 更紧凑的配置区，让窗口绑定成为主视觉 */
+      .card-body-compact { padding: 0.85rem 1rem; }
+      .hr-tight { margin: 0.5rem 0; }
+      .form-label-tight { margin-bottom: 0.25rem; font-size: 12px; color: #6c757d; }
+      .type-config .form-text { margin-top: 0.15rem; font-size: 12px; }
+      .type-config .form-control,
+      .type-config .form-select { padding-top: .375rem; padding-bottom: .375rem; }
+
+      .win-card .card-body { padding: 0.85rem 1rem; }
+      .win-toolbar { position: sticky; top: 0; z-index: 2; background: rgba(248, 249, 250, 0.95); backdrop-filter: blur(6px); }
+      .win-table-wrap { max-height: calc(100vh - 320px); overflow: auto; }
+
+      .quota-sort { cursor: pointer; user-select: none; }
+      .quota-click { cursor: pointer; user-select: none; }
+      .quota-click:hover { text-decoration: underline; }
     </style>
   </head>
   <body class="bg-light">
@@ -48,42 +64,44 @@
       <div class="row g-4">
         <div class="col-12">
           <div class="card shadow-sm mb-4">
-            <div class="card-body">
+            <div class="card-body card-body-compact type-config">
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <h5 class="card-title mb-0">任务类型配置</h5>
                 <span class="text-muted small ms-auto" id="currentTypeHint">未选择</span>
+                <button class="btn btn-outline-secondary btn-sm" id="btnToggleTypeConfig" type="button" data-bs-toggle="collapse" data-bs-target="#typeConfigCollapse" aria-expanded="true" aria-controls="typeConfigCollapse">收起</button>
               </div>
-              <hr />
-              <div class="row g-3">
+              <hr class="hr-tight" />
+              <div class="collapse show" id="typeConfigCollapse">
+              <div class="row g-2">
                 <input type="hidden" id="typeId" />
                 <div class="col-12 col-md-6">
-                  <label class="form-label">名称</label>
+                  <label class="form-label form-label-tight">名称</label>
                   <input class="form-control" id="typeName" />
                 </div>
                 <div class="col-12 col-md-6">
-                  <label class="form-label">英文名称（唯一）</label>
+                  <label class="form-label form-label-tight">英文名称（唯一）</label>
                   <input class="form-control mono" id="typeCode" placeholder="gen_video / gen_image" />
                 </div>
                 <div class="col-12 col-md-4">
-                  <label class="form-label">并发数</label>
-                  <input class="form-control" id="typeConcurrency" type="number" min="1" value="1" />
+                  <label class="form-label form-label-tight">并发数</label>
+                  <input class="form-control form-control-sm" id="typeConcurrency" type="number" min="1" value="1" />
                 </div>
                 <div class="col-12 col-md-4">
-                  <label class="form-label">连续错误阈值</label>
-                  <input class="form-control" id="typeErrThr" type="number" min="1" value="3" />
+                  <label class="form-label form-label-tight">连续错误阈值</label>
+                  <input class="form-control form-control-sm" id="typeErrThr" type="number" min="1" value="3" />
                 </div>
                 <div class="col-12 col-md-4">
-                  <label class="form-label">超时时长（秒）</label>
-                  <input class="form-control" id="typeTimeout" type="number" min="10" value="1800" />
+                  <label class="form-label form-label-tight">超时时长（秒）</label>
+                  <input class="form-control form-control-sm" id="typeTimeout" type="number" min="10" value="1800" />
                 </div>
                 <div class="col-12 col-md-6">
-                  <label class="form-label">创建任务接口函数</label>
-                  <select class="form-select mono" id="typeCreateHandler"></select>
+                  <label class="form-label form-label-tight">创建任务接口函数</label>
+                  <select class="form-select form-select-sm mono" id="typeCreateHandler"></select>
                   <div class="text-muted small">根据 task_type_code 动态分发到对应创建任务函数。</div>
                 </div>
                 <div class="col-12 col-md-6">
-                  <label class="form-label">刷新窗口剩余额度接口函数</label>
-                  <select class="form-select mono" id="typeQuotaHandler"></select>
+                  <label class="form-label form-label-tight">刷新窗口剩余额度接口函数</label>
+                  <select class="form-select form-select-sm mono" id="typeQuotaHandler"></select>
                   <div class="text-muted small">点击额度后的刷新按钮会调用此函数。</div>
                 </div>
                 <div class="col-12">
@@ -96,31 +114,62 @@
                   <button class="btn btn-primary" id="btnSaveType">保存</button>
                   <button class="btn btn-outline-danger" id="btnDeleteType">删除</button>
                 </div>
-              </div>
+              </div><!-- /row -->
+              </div><!-- /collapse -->
             </div>
           </div>
 
-          <div class="card shadow-sm">
+          <div class="card shadow-sm win-card">
             <div class="card-body">
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <h5 class="card-title mb-0">窗口绑定</h5>
-                <div class="d-flex flex-wrap gap-2 align-items-center ms-auto">
-                  <div class="small text-muted">额度刷新函数</div>
-                  <select class="form-select form-select-sm mono" id="quotaHandlerQuick" style="min-width: 260px;"></select>
-                  <button class="btn btn-outline-primary btn-sm" id="btnAddWindows">添加窗口</button>
-                </div>
+                <button class="btn btn-outline-primary btn-sm ms-auto" id="btnAddWindows">添加窗口</button>
               </div>
               <div class="text-muted small mt-1">
-                每个窗口可绑定多个任务类型；这里控制额度、并发、冷却与启用状态。
+                每个窗口可绑定多个任务类型；这里做“多窗口管理”：批量打开、批量刷新额度、定时刷新、按额度排序。
               </div>
-              <hr />
-              <div class="table-responsive">
-                <table class="table table-sm align-middle">
+              <hr class="hr-tight" />
+
+              <div class="win-toolbar border rounded p-2 mb-2">
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                  <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <div class="form-check">
+                      <input class="form-check-input" type="checkbox" id="chkMapAll" />
+                      <label class="form-check-label small" for="chkMapAll">全选</label>
+                    </div>
+                    <div class="small text-muted">已选 <span class="fw-semibold" id="mapSelectedCount">0</span> 个</div>
+                  </div>
+
+                  <div class="vr d-none d-md-block"></div>
+
+                  <div class="btn-group btn-group-sm" role="group" aria-label="bulk-actions">
+                    <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
+                  </div>
+
+                  <div class="ms-auto d-flex flex-wrap gap-2 align-items-center">
+                    <div class="small text-muted">定时刷新</div>
+                    <select class="form-select form-select-sm" id="autoRefreshScope" style="min-width: 120px;">
+                      <option value="enabled">仅启用</option>
+                      <option value="all">全部</option>
+                      <option value="selected">仅选中</option>
+                    </select>
+                    <input class="form-control form-control-sm mono" id="autoRefreshSeconds" type="number" min="5" value="60" style="width: 84px;" title="刷新间隔（秒）" />
+                    <button class="btn btn-outline-primary btn-sm" id="btnAutoRefreshToggle">开始</button>
+                    <div class="small text-muted" id="autoRefreshHint">未开启</div>
+                  </div>
+                </div>
+                <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
+              </div>
+
+              <div class="win-table-wrap table-responsive">
+                <table class="table table-sm align-middle mb-0">
                   <thead>
                     <tr class="small2">
+                      <th style="width: 36px;"></th>
                       <th>窗口</th>
                       <th>空间</th>
-                      <th>额度</th>
+                      <th class="quota-sort" id="thQuota" title="点击按 remaining_quota 排序">额度 <span class="text-muted" id="quotaSortHint">↕</span></th>
                       <th>余额</th>
                       <th>重置时间</th>
                       <th>邀请码</th>
@@ -316,6 +365,7 @@
         mappings: [],
         windows: [],
         winSelected: new Set(),
+        mapSelected: new Set(),
         handlers: { create: [], quota: [] },
       };
 
@@ -324,6 +374,14 @@
         idleCloseSecondsDefault: 30, // 从后端 ui-defaults 动态读取
         closeHintTimer: null,
         closeHintMappingId: null,
+        mappingSortKey: "id",
+        mappingSortDir: "desc",
+        autoRefresh: {
+          running: false,
+          timer: null,
+          nextAt: 0,
+          inFlight: false,
+        },
       };
 
       const errorModalTitle = document.getElementById("errorModalTitle");
@@ -344,6 +402,25 @@
         const c = String(code || "");
         const t = (state.types || []).find(x => String(x.code || "") === c);
         return String(t?.name || c || "-");
+      }
+
+      const LS_KEYS_UI = {
+        typeConfigCollapsed: `${LS_PREFIX}task_types.type_config_collapsed`,
+        mappingSortKey: `${LS_PREFIX}task_types.mapping_sort_key`,
+        mappingSortDir: `${LS_PREFIX}task_types.mapping_sort_dir`,
+        autoRefreshSeconds: `${LS_PREFIX}task_types.auto_refresh_seconds`,
+        autoRefreshScope: `${LS_PREFIX}task_types.auto_refresh_scope`,
+      };
+
+      function readBoolLS(key, def = false) {
+        const v = lsGet(key);
+        if (v == null || v === "") return def;
+        return v === "1" || v === "true";
+      }
+
+      function setBtnDisabledById(id, disabled) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !!disabled;
       }
 
       async function openWindowErrorModal(windowPk, { windowName = "-", platformAccount = "-" } = {}) {
@@ -511,17 +588,6 @@
         }
       }
 
-      function renderQuotaQuickSelect() {
-        const sel = document.getElementById("quotaHandlerQuick");
-        const quotaHandlerKey = state.current?.refresh_quota_handler || "";
-        const opts = [`<option value="">（默认）noop</option>`].concat(
-          (state.handlers.quota || []).map(h => `<option value="${escapeHtml(h.key)}">${escapeHtml(h.key)} - ${escapeHtml(h.label)}</option>`)
-        );
-        sel.innerHTML = opts.join("");
-        sel.value = quotaHandlerKey || "";
-        sel.disabled = !document.getElementById("typeId").value;
-      }
-
       function renderHandlerSelects() {
         const selCreate = document.getElementById("typeCreateHandler");
         const selQuota = document.getElementById("typeQuotaHandler");
@@ -532,7 +598,6 @@
         };
         selCreate.innerHTML = mk(state.handlers.create, "（默认）default_submit");
         selQuota.innerHTML = mk(state.handlers.quota, "（默认）noop");
-        renderQuotaQuickSelect();
       }
 
       async function loadTypes() {
@@ -569,6 +634,8 @@
       }
 
       async function selectType(id) {
+        // 切换任务类型时，避免定时刷新误操作到另一个任务类型的窗口
+        stopAutoRefresh();
         state.current = state.types.find(x => x.id === id) || null;
         fillTypeForm(state.current);
         renderTypeSelect();
@@ -589,7 +656,6 @@
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
         document.getElementById("typeCode").disabled = false;
         document.getElementById("currentTypeHint").textContent = t ? `当前：${t.name} (${t.code})` : "未选择";
-        renderQuotaQuickSelect();
       }
 
       async function saveType() {
@@ -648,7 +714,7 @@
       async function loadMappings() {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
@@ -658,18 +724,78 @@
         state.mappings = (d.items || [])
           .slice()
           .sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
+        // 任务类型切换时，清空勾选更符合预期
+        state.mapSelected = new Set();
+        updateMapSelectedCountUI();
         renderMappings();
+      }
+
+      function getSortedMappings() {
+        const key = ui.mappingSortKey || "id";
+        const dir = (ui.mappingSortDir || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+        const sign = dir === "asc" ? 1 : -1;
+
+        const items = (state.mappings || []).slice();
+        if (key === "remaining_quota") {
+          items.sort((a, b) => {
+            const av = parseInt(a?.remaining_quota, 10); const bv = parseInt(b?.remaining_quota, 10);
+            const a1 = Number.isNaN(av) ? -1 : av;
+            const b1 = Number.isNaN(bv) ? -1 : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        // 默认 id 倒序（保持稳定）
+        items.sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
+        return items;
+      }
+
+      function updateQuotaSortHint() {
+        const hint = document.getElementById("quotaSortHint");
+        if (!hint) return;
+        if (ui.mappingSortKey !== "remaining_quota") {
+          hint.textContent = "↕";
+          hint.className = "text-muted";
+          return;
+        }
+        hint.textContent = ui.mappingSortDir === "asc" ? "↑" : "↓";
+        hint.className = "text-primary";
+      }
+
+      function updateMapSelectedCountUI() {
+        const n = state.mapSelected?.size || 0;
+        const el = document.getElementById("mapSelectedCount");
+        if (el) el.textContent = String(n);
+
+        // 同步全选框状态（以当前渲染的行 checkbox 为准）
+        const all = document.getElementById("chkMapAll");
+        const boxes = Array.from(document.querySelectorAll("#mappingBody .chkMap"));
+        if (!all) return;
+        if (!boxes.length) {
+          all.checked = false;
+          all.indeterminate = false;
+          return;
+        }
+        const checkedCount = boxes.filter(x => x.checked).length;
+        all.checked = checkedCount > 0 && checkedCount === boxes.length;
+        all.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
       }
 
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="11" class="text-muted small">暂无绑定窗口</td></tr>`;
+          updateMapSelectedCountUI();
           return;
         }
-        renderQuotaQuickSelect();
-        body.innerHTML = state.mappings.map(m => `
+        updateQuotaSortHint();
+        const items = getSortedMappings();
+        body.innerHTML = items.map(m => `
           <tr class="small2">
+            <td>
+              <input type="checkbox" class="form-check-input chkMap" value="${m.id}" ${state.mapSelected.has(m.id) ? "checked" : ""} />
+            </td>
             <td>
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="fw-semibold">${escapeHtml(m.window_name || "-")}</div>
@@ -687,7 +813,7 @@
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div class="fw-semibold" data-role="remainingQuota" data-mid="${m.id}">${m.remaining_quota}</div>
+                <div class="fw-semibold quota-click" title="点击按额度排序" data-role="remainingQuota" data-mid="${m.id}">${m.remaining_quota}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
               </div>
             </td>
@@ -735,41 +861,44 @@
             </td>
           </tr>
         `).join("");
+
+        // 行多选：仅影响本地勾选，不触发后端
+        body.querySelectorAll(".chkMap").forEach(chk => {
+          chk.addEventListener("change", (e) => {
+            const id = parseInt(e.target.value, 10);
+            if (Number.isNaN(id)) return;
+            if (e.target.checked) state.mapSelected.add(id);
+            else state.mapSelected.delete(id);
+            updateMapSelectedCountUI();
+          });
+        });
+
+        // 点击额度值：快速切换到按额度排序（更符合直觉）
+        body.querySelectorAll('[data-role="remainingQuota"]').forEach(el => {
+          el.addEventListener("click", () => {
+            toggleQuotaSort();
+          });
+        });
+
         body.querySelectorAll("[data-act]").forEach(btn => {
           const act = btn.dataset.act;
           const mid = parseInt(btn.dataset.mid, 10);
           btn.addEventListener("click", (e) => openMappingEditor(mid, act, e.currentTarget));
         });
+
+        updateMapSelectedCountUI();
       }
 
-      async function quickUpdateQuotaHandler(newKey) {
-        try {
-          const id = document.getElementById("typeId").value;
-          if (!id) return;
-          // 同步到表单（保持一致）
-          document.getElementById("typeQuotaHandler").value = newKey || "";
-          document.getElementById("quotaHandlerQuick").value = newKey || "";
-          // 直接 PUT 更新（复用当前表单值，避免丢字段）
-          const payload = {
-            name: document.getElementById("typeName").value.trim(),
-            code: document.getElementById("typeCode").value.trim(),
-            concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
-            continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
-            timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
-            create_task_handler: document.getElementById("typeCreateHandler").value || null,
-            refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
-            enabled: document.getElementById("typeEnabled").checked,
-          };
-          const r = await adminFetch(`/api/admin/task-types/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "更新失败");
-          toast("已更新额度刷新函数", "success");
-          await loadTypes();
-          await selectType(parseInt(id, 10));
-        } catch (e) {
-          toast(e.message, "error");
+      function toggleQuotaSort() {
+        if (ui.mappingSortKey !== "remaining_quota") {
+          ui.mappingSortKey = "remaining_quota";
+          ui.mappingSortDir = "desc";
+        } else {
+          ui.mappingSortDir = ui.mappingSortDir === "desc" ? "asc" : "desc";
         }
+        lsSet(LS_KEYS_UI.mappingSortKey, ui.mappingSortKey);
+        lsSet(LS_KEYS_UI.mappingSortDir, ui.mappingSortDir);
+        renderMappings();
       }
 
       async function openMappingEditor(mappingId, act, el) {
@@ -831,6 +960,14 @@
         }
       }
 
+      async function postJson(url, { method = "POST", body = null } = {}) {
+        const r = await adminFetch(url, { method, body: body == null ? null : JSON.stringify(body) });
+        if (!r) return null;
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "请求失败");
+        return d;
+      }
+
       async function manualOpenWindow(mappingId, fromEl) {
         try {
           // 如果刚刚触发了“关闭窗口倒计时提示”，这里顺手清掉提示，避免界面残留
@@ -840,10 +977,7 @@
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
           if (closeBtn) closeBtn.disabled = true;
 
-          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "打开失败");
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
           toast("已打开窗口，并禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
         } catch (e) {
@@ -864,10 +998,7 @@
           setBtnBusy(closeBtn, true, { loadingText: "提交中" });
           if (openBtn) openBtn.disabled = true;
 
-          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "关闭失败");
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
 
           toast("已发起关闭（后台倒计时）", "success");
           flashBtnText(closeBtn, "已发起");
@@ -1040,21 +1171,20 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
       document.getElementById("btnSaveMapping").addEventListener("click", saveMappingFromModal);
-      document.getElementById("quotaHandlerQuick").addEventListener("change", (e) => quickUpdateQuotaHandler(e.target.value || ""));
       document.getElementById("typeSelect").addEventListener("change", (e) => {
         const v = e.target.value;
         if (!v) {
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
@@ -1075,15 +1205,16 @@
         try {
           const { refreshQuotaBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
-          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "刷新失败");
-          const v = (d.remaining_quota ?? 0);
-          const el = document.querySelector(`[data-role="remainingQuota"][data-mid="${mappingId}"]`);
-          if (el) el.textContent = String(v);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
+          const v = (d?.remaining_quota ?? 0);
           const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
           if (m) m.remaining_quota = v;
+          // 如果当前按额度排序，为避免“数值变了但顺序没变”的错觉，直接重渲染
+          if (ui.mappingSortKey === "remaining_quota") renderMappings();
+          else {
+            const el = document.querySelector(`[data-role="remainingQuota"][data-mid="${mappingId}"]`);
+            if (el) el.textContent = String(v);
+          }
           toast(`已刷新：remaining_quota=${v}`, "success");
         } catch (e) {
           toast(e.message, "error");
@@ -1093,7 +1224,203 @@
         }
       }
 
+      function getSelectedMappingIds() {
+        return Array.from(state.mapSelected || []).map(x => parseInt(x, 10)).filter(x => !Number.isNaN(x));
+      }
+
+      async function runBulkAction({ label, ids, runner }) {
+        if (!ids.length) return toast("请先勾选窗口", "error");
+        const hint = document.getElementById("bulkProgressHint");
+        const showHint = (text) => {
+          if (!hint) return;
+          hint.style.display = "";
+          hint.textContent = text;
+        };
+        const hideHint = () => {
+          if (!hint) return;
+          hint.style.display = "none";
+          hint.textContent = "";
+        };
+
+        setBtnDisabledById("btnBulkOpen", true);
+        setBtnDisabledById("btnBulkRefreshQuota", true);
+        setBtnDisabledById("btnAutoRefreshToggle", true);
+        try {
+          let ok = 0, fail = 0;
+          showHint(`${label}：0/${ids.length}（成功 0，失败 0）`);
+          for (let i = 0; i < ids.length; i += 1) {
+            try {
+              await runner(ids[i]);
+              ok += 1;
+            } catch {
+              fail += 1;
+            }
+            showHint(`${label}：${i + 1}/${ids.length}（成功 ${ok}，失败 ${fail}）`);
+          }
+          toast(`${label}完成：成功 ${ok}，失败 ${fail}`, fail ? "warning" : "success");
+        } finally {
+          setBtnDisabledById("btnBulkOpen", false);
+          setBtnDisabledById("btnBulkRefreshQuota", false);
+          setBtnDisabledById("btnAutoRefreshToggle", false);
+          window.setTimeout(hideHint, 1200);
+        }
+      }
+
+      async function bulkOpenSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量打开",
+          ids,
+          runner: async (mappingId) => {
+            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+          },
+        });
+      }
+
+      async function bulkRefreshQuotaByIds(ids, { silent = false } = {}) {
+        if (!ids.length) {
+          if (!silent) toast("没有可刷新的窗口", "warning");
+          return { ok: 0, fail: 0 };
+        }
+        let ok = 0, fail = 0;
+        for (let i = 0; i < ids.length; i += 1) {
+          try {
+            const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota`, { method: "POST" });
+            const v = (d?.remaining_quota ?? 0);
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
+            if (m) m.remaining_quota = v;
+            ok += 1;
+          } catch {
+            fail += 1;
+          }
+        }
+        renderMappings();
+        if (!silent) toast(`批量刷新额度完成：成功 ${ok}，失败 ${fail}`, fail ? "warning" : "success");
+        return { ok, fail };
+      }
+
+      async function bulkRefreshQuotaSelected({ silent = false } = {}) {
+        const ids = getSelectedMappingIds();
+        if (!ids.length) return toast("请先勾选窗口", "error");
+        return bulkRefreshQuotaByIds(ids, { silent });
+      }
+
+      function stopAutoRefresh() {
+        ui.autoRefresh.running = false;
+        ui.autoRefresh.nextAt = 0;
+        ui.autoRefresh.inFlight = false;
+        try { if (ui.autoRefresh.timer) window.clearInterval(ui.autoRefresh.timer); } catch {}
+        ui.autoRefresh.timer = null;
+        const btn = document.getElementById("btnAutoRefreshToggle");
+        if (btn) btn.textContent = "开始";
+        const hint = document.getElementById("autoRefreshHint");
+        if (hint) hint.textContent = "未开启";
+      }
+
+      function startAutoRefresh() {
+        const sec = Math.max(parseInt(document.getElementById("autoRefreshSeconds")?.value, 10) || 60, 5);
+        const scope = (document.getElementById("autoRefreshScope")?.value || "enabled");
+        lsSet(LS_KEYS_UI.autoRefreshSeconds, String(sec));
+        lsSet(LS_KEYS_UI.autoRefreshScope, String(scope));
+
+        ui.autoRefresh.running = true;
+        ui.autoRefresh.nextAt = Date.now() + sec * 1000;
+        const btn = document.getElementById("btnAutoRefreshToggle");
+        if (btn) btn.textContent = "停止";
+
+        const hint = document.getElementById("autoRefreshHint");
+        const tick = async () => {
+          if (!ui.autoRefresh.running) return;
+          const leftMs = Math.max(ui.autoRefresh.nextAt - Date.now(), 0);
+          const left = Math.ceil(leftMs / 1000);
+          if (hint) hint.textContent = `运行中 · 每 ${sec}s · 下次 ${left}s`;
+          if (leftMs > 0) return;
+          ui.autoRefresh.nextAt = Date.now() + sec * 1000;
+          if (ui.autoRefresh.inFlight) return;
+          ui.autoRefresh.inFlight = true;
+          try {
+            let ids = [];
+            if (scope === "selected") ids = getSelectedMappingIds();
+            else if (scope === "all") ids = (state.mappings || []).map(x => x.id);
+            else ids = (state.mappings || []).filter(x => !!x.enabled).map(x => x.id);
+
+            // 没有目标时不刷屏，只更新倒计时
+            if (ids.length) {
+              // 静默刷新：不弹 toast
+              await bulkRefreshQuotaByIds(ids, { silent: true });
+            }
+          } finally {
+            ui.autoRefresh.inFlight = false;
+          }
+        };
+
+        try { if (ui.autoRefresh.timer) window.clearInterval(ui.autoRefresh.timer); } catch {}
+        ui.autoRefresh.timer = window.setInterval(() => { tick(); }, 400);
+      }
+
+      function toggleAutoRefresh() {
+        if (ui.autoRefresh.running) stopAutoRefresh();
+        else startAutoRefresh();
+      }
+
+      function applyUiDefaultsFromLS() {
+        // 配置区收起状态
+        const collapsed = readBoolLS(LS_KEYS_UI.typeConfigCollapsed, false);
+        const collapseEl = document.getElementById("typeConfigCollapse");
+        const btn = document.getElementById("btnToggleTypeConfig");
+        if (collapseEl) {
+          const bs = bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false });
+          if (collapsed) bs.hide(); else bs.show();
+          if (btn) btn.textContent = collapsed ? "展开" : "收起";
+        }
+
+        // 排序
+        const sortKey = lsGet(LS_KEYS_UI.mappingSortKey) || "id";
+        const sortDir = lsGet(LS_KEYS_UI.mappingSortDir) || "desc";
+        ui.mappingSortKey = sortKey;
+        ui.mappingSortDir = sortDir;
+        updateQuotaSortHint();
+
+        // 定时刷新默认值
+        const sec = parseInt(lsGet(LS_KEYS_UI.autoRefreshSeconds) || "60", 10);
+        const scope = lsGet(LS_KEYS_UI.autoRefreshScope) || "enabled";
+        const secEl = document.getElementById("autoRefreshSeconds");
+        const scopeEl = document.getElementById("autoRefreshScope");
+        if (secEl && !Number.isNaN(sec) && sec >= 5) secEl.value = String(sec);
+        if (scopeEl) scopeEl.value = scope;
+      }
+
+      // --- UI 事件：多窗口管理 ---
+      document.getElementById("chkMapAll")?.addEventListener("change", (e) => {
+        const checked = !!e.target.checked;
+        const boxes = Array.from(document.querySelectorAll("#mappingBody .chkMap"));
+        boxes.forEach(chk => { chk.checked = checked; });
+        if (checked) {
+          (state.mappings || []).forEach(m => state.mapSelected.add(m.id));
+        } else {
+          state.mapSelected = new Set();
+        }
+        updateMapSelectedCountUI();
+      });
+      document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
+      document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
+      document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
+      document.getElementById("thQuota")?.addEventListener("click", toggleQuotaSort);
+
+      // 任务类型配置：收起/展开按钮文案 + 记忆
+      document.getElementById("typeConfigCollapse")?.addEventListener("shown.bs.collapse", () => {
+        lsSet(LS_KEYS_UI.typeConfigCollapsed, "0");
+        const btn = document.getElementById("btnToggleTypeConfig");
+        if (btn) btn.textContent = "收起";
+      });
+      document.getElementById("typeConfigCollapse")?.addEventListener("hidden.bs.collapse", () => {
+        lsSet(LS_KEYS_UI.typeConfigCollapsed, "1");
+        const btn = document.getElementById("btnToggleTypeConfig");
+        if (btn) btn.textContent = "展开";
+      });
+
       Promise.resolve()
+        .then(applyUiDefaultsFromLS)
         .then(loadUiDefaults)
         .then(loadHandlerOptions)
         .then(loadTypes);
