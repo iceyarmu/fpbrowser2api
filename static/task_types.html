@@ -254,6 +254,35 @@
       </div>
     </div>
 
+    <!-- Manual Close Hint Modal (countdown only; backend does actual countdown close) -->
+    <div class="modal fade" id="closeHintModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">关闭窗口中</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="text-muted small">
+              已发起关闭请求。后台会进行倒计时关闭，这里仅做提示（不再前端延时调用接口）。
+            </div>
+            <div class="mt-3 small">
+              窗口：<span class="fw-semibold" id="closeHintWinName">-</span>
+            </div>
+            <div class="mt-2 small">
+              预计剩余：<span class="fw-semibold mono" id="closeHintSec">-</span>s
+            </div>
+            <div class="mt-3 text-muted small">
+              如需撤销关闭，可立即点击同一行的“打开”（会禁止自动关闭）。
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" data-bs-dismiss="modal">知道了</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
@@ -279,6 +308,7 @@
       const winModal = new bootstrap.Modal("#winModal");
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
       const errorModal = new bootstrap.Modal("#errorModal");
+      const closeHintModal = new bootstrap.Modal("#closeHintModal");
 
       let state = {
         types: [],
@@ -291,12 +321,15 @@
 
       // ---- 仅用于本页交互（不入 state 持久化）----
       const ui = {
-        closeCountdownByMappingId: new Map(), // mappingId -> { toastEl, toast, timer }
         idleCloseSecondsDefault: 30, // 从后端 ui-defaults 动态读取
+        closeHintTimer: null,
+        closeHintMappingId: null,
       };
 
       const errorModalTitle = document.getElementById("errorModalTitle");
       const errorModalBody = document.getElementById("errorModalBody");
+      const closeHintWinNameEl = document.getElementById("closeHintWinName");
+      const closeHintSecEl = document.getElementById("closeHintSec");
 
       function badgeForStatus(s) {
         const v = String(s || "").toLowerCase();
@@ -419,92 +452,42 @@
         }, ms);
       }
 
-      function cancelCloseCountdown(mappingId) {
-        const it = ui.closeCountdownByMappingId.get(mappingId);
-        if (!it) return;
-        try { window.clearInterval(it.timer); } catch {}
-        try { it.toast?.hide?.(); } catch {}
-        ui.closeCountdownByMappingId.delete(mappingId);
+      function cancelCloseHintCountdown({ hideModal = false } = {}) {
+        try {
+          if (ui.closeHintTimer) window.clearInterval(ui.closeHintTimer);
+        } catch {}
+        ui.closeHintTimer = null;
+        ui.closeHintMappingId = null;
+        if (hideModal) {
+          try { closeHintModal.hide(); } catch {}
+        }
       }
 
-      function showCloseCountdownToast({ mappingId, windowName, seconds = 3, onCountdownEnd, onCancel }) {
-        cancelCloseCountdown(mappingId);
+      function showCloseHintModal({ mappingId, windowName, seconds }) {
+        cancelCloseHintCountdown({ hideModal: false });
+        ui.closeHintMappingId = mappingId;
 
-        const container = document.getElementById("toastContainer") || document.body;
-        const el = document.createElement("div");
-        el.className = "toast text-bg-dark border-0";
-        el.setAttribute("role", "alert");
-        el.setAttribute("aria-live", "assertive");
-        el.setAttribute("aria-atomic", "true");
+        const total = parseInt(seconds, 10);
+        let left = (!Number.isNaN(total) && total >= 0) ? total : 30;
 
-        el.innerHTML = `
-          <div class="d-flex">
-            <div class="toast-body">
-              <div class="fw-semibold">即将关闭窗口</div>
-              <div class="small opacity-75 mt-1">
-                窗口：<span class="fw-semibold">${escapeHtml(windowName || "-")}</span>
-              </div>
-              <div class="small opacity-75">
-                <span data-role="sec">${seconds}</span>s 后执行。你可以点“撤销”取消。
-              </div>
-            </div>
-            <div class="d-flex align-items-center gap-2 me-2">
-              <button class="btn btn-sm btn-outline-light" type="button" data-role="cancel">撤销</button>
-              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-            </div>
-          </div>
-        `;
+        if (closeHintWinNameEl) closeHintWinNameEl.textContent = windowName || "-";
+        if (closeHintSecEl) closeHintSecEl.textContent = String(left);
 
-        container.appendChild(el);
-        const t = new bootstrap.Toast(el, { autohide: false });
-        t.show();
+        closeHintModal.show();
 
-        let left = seconds;
-        let done = false;
-        const secEl = el.querySelector('[data-role="sec"]');
-        const cancelBtn = el.querySelector('[data-role="cancel"]');
-
-        const finish = async () => {
-          if (done) return;
-          done = true;
-          try { cancelBtn.disabled = true; } catch {}
-          try { await onCountdownEnd?.(); } finally { t.hide(); }
-        };
-
-        const timer = window.setInterval(() => {
+        ui.closeHintTimer = window.setInterval(() => {
           left -= 1;
+          if (closeHintSecEl) closeHintSecEl.textContent = String(Math.max(left, 0));
           if (left <= 0) {
-            window.clearInterval(timer);
-            finish();
-          } else {
-            if (secEl) secEl.textContent = String(left);
+            cancelCloseHintCountdown({ hideModal: true });
           }
         }, 1000);
-
-        cancelBtn?.addEventListener?.("click", () => {
-          if (done) return;
-          done = true;
-          window.clearInterval(timer);
-          t.hide();
-          try { onCancel?.(); } catch {}
-        });
-
-        el.addEventListener("hidden.bs.toast", () => {
-          try { window.clearInterval(timer); } catch {}
-          el.remove();
-          if (!done) {
-            done = true;
-            try { onCancel?.(); } catch {}
-          }
-          // 如果 toast 自己被关掉了，也要清理记录
-          if (ui.closeCountdownByMappingId.get(mappingId)?.toastEl === el) {
-            ui.closeCountdownByMappingId.delete(mappingId);
-          }
-        });
-
-        ui.closeCountdownByMappingId.set(mappingId, { toastEl: el, toast: t, timer });
-        return { el, toast: t, timer };
       }
+
+      // 用户手动关闭弹窗时，也要清理计时器
+      document.getElementById("closeHintModal")?.addEventListener?.("hidden.bs.modal", () => {
+        cancelCloseHintCountdown({ hideModal: false });
+      });
 
       async function loadHandlerOptions() {
         const r = await adminFetch("/api/admin/task-type-handler-options");
@@ -850,7 +833,8 @@
 
       async function manualOpenWindow(mappingId, fromEl) {
         try {
-          cancelCloseCountdown(mappingId);
+          // 如果刚刚触发了“关闭窗口倒计时提示”，这里顺手清掉提示，避免界面残留
+          cancelCloseHintCountdown({ hideModal: true });
           const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
           // 防止重复点击：打开/关闭同时锁住
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
@@ -874,41 +858,31 @@
       async function manualCloseWindow(mappingId, fromEl) {
         const m = state.mappings.find(x => x.id === mappingId);
         const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+        try {
+          // 立即调用接口：后端自己倒计时关闭；前端只做提示更友好
+          cancelCloseHintCountdown({ hideModal: true });
+          setBtnBusy(closeBtn, true, { loadingText: "提交中" });
+          if (openBtn) openBtn.disabled = true;
 
-        // 交互：先给一个可撤销的倒计时提示，避免误触
-        if (closeBtn) closeBtn.disabled = true;
-        showCloseCountdownToast({
-          mappingId,
-          windowName: m?.window_name || "-",
-          seconds: ui.idleCloseSecondsDefault ?? 30,
-          onCancel: () => {
-            // 用户撤销/关闭提示：恢复按钮可点击
-            if (openBtn) openBtn.disabled = false;
-            if (closeBtn) closeBtn.disabled = false;
-          },
-          onCountdownEnd: async () => {
-            try {
-              // 倒计时结束后再真正调用接口；期间保持锁住，防止并发点击
-              setBtnBusy(closeBtn, true, { loadingText: "关闭中" });
-              if (openBtn) openBtn.disabled = true;
+          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "关闭失败");
 
-              const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
-              if (!r) return;
-              const d = await r.json();
-              if (!r.ok) throw new Error(d.detail || "关闭失败");
-              toast("已取消禁止自动关闭，并触发延迟关闭检查", "success");
-              flashBtnText(closeBtn, "已触发");
-            } catch (e) {
-              toast(e.message, "error");
-            } finally {
-              // 清理 toast 记录（这里的 hide 会触发 hidden 监听，但我们还是主动删一下更稳）
-              ui.closeCountdownByMappingId.delete(mappingId);
-              setBtnBusy(closeBtn, false);
-              if (openBtn) openBtn.disabled = false;
-              if (closeBtn) closeBtn.disabled = false;
-            }
-          },
-        });
+          toast("已发起关闭（后台倒计时）", "success");
+          flashBtnText(closeBtn, "已发起");
+          showCloseHintModal({
+            mappingId,
+            windowName: m?.window_name || "-",
+            seconds: ui.idleCloseSecondsDefault ?? 30,
+          });
+        } catch (e) {
+          toast(e.message, "error");
+        } finally {
+          setBtnBusy(closeBtn, false);
+          if (openBtn) openBtn.disabled = false;
+          if (closeBtn) closeBtn.disabled = false;
+        }
       }
 
       function openMappingEditModal(m) {
