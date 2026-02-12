@@ -24,9 +24,13 @@
       .win-toolbar { position: sticky; top: 0; z-index: 2; background: rgba(248, 249, 250, 0.95); backdrop-filter: blur(6px); }
       .win-table-wrap { max-height: calc(100vh - 320px); overflow: auto; }
 
+      .sort-head { cursor: pointer; user-select: none; }
       .quota-sort { cursor: pointer; user-select: none; }
       .quota-click { cursor: pointer; user-select: none; }
       .quota-click:hover { text-decoration: underline; }
+      .invite-click { cursor: pointer; user-select: none; }
+      .invite-click:hover { text-decoration: underline; }
+      .enabled-click { cursor: pointer; user-select: none; }
     </style>
   </head>
   <body class="bg-light">
@@ -145,6 +149,7 @@
                   <div class="btn-group btn-group-sm" role="group" aria-label="bulk-actions">
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
+                    <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
 
                   <div class="ms-auto d-flex flex-wrap gap-2 align-items-center">
@@ -168,7 +173,7 @@
                   <thead>
                     <tr class="small2">
                       <th style="width: 36px;"></th>
-                      <th>窗口</th>
+                      <th class="sort-head" id="thWinName" title="点击按窗口名称排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>空间</th>
                       <th class="quota-sort" id="thQuota" title="点击按 remaining_quota 排序">额度 <span class="text-muted" id="quotaSortHint">↕</span></th>
                       <th>余额</th>
@@ -176,7 +181,7 @@
                       <th>邀请码</th>
                       <th>状态</th>
                       <th>占用</th>
-                      <th>启用</th>
+                      <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -309,7 +314,7 @@
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">定时刷新失败记录</h5>
+            <h5 class="modal-title" id="autoRefreshErrorModalTitle">定时刷新失败记录</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body" id="autoRefreshErrorModalBody"></div>
@@ -404,6 +409,7 @@
 
       const errorModalTitle = document.getElementById("errorModalTitle");
       const errorModalBody = document.getElementById("errorModalBody");
+      const autoRefreshErrorModalTitle = document.getElementById("autoRefreshErrorModalTitle");
       const autoRefreshErrorModalBody = document.getElementById("autoRefreshErrorModalBody");
       const closeHintWinNameEl = document.getElementById("closeHintWinName");
       const closeHintSecEl = document.getElementById("closeHintSec");
@@ -504,13 +510,24 @@
         await openWindowErrorModal(m.window_pk, { windowName: m.window_name || "-", platformAccount: m.platform_account || "-" });
       }
 
-      async function openAutoRefreshErrorModal() {
+      async function openAutoRefreshErrorModal({ mappingId = null } = {}) {
+        if (autoRefreshErrorModalTitle) {
+          if (mappingId) {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            const acc = m?.platform_account || "-";
+            const win = m?.window_name || "-";
+            autoRefreshErrorModalTitle.textContent = `定时刷新失败记录 · ${acc} · ${win} · mapping_id=${String(mappingId)}`;
+          } else {
+            autoRefreshErrorModalTitle.textContent = "定时刷新失败记录";
+          }
+        }
         autoRefreshErrorModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
         autoRefreshErrorModal.show();
         try {
           const params = new URLSearchParams();
           params.set("limit", "200");
           params.set("offset", "0");
+          if (mappingId) params.set("mapping_id", String(mappingId));
           const r = await adminFetch(`/api/admin/auto-refresh-errors?${params.toString()}`);
           if (!r) return;
           const d = await r.json();
@@ -781,12 +798,13 @@
         document.getElementById("mappingBody").innerHTML = "";
       }
 
-      async function loadMappings() {
+      async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
           document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
+        const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
         const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
         if (!r) return;
         const d = await r.json();
@@ -794,8 +812,13 @@
         state.mappings = (d.items || [])
           .slice()
           .sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
-        // 任务类型切换时，清空勾选更符合预期
-        state.mapSelected = new Set();
+        if (preserveSelection && prevSelected.size) {
+          const ids = new Set((state.mappings || []).map(x => x.id));
+          state.mapSelected = new Set(Array.from(prevSelected).filter(x => ids.has(x)));
+        } else {
+          // 任务类型切换时，清空勾选更符合预期
+          state.mapSelected = new Set();
+        }
         updateMapSelectedCountUI();
         renderMappings();
       }
@@ -806,6 +829,24 @@
         const sign = dir === "asc" ? 1 : -1;
 
         const items = (state.mappings || []).slice();
+        if (key === "window_name") {
+          items.sort((a, b) => {
+            const an = String(a?.window_name || "").trim().toLowerCase();
+            const bn = String(b?.window_name || "").trim().toLowerCase();
+            if (an !== bn) return an.localeCompare(bn) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        if (key === "enabled") {
+          items.sort((a, b) => {
+            const av = a?.enabled ? 1 : 0;
+            const bv = b?.enabled ? 1 : 0;
+            if (av !== bv) return (av - bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         if (key === "remaining_quota") {
           items.sort((a, b) => {
             const av = parseInt(a?.remaining_quota, 10); const bv = parseInt(b?.remaining_quota, 10);
@@ -822,15 +863,19 @@
       }
 
       function updateQuotaSortHint() {
-        const hint = document.getElementById("quotaSortHint");
-        if (!hint) return;
-        if (ui.mappingSortKey !== "remaining_quota") {
-          hint.textContent = "↕";
-          hint.className = "text-muted";
-          return;
-        }
-        hint.textContent = ui.mappingSortDir === "asc" ? "↑" : "↓";
-        hint.className = "text-primary";
+        const mk = (hintEl, active) => {
+          if (!hintEl) return;
+          if (!active) {
+            hintEl.textContent = "↕";
+            hintEl.className = "text-muted";
+            return;
+          }
+          hintEl.textContent = ui.mappingSortDir === "asc" ? "↑" : "↓";
+          hintEl.className = "text-primary";
+        };
+        mk(document.getElementById("quotaSortHint"), ui.mappingSortKey === "remaining_quota");
+        mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
+        mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
       }
 
       function updateMapSelectedCountUI() {
@@ -868,7 +913,7 @@
             </td>
             <td>
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div class="fw-semibold">${escapeHtml(m.window_name || "-")}</div>
+                <div class="fw-semibold quota-click" title="点击按窗口名称排序" data-role="winName">${escapeHtml(m.window_name || "-")}</div>
                 <div class="btn-group btn-group-sm" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-w-72" data-act="manualOpen" data-mid="${m.id}">打开</button>
                   <button class="btn btn-outline-secondary btn-sm btn-w-72" data-act="manualClose" data-mid="${m.id}">关闭</button>
@@ -897,7 +942,7 @@
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div class="fw-semibold" data-role="inviteCode" data-mid="${m.id}">${escapeHtml(m.sora_invite_code || "-")}</div>
+                <div class="fw-semibold invite-click" title="点击复制邀请链接" data-role="inviteCode" data-mid="${m.id}">${escapeHtml(m.sora_invite_code || "-")}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新邀请码" data-act="refreshInvite" data-mid="${m.id}">⟳</button>
               </div>
             </td>
@@ -924,7 +969,7 @@
             <td class="mono">
               <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
             </td>
-            <td>${m.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+            <td>${m.enabled ? `<span class="badge text-bg-success enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">是</span>` : `<span class="badge text-bg-secondary enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">否</span>`}</td>
             <td>
               <button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>
               <button class="btn btn-outline-danger btn-sm" data-act="del" data-mid="${m.id}">删除</button>
@@ -950,6 +995,37 @@
           });
         });
 
+        // 点击窗口名：按窗口名称排序
+        body.querySelectorAll('[data-role="winName"]').forEach(el => {
+          el.addEventListener("click", () => {
+            toggleSort("window_name", "asc");
+          });
+        });
+
+        // 点击启用：打开单窗口失败列表
+        body.querySelectorAll('[data-role="enabledBadge"]').forEach(el => {
+          el.addEventListener("click", () => {
+            const mid = parseInt(el.dataset.mid, 10);
+            if (Number.isNaN(mid)) return;
+            openAutoRefreshErrorModal({ mappingId: mid });
+          });
+        });
+
+        // 点击邀请码：复制邀请链接
+        body.querySelectorAll('[data-role="inviteCode"]').forEach(el => {
+          el.addEventListener("click", () => {
+            const mid = parseInt(el.dataset.mid, 10);
+            if (Number.isNaN(mid)) return;
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mid));
+            const code = String(m?.sora_invite_code || "").trim();
+            if (!code || code === "-") return toast("邀请码为空，无法复制", "warning");
+            const url = `https://sora.chatgpt.com/invite?code=${code}`;
+            copyToClipboard(url)
+              .then(() => toast("已复制邀请链接", "success"))
+              .catch(() => toast("复制失败，请手动复制", "error"));
+          });
+        });
+
         body.querySelectorAll("[data-act]").forEach(btn => {
           const act = btn.dataset.act;
           const mid = parseInt(btn.dataset.mid, 10);
@@ -960,9 +1036,13 @@
       }
 
       function toggleQuotaSort() {
-        if (ui.mappingSortKey !== "remaining_quota") {
-          ui.mappingSortKey = "remaining_quota";
-          ui.mappingSortDir = "desc";
+        return toggleSort("remaining_quota", "desc");
+      }
+
+      function toggleSort(key, defaultDir = "desc") {
+        if (ui.mappingSortKey !== key) {
+          ui.mappingSortKey = key;
+          ui.mappingSortDir = defaultDir;
         } else {
           ui.mappingSortDir = ui.mappingSortDir === "desc" ? "asc" : "desc";
         }
@@ -1287,6 +1367,15 @@
           }
           toast(`已刷新：remaining_quota=${v}`, "success");
         } catch (e) {
+          // 如果后端提示“已禁用”，这里同步 UI（兼容定时/手动场景）
+          try {
+            const msg = String(e?.message || "");
+            if (msg.includes("已记录并禁用该窗口") || msg.includes("已禁用")) {
+              const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+              if (m) m.enabled = false;
+              renderMappings();
+            }
+          } catch {}
           toast(e.message, "error");
         } finally {
           const { refreshQuotaBtn } = getRowActionButtons(mappingId);
@@ -1363,9 +1452,13 @@
             const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
             if (m) m.remaining_quota = v;
             ok += 1;
-          } catch {
+          } catch (e) {
             const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
-            if (m && String(source || "").toLowerCase() === "auto") m.enabled = false; // 定时刷新失败：后端会禁用，这里做本地即时反馈
+            try {
+              const msg = String(e?.message || "");
+              const autoDisabled = (String(source || "").toLowerCase() === "auto") || msg.includes("已记录并禁用该窗口") || msg.includes("已禁用");
+              if (m && autoDisabled) m.enabled = false; // 后端已自动禁用，这里做本地即时反馈
+            } catch {}
             fail += 1;
           } finally {
             const { refreshQuotaBtn: btn2 } = getRowActionButtons(ids[i]);
@@ -1441,6 +1534,26 @@
         else startAutoRefresh();
       }
 
+      async function copyToClipboard(text) {
+        const t = String(text || "");
+        if (!t) throw new Error("empty");
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(t);
+          return;
+        }
+        const ta = document.createElement("textarea");
+        ta.value = t;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (!ok) throw new Error("copy failed");
+      }
+
       function applyUiDefaultsFromLS() {
         // 配置区收起状态
         const collapsed = readBoolLS(LS_KEYS_UI.typeConfigCollapsed, false);
@@ -1482,9 +1595,23 @@
       });
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
       document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
+      document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        try {
+          setBtnBusy(btn, true, { loadingText: "刷新中" });
+          await loadMappings({ preserveSelection: true });
+          toast("列表已刷新", "success");
+        } catch (err) {
+          toast(err.message || "刷新失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      });
       document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
-      document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", openAutoRefreshErrorModal);
+      document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", () => openAutoRefreshErrorModal({ mappingId: null }));
       document.getElementById("thQuota")?.addEventListener("click", toggleQuotaSort);
+      document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
+      document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));
 
       // 任务类型配置：收起/展开按钮文案 + 记忆
       document.getElementById("typeConfigCollapse")?.addEventListener("shown.bs.collapse", () => {

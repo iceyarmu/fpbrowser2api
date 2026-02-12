@@ -607,11 +607,12 @@ async def list_auto_refresh_errors(
     limit: int = 200,
     offset: int = 0,
     task_type_id: Optional[int] = None,
+    mapping_id: Optional[int] = None,
     token: str = Depends(verify_admin_token),
 ):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    items = await db.list_auto_refresh_error_logs(limit=limit, offset=offset, task_type_id=task_type_id)
+    items = await db.list_auto_refresh_error_logs(limit=limit, offset=offset, task_type_id=task_type_id, mapping_id=mapping_id)
     return {"success": True, "limit": max(1, min(500, int(limit or 200))), "offset": max(0, int(offset or 0)), "items": items}
 
 

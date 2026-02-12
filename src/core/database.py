@@ -968,12 +968,28 @@ class Database:
             await db.commit()
             return int(cur.lastrowid or 0)
 
-    async def list_auto_refresh_error_logs(self, limit: int = 200, offset: int = 0, task_type_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def list_auto_refresh_error_logs(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        task_type_id: Optional[int] = None,
+        mapping_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         lim = max(1, min(500, int(limit or 200)))
         off = max(0, int(offset or 0))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            if task_type_id is None:
+            if mapping_id is not None:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM auto_refresh_error_logs
+                    WHERE mapping_id = ?
+                    ORDER BY id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (int(mapping_id), lim, off),
+                )
+            elif task_type_id is None:
                 cur = await db.execute(
                     """
                     SELECT * FROM auto_refresh_error_logs
