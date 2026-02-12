@@ -28,6 +28,8 @@ class SystemConfig(BaseModel):
     api_key: str = "fpb123456"
     debug_enabled: bool = False
     log_to_file: bool = False
+    # 开关：停止接收新任务（维护模式）
+    stop_accepting_tasks: bool = False
     updated_at: Optional[datetime] = None
 
 
@@ -161,6 +163,20 @@ class RequestLog(BaseModel):
     response_body: Optional[str] = None
     status_code: int
     duration: float
+    created_at: Optional[datetime] = None
+
+
+class AutoRefreshErrorLog(BaseModel):
+    """定时刷新额度失败记录（用于风控/排查与 UI 展示）。"""
+
+    id: Optional[int] = None
+    mapping_id: int
+    task_type_id: Optional[int] = None
+    task_code: Optional[str] = None
+    window_pk: Optional[int] = None
+    window_name: Optional[str] = None
+    platform_account: Optional[str] = None
+    error_message: str
     created_at: Optional[datetime] = None
 
 

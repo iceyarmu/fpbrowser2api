@@ -56,6 +56,17 @@ async def create_task(
         raise HTTPException(status_code=500, detail="service not initialized")
 
     try:
+        # 系统维护：停止接收新任务
+        try:
+            syscfg = await db.get_system_config()
+            if bool(getattr(syscfg, "stop_accepting_tasks", False)):
+                raise HTTPException(status_code=503, detail="服务器维护中不接受新任务...")
+        except HTTPException:
+            raise
+        except Exception:
+            # 获取配置失败时不阻断（兜底）
+            pass
+
         tcode = (body.task_type_code or "").strip()
         payload = body.json or {}
         task_type = await db.get_task_type_by_code(tcode)

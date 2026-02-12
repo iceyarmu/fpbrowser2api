@@ -33,6 +33,7 @@ class Config:
         self._proxy_url: Optional[str] = None
         self._debug_enabled: Optional[bool] = None
         self._log_to_file: Optional[bool] = None
+        self._stop_accepting_tasks: Optional[bool] = None
 
     def _load_config(self) -> Dict[str, Any]:
         config_path = Path(__file__).parent.parent.parent / "config" / "setting.toml"
@@ -123,6 +124,16 @@ class Config:
 
     def set_log_to_file_from_db(self, enabled: bool) -> None:
         self._log_to_file = bool(enabled)
+
+    @property
+    def stop_accepting_tasks(self) -> bool:
+        if self._stop_accepting_tasks is not None:
+            return bool(self._stop_accepting_tasks)
+        return bool(self._config.get("system", {}).get("stop_accepting_tasks", False))
+
+    def set_stop_accepting_tasks_from_db(self, enabled: bool) -> None:
+        self._stop_accepting_tasks = bool(enabled)
+        self._config.setdefault("system", {})["stop_accepting_tasks"] = bool(enabled)
 
 
 config = Config()

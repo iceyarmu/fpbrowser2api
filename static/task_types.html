@@ -156,6 +156,7 @@
                     </select>
                     <input class="form-control form-control-sm mono" id="autoRefreshSeconds" type="number" min="5" value="60" style="width: 84px;" title="刷新间隔（秒）" />
                     <button class="btn btn-outline-primary btn-sm" id="btnAutoRefreshToggle">开始</button>
+                    <button class="btn btn-outline-danger btn-sm" id="btnAutoRefreshErrors" title="查看定时刷新失败记录">失败列表</button>
                     <div class="small text-muted" id="autoRefreshHint">未开启</div>
                   </div>
                 </div>
@@ -303,6 +304,22 @@
       </div>
     </div>
 
+    <!-- Auto Refresh Error Logs Modal -->
+    <div class="modal fade" id="autoRefreshErrorModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">定时刷新失败记录</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="autoRefreshErrorModalBody"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Manual Close Hint Modal (countdown only; backend does actual countdown close) -->
     <div class="modal fade" id="closeHintModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
@@ -357,6 +374,7 @@
       const winModal = new bootstrap.Modal("#winModal");
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
       const errorModal = new bootstrap.Modal("#errorModal");
+      const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
 
       let state = {
@@ -386,6 +404,7 @@
 
       const errorModalTitle = document.getElementById("errorModalTitle");
       const errorModalBody = document.getElementById("errorModalBody");
+      const autoRefreshErrorModalBody = document.getElementById("autoRefreshErrorModalBody");
       const closeHintWinNameEl = document.getElementById("closeHintWinName");
       const closeHintSecEl = document.getElementById("closeHintSec");
 
@@ -483,6 +502,57 @@
           return;
         }
         await openWindowErrorModal(m.window_pk, { windowName: m.window_name || "-", platformAccount: m.platform_account || "-" });
+      }
+
+      async function openAutoRefreshErrorModal() {
+        autoRefreshErrorModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        autoRefreshErrorModal.show();
+        try {
+          const params = new URLSearchParams();
+          params.set("limit", "200");
+          params.set("offset", "0");
+          const r = await adminFetch(`/api/admin/auto-refresh-errors?${params.toString()}`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载失败记录失败");
+          const items = d.items || [];
+          if (!items.length) {
+            autoRefreshErrorModalBody.innerHTML = `<div class="text-muted small">暂无失败记录</div>`;
+            return;
+          }
+          autoRefreshErrorModalBody.innerHTML = `
+            <div class="list-group">
+              ${items.map(x => {
+                const when = x.created_at || "";
+                const acc = x.platform_account || "-";
+                const win = x.window_name || "-";
+                const tcode = x.task_code || "-";
+                const mid = x.mapping_id || "-";
+                const msg = String(x.error_message || "").trim() || "-";
+                return `
+                  <div class="list-group-item">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                      <span class="mono">${escapeHtml(when)}</span>
+                      <span class="text-muted">·</span>
+                      <span class="mono">mapping_id=${escapeHtml(String(mid))}</span>
+                      <span class="text-muted">·</span>
+                      <span class="mono">${escapeHtml(tcode)}</span>
+                      <span class="ms-auto badge text-bg-danger">已禁用</span>
+                    </div>
+                    <div class="small">
+                      账号：<span class="mono fw-semibold">${escapeHtml(acc)}</span>
+                      <span class="text-muted">·</span>
+                      窗口：<span class="fw-semibold">${escapeHtml(win)}</span>
+                    </div>
+                    <pre class="mono small2 mb-0 mt-2" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(msg)}</pre>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+          `;
+        } catch (e) {
+          autoRefreshErrorModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载失败记录失败")}</div>`;
+        }
       }
 
       function getRowActionButtons(mappingId, fromEl) {
@@ -1277,21 +1347,29 @@
         });
       }
 
-      async function bulkRefreshQuotaByIds(ids, { silent = false } = {}) {
+      async function bulkRefreshQuotaByIds(ids, { silent = false, source = "" } = {}) {
         if (!ids.length) {
           if (!silent) toast("没有可刷新的窗口", "warning");
           return { ok: 0, fail: 0 };
         }
         let ok = 0, fail = 0;
         for (let i = 0; i < ids.length; i += 1) {
+          const { refreshQuotaBtn } = getRowActionButtons(ids[i]);
+          setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
           try {
-            const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota`, { method: "POST" });
+            const qs = source ? `?source=${encodeURIComponent(String(source))}` : "";
+            const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota${qs}`, { method: "POST" });
             const v = (d?.remaining_quota ?? 0);
             const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
             if (m) m.remaining_quota = v;
             ok += 1;
           } catch {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
+            if (m && String(source || "").toLowerCase() === "auto") m.enabled = false; // 定时刷新失败：后端会禁用，这里做本地即时反馈
             fail += 1;
+          } finally {
+            const { refreshQuotaBtn: btn2 } = getRowActionButtons(ids[i]);
+            setBtnBusy(btn2, false);
           }
         }
         renderMappings();
@@ -1347,7 +1425,7 @@
             // 没有目标时不刷屏，只更新倒计时
             if (ids.length) {
               // 静默刷新：不弹 toast
-              await bulkRefreshQuotaByIds(ids, { silent: true });
+              await bulkRefreshQuotaByIds(ids, { silent: true, source: "auto" });
             }
           } finally {
             ui.autoRefresh.inFlight = false;
@@ -1405,6 +1483,7 @@
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
       document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
       document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
+      document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", openAutoRefreshErrorModal);
       document.getElementById("thQuota")?.addEventListener("click", toggleQuotaSort);
 
       // 任务类型配置：收起/展开按钮文案 + 记忆

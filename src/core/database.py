@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .auth import AuthManager
 from .models import (
     AdminUser,
+    AutoRefreshErrorLog,
     BrowserSpace,
     FingerprintBrowser,
     Project,
@@ -81,6 +82,7 @@ class Database:
                     api_key TEXT NOT NULL,
                     debug_enabled BOOLEAN DEFAULT 0,
                     log_to_file BOOLEAN DEFAULT 0,
+                    stop_accepting_tasks BOOLEAN DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -240,10 +242,28 @@ class Database:
                 """
             )
 
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auto_refresh_error_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mapping_id INTEGER NOT NULL,
+                    task_type_id INTEGER,
+                    task_code TEXT,
+                    window_pk INTEGER,
+                    window_name TEXT,
+                    platform_account TEXT,
+                    error_message TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_created_at ON auto_refresh_error_logs(created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_mapping_id ON auto_refresh_error_logs(mapping_id)")
 
             await db.commit()
 
@@ -309,6 +329,7 @@ class Database:
             if await self._table_exists(db, "system_config"):
                 columns_to_add = [
                     ("log_to_file", "BOOLEAN DEFAULT 0"),
+                    ("stop_accepting_tasks", "BOOLEAN DEFAULT 0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "system_config", col_name):
@@ -438,6 +459,7 @@ class Database:
         api_key: Optional[str] = None,
         debug_enabled: Optional[bool] = None,
         log_to_file: Optional[bool] = None,
+        stop_accepting_tasks: Optional[bool] = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -450,20 +472,24 @@ class Database:
             new_api_key = api_key if api_key is not None else str(current.get("api_key", "fpb123456"))
             new_debug_enabled = debug_enabled if debug_enabled is not None else bool(current.get("debug_enabled", False))
             new_log_to_file = log_to_file if log_to_file is not None else bool(current.get("log_to_file", False))
+            new_stop_accepting = (
+                stop_accepting_tasks if stop_accepting_tasks is not None else bool(current.get("stop_accepting_tasks", False))
+            )
 
             await db.execute(
                 """
-                INSERT INTO system_config (id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO system_config (id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, stop_accepting_tasks, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO UPDATE SET
                   proxy_enabled=excluded.proxy_enabled,
                   proxy_url=excluded.proxy_url,
                   api_key=excluded.api_key,
                   debug_enabled=excluded.debug_enabled,
                   log_to_file=excluded.log_to_file,
+                  stop_accepting_tasks=excluded.stop_accepting_tasks,
                   updated_at=CURRENT_TIMESTAMP
                 """,
-                (new_proxy_enabled, new_proxy_url, new_api_key, new_debug_enabled, new_log_to_file),
+                (new_proxy_enabled, new_proxy_url, new_api_key, new_debug_enabled, new_log_to_file, new_stop_accepting),
             )
             await db.commit()
 
@@ -477,6 +503,11 @@ class Database:
         mem.set_proxy_url_from_db(syscfg.proxy_url)
         mem.set_debug_enabled(syscfg.debug_enabled)
         mem.set_log_to_file_from_db(syscfg.log_to_file)
+        try:
+            mem.set_stop_accepting_tasks_from_db(syscfg.stop_accepting_tasks)
+        except Exception:
+            # 兼容旧版 Config（极少数情况下）
+            pass
         return syscfg
 
     # ---------- admin user ----------
@@ -895,6 +926,7 @@ class Database:
                   t.refresh_quota_handler,
                   w.window_key,
                   w.window_name,
+                  w.platform_account,
                   s.space_id AS space_id,
                   b.vendor,
                   b.lan_addr,
@@ -911,6 +943,57 @@ class Database:
             )
             row = await cur.fetchone()
             return dict(row) if row else None
+
+    # ---------- auto refresh error logs ----------
+    async def add_auto_refresh_error_log(self, log: AutoRefreshErrorLog) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                INSERT INTO auto_refresh_error_logs (
+                  mapping_id, task_type_id, task_code,
+                  window_pk, window_name, platform_account,
+                  error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(log.mapping_id),
+                    int(log.task_type_id) if log.task_type_id is not None else None,
+                    (log.task_code or "").strip() or None,
+                    int(log.window_pk) if log.window_pk is not None else None,
+                    (log.window_name or "").strip() or None,
+                    (log.platform_account or "").strip() or None,
+                    str(log.error_message or "").strip(),
+                ),
+            )
+            await db.commit()
+            return int(cur.lastrowid or 0)
+
+    async def list_auto_refresh_error_logs(self, limit: int = 200, offset: int = 0, task_type_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        lim = max(1, min(500, int(limit or 200)))
+        off = max(0, int(offset or 0))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if task_type_id is None:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM auto_refresh_error_logs
+                    ORDER BY id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (lim, off),
+                )
+            else:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM auto_refresh_error_logs
+                    WHERE task_type_id = ?
+                    ORDER BY id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (int(task_type_id), lim, off),
+                )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
     async def delete_task_type(self, task_type_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:

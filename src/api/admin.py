@@ -48,6 +48,7 @@ class UpdateSystemConfigRequest(BaseModel):
     proxy_url: Optional[str] = None
     debug_enabled: bool
     log_to_file: bool
+    stop_accepting_tasks: bool = False
 
 
 class CreateProjectRequest(BaseModel):
@@ -209,6 +210,7 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
             "api_key": syscfg.api_key,
             "debug_enabled": syscfg.debug_enabled,
             "log_to_file": syscfg.log_to_file,
+            "stop_accepting_tasks": bool(getattr(syscfg, "stop_accepting_tasks", False)),
             "admin_username": admin_user.username if admin_user else "admin",
         },
     }
@@ -245,6 +247,7 @@ async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depe
         proxy_url=proxy_url,
         debug_enabled=req.debug_enabled,
         log_to_file=req.log_to_file,
+        stop_accepting_tasks=req.stop_accepting_tasks,
     )
     await db.reload_config_to_memory()
     setup_logging()  # 让日志配置立刻生效
@@ -539,7 +542,11 @@ async def list_task_type_handler_options(token: str = Depends(verify_admin_token
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-remaining-quota")
-async def refresh_mapping_remaining_quota(mapping_id: int, token: str = Depends(verify_admin_token)):
+async def refresh_mapping_remaining_quota(
+    mapping_id: int,
+    source: Optional[str] = None,  # auto/manual
+    token: str = Depends(verify_admin_token),
+):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -567,10 +574,45 @@ async def refresh_mapping_remaining_quota(mapping_id: int, token: str = Depends(
         new_remaining = await fn(RefreshQuotaContext(task_type=task_type, mapping_row=ctx_row, db=db))
         new_remaining = max(0, int(new_remaining))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"刷新额度失败：{e}")
+        # 仅当“定时刷新”触发（source=auto）时，写入错误日志并自动禁用
+        try:
+            from ..core.models import AutoRefreshErrorLog
+
+            await db.add_auto_refresh_error_log(
+                AutoRefreshErrorLog(
+                    mapping_id=int(mapping_id),
+                    task_type_id=int(ctx_row.get("task_type_id") or 0) or None,
+                    task_code=str(ctx_row.get("task_code") or "").strip() or None,
+                    window_pk=int(ctx_row.get("window_pk") or 0) or None,
+                    window_name=str(ctx_row.get("window_name") or "").strip() or None,
+                    platform_account=str(ctx_row.get("platform_account") or "").strip() or None,
+                    error_message=str(e),
+                )
+            )
+        except Exception:
+            pass
+        try:
+            await db.update_task_type_window(mapping_id=mapping_id, enabled=False)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"刷新额度失败：{e}（已记录并禁用该窗口）")
+
 
     await db.update_task_type_window(mapping_id=mapping_id, remaining_quota=new_remaining)
     return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
+
+
+@router.get("/api/admin/auto-refresh-errors")
+async def list_auto_refresh_errors(
+    limit: int = 200,
+    offset: int = 0,
+    task_type_id: Optional[int] = None,
+    token: str = Depends(verify_admin_token),
+):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    items = await db.list_auto_refresh_error_logs(limit=limit, offset=offset, task_type_id=task_type_id)
+    return {"success": True, "limit": max(1, min(500, int(limit or 200))), "offset": max(0, int(offset or 0)), "items": items}
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-invite-code")

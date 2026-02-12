@@ -56,6 +56,13 @@
                     <label class="form-check-label" for="logToFile">日志保存到本地文件（fpbrowser2api/app.log）</label>
                   </div>
                 </div>
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="stopAcceptingTasks" />
+            <label class="form-check-label" for="stopAcceptingTasks">停止接收新任务（维护模式）</label>
+          </div>
+          <div class="form-text">开启后，对外接口 <span class="mono">POST /v1/tasks</span> 将返回“服务器维护中不接受新任务...”。</div>
+        </div>
                 <div class="col-12">
                   <button class="btn btn-primary" id="btnSaveSystem">保存系统配置</button>
                 </div>
@@ -118,6 +125,7 @@
         document.getElementById("proxyUrl").value = c.proxy_url || "";
         document.getElementById("debugEnabled").checked = !!c.debug_enabled;
         document.getElementById("logToFile").checked = !!c.log_to_file;
+        document.getElementById("stopAcceptingTasks").checked = !!c.stop_accepting_tasks;
         document.getElementById("currentApiKey").value = c.api_key || "";
         document.getElementById("adminUsername").value = c.admin_username || "admin";
       }
@@ -131,6 +139,7 @@
               proxy_url: document.getElementById("proxyUrl").value,
               debug_enabled: document.getElementById("debugEnabled").checked,
               log_to_file: document.getElementById("logToFile").checked,
+              stop_accepting_tasks: document.getElementById("stopAcceptingTasks").checked,
             }),
           });
           if (!r) return;
