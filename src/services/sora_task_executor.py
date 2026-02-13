@@ -727,7 +727,8 @@ class SoraSession:
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await self._bring_sora_drafts_to_front();
-        self._schedule_idle_close()
+        # 余额查询属于“仍在使用窗口”的行为：不要触发倒计时关窗
+        self._cancel_idle_close()
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = await self._ensure_bearer_token(target_url=target_url, log_file=log_file)
@@ -757,7 +758,8 @@ class SoraSession:
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await self._bring_sora_drafts_to_front();
-        self._schedule_idle_close()
+        # 查询邀请码属于“仍在使用窗口”的行为：不要触发倒计时关窗
+        self._cancel_idle_close()
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = await self._ensure_bearer_token(target_url=target_url, log_file=log_file)
@@ -861,8 +863,8 @@ class SoraSession:
                         pass
                     return task_id, create_tx
             finally:
-                if not self.watchers:
-                    self._schedule_idle_close()
+                # create_task 后通常仍会继续监控/发布，需要窗口保持前端状态
+                self._cancel_idle_close()
 
     async def watch_task_progress(
         self,
@@ -898,7 +900,8 @@ class SoraSession:
         finally:
             self.watchers.pop(w.task_id, None)
             if not self.watchers:
-                self._schedule_idle_close()
+                # 监控结束不代表“窗口不用了”，不要自动进入倒计时关窗
+                self._cancel_idle_close()
 
     async def _monitor_loop(self) -> None:
         try:
@@ -1032,7 +1035,8 @@ class SoraSession:
                 await asyncio.sleep(float(self.poll_interval_seconds))
         finally:
             if not self.watchers:
-                self._schedule_idle_close()
+                # monitor loop 退出不代表“窗口不用了”，不要自动进入倒计时关窗
+                self._cancel_idle_close()
 
     async def finalize_video_and_publish(
         self,
@@ -1045,6 +1049,8 @@ class SoraSession:
         """任务完成后：从 drafts 找到对应视频 → 发布草稿（去水印）→ 返回 {post_id, urls, draft}。"""
         _ = prompt  # 预留：未来扩展（例如校验 prompt 匹配）
         self.last_used_at = time.time()
+        # 发布/轮询 drafts 期间仍在使用窗口：不要触发倒计时关窗
+        self._cancel_idle_close()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await asyncio.sleep(3);
         await self._bring_sora_drafts_to_front();
@@ -1084,7 +1090,6 @@ class SoraSession:
             last_items_sample: list[str] = []
             attempt = 0
             while time.time() < deadline and draft_item is None:
-                self._schedule_idle_close()
                 attempt += 1
                 drafts = await _sora_api_get_video_drafts_pw(
                     self.pw_ctx.page,
@@ -1246,7 +1251,7 @@ async def sora_gen_video(
         browser_force_open=False,
         browser_headless=False,
     )
-
+    await sess._bring_sora_drafts_to_front();
     await progress_cb(1, {"stage": "created", "task_id": task_id})
     await progress_cb(1, {"stage": "monitor_progress", "task_id": task_id})
     progress_result = await sess.watch_task_progress(
@@ -1267,10 +1272,26 @@ async def sora_gen_video(
     )
 
     nf_check = None
+    nf_check_err: Optional[Exception] = None
     try:
         nf_check = await sess.api_nf_check(target_url=target_url)
-    except Exception:
+    except Exception as e:
+        nf_check_err = e
         nf_check = None
+
+    # 仅当“任务执行完毕后确认余额 <= 1”，或“查询余额报错并将导致禁用”时，才启动倒计时关窗
+    try:
+        if nf_check_err is not None:
+            sess._schedule_idle_close()
+        else:
+            remaining = int((nf_check or {}).get("remaining_count") or 0)
+            if remaining <= 1:
+                sess._schedule_idle_close()
+            else:
+                sess._cancel_idle_close()
+    except Exception:
+        # 不要让关窗策略影响主流程返回
+        pass
 
     await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
     _ = progress_result
