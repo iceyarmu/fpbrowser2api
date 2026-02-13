@@ -76,6 +76,12 @@ async def pick_working_page_from_context(ctx) -> Any:
     best_score = -10
     for p in pages:
         try:
+            is_closed = bool(getattr(p, "is_closed", lambda: False)())
+        except Exception:
+            is_closed = False
+        if is_closed:
+            continue
+        try:
             u = str(getattr(p, "url", "") or "")
         except Exception:
             u = ""
@@ -223,8 +229,27 @@ class PlaywrightBrowserContext:
         headless: bool = False,
     ) -> None:
         self.last_used_at = time.time()
-        if self.browser is not None and self.page is not None:
-            return
+
+        # 优先走“复用已连接的 browser/context”，但要处理 page 被手动关闭的情况。
+        if self.browser is not None and self.context is not None:
+            page_ok = False
+            if self.page is not None:
+                try:
+                    page_ok = not bool(getattr(self.page, "is_closed", lambda: False)())
+                except Exception:
+                    page_ok = False
+            if page_ok:
+                return
+            try:
+                self.page = await pick_working_page_from_context(self.context)
+                try:
+                    await self.page.bring_to_front()
+                except Exception:
+                    pass
+                return
+            except Exception:
+                # 复用失败则继续走“重新连接/重建”逻辑
+                self.page = None
 
         try:
             from playwright.async_api import async_playwright  # type: ignore
