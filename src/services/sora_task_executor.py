@@ -1052,7 +1052,7 @@ class SoraSession:
         # 发布/轮询 drafts 期间仍在使用窗口：不要触发倒计时关窗
         self._cancel_idle_close()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await asyncio.sleep(3);
+        await asyncio.sleep(5);
         await self._bring_sora_drafts_to_front();
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -1083,8 +1083,8 @@ class SoraSession:
                     pass
                 return ""
 
-            drafts_wait_seconds = 60.0
-            drafts_poll_interval = 3.0
+            drafts_wait_seconds = 150.0
+            drafts_poll_interval = 5.0
             deadline = time.time() + drafts_wait_seconds
             draft_item: Optional[Dict[str, Any]] = None
             last_items_sample: list[str] = []
@@ -1125,6 +1125,7 @@ class SoraSession:
                 if draft_item is not None:
                     break
                 await asyncio.sleep(float(drafts_poll_interval))
+                await self._bring_sora_drafts_to_front();
 
             if not draft_item:
                 raise RuntimeError(
