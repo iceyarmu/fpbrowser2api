@@ -58,6 +58,8 @@ class BrowserSpace(BaseModel):
     browser_id: int
     name: str
     space_id: str
+    # 可选：RoxyBrowser /browser/list_v3 的 projectIds 过滤参数（格式 "10,11"）
+    project_ids: Optional[str] = None
     deleted: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

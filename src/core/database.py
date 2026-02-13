@@ -124,6 +124,7 @@ class Database:
                     browser_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
                     space_id TEXT NOT NULL,
+                    project_ids TEXT,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -344,6 +345,15 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
                         await db.execute(f"ALTER TABLE task_types ADD COLUMN {col_name} {col_type}")
+
+            # spaces: project_ids（用于 RoxyBrowser list_v3 的 projectIds 过滤）
+            if await self._table_exists(db, "spaces"):
+                columns_to_add = [
+                    ("project_ids", "TEXT"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "spaces", col_name):
+                        await db.execute(f"ALTER TABLE spaces ADD COLUMN {col_name} {col_type}")
 
             # task_type_windows: 移除 max_concurrency（窗口层并发不再配置）
             if await self._table_exists(db, "task_type_windows"):
@@ -675,23 +685,23 @@ class Database:
             rows = await cur.fetchall()
             return [BrowserSpace(**dict(r)) for r in rows]
 
-    async def create_space(self, browser_id: int, name: str, space_id: str) -> int:
+    async def create_space(self, browser_id: int, name: str, space_id: str, project_ids: Optional[str] = None) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 """
-                INSERT INTO spaces (browser_id, name, space_id, deleted)
-                VALUES (?, ?, ?, 0)
+                INSERT INTO spaces (browser_id, name, space_id, project_ids, deleted)
+                VALUES (?, ?, ?, ?, 0)
                 """,
-                (browser_id, name.strip(), space_id.strip()),
+                (browser_id, name.strip(), space_id.strip(), (project_ids or "").strip() or None),
             )
             await db.commit()
             return int(cur.lastrowid)
 
-    async def update_space(self, space_pk: int, name: str, space_id: str) -> None:
+    async def update_space(self, space_pk: int, name: str, space_id: str, project_ids: Optional[str] = None) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE spaces SET name=?, space_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (name.strip(), space_id.strip(), space_pk),
+                "UPDATE spaces SET name=?, space_id=?, project_ids=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (name.strip(), space_id.strip(), (project_ids or "").strip() or None, space_pk),
             )
             await db.commit()
 

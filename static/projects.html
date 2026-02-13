@@ -132,6 +132,11 @@
               <label class="form-label">空间ID</label>
               <input class="form-control mono" id="spaceId" />
             </div>
+            <div class="mb-3">
+              <label class="form-label">项目ID（可选）</label>
+              <input class="form-control mono" id="spaceProjectIds" placeholder="10,11" />
+              <div class="form-text">用于 RoxyBrowser `/browser/list_v3` 的 `projectIds` 过滤参数；多个用英文逗号分隔。</div>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -254,12 +259,16 @@
       function renderSpace(s) {
         const sid = `s_${s.id}`;
         const table = renderWindowsTable(s.windows || [], s.id);
+        const pidBadge = (s.project_ids || "").trim()
+          ? `<span class="badge text-bg-light mono border">projectIds:${escapeHtml((s.project_ids || "").trim())}</span>`
+          : "";
         return `
           <div class="card mb-3" data-role="spaceCard" data-space-pk="${s.id}">
             <div class="card-header d-flex flex-wrap gap-2 align-items-center">
               <div class="fw-semibold">${escapeHtml(s.name)}</div>
               <span class="badge text-bg-light mono border">#${s.id}</span>
               <span class="badge text-bg-light mono border">${escapeHtml(s.space_id)}</span>
+              ${pidBadge}
               <span class="ms-auto"></span>
               <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_space" data-space='${encodeURIComponent(JSON.stringify(s))}'>修改</button>
               <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_space" data-space_pk="${s.id}">删除</button>
@@ -543,11 +552,20 @@
         if (mode === "new") {
           document.getElementById("spaceName").value = "";
           document.getElementById("spaceId").value = "";
+          document.getElementById("spaceProjectIds").value = "";
         } else {
           document.getElementById("spaceName").value = s.name || "";
           document.getElementById("spaceId").value = s.space_id || "";
+          document.getElementById("spaceProjectIds").value = (s.project_ids || "").trim();
         }
         spaceModal.show();
+      }
+
+      function normalizeProjectIds(v) {
+        const s = (v || "").trim().replace(/\s+/g, "");
+        if (!s) return null;
+        if (!/^(\d+)(,\d+)*$/.test(s)) return "__invalid__";
+        return s;
       }
 
       async function saveSpace() {
@@ -555,12 +573,15 @@
         const browser_id = parseInt(document.getElementById("spaceBrowserId").value, 10);
         const name = document.getElementById("spaceName").value.trim();
         const space_id = document.getElementById("spaceId").value.trim();
+        const project_ids_raw = document.getElementById("spaceProjectIds").value;
+        const project_ids = normalizeProjectIds(project_ids_raw);
         if (!name || !space_id) return toast("请填写空间名称与空间ID", "error");
+        if (project_ids === "__invalid__") return toast("项目ID格式不正确，请使用如：10,11", "error");
         let r;
         if (!spk) {
-          r = await adminFetch("/api/admin/spaces", { method: "POST", body: JSON.stringify({ browser_id, name, space_id }) });
+          r = await adminFetch("/api/admin/spaces", { method: "POST", body: JSON.stringify({ browser_id, name, space_id, project_ids }) });
         } else {
-          r = await adminFetch(`/api/admin/spaces/${spk}`, { method: "PUT", body: JSON.stringify({ name, space_id }) });
+          r = await adminFetch(`/api/admin/spaces/${spk}`, { method: "PUT", body: JSON.stringify({ name, space_id, project_ids }) });
         }
         if (!r) return;
         const d = await r.json();

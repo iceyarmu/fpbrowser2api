@@ -58,6 +58,7 @@ class FPBrowserClient:
         base_url: str,
         access_key: Optional[str],
         space_id: str,
+        project_ids: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         # 说明：本项目“同步窗口”当前按 RoxyBrowser 官方接口实现，
         # 以 `_roxy_get_browser_list_v3` + `_roxy_get_browser_detail` 为准。
@@ -81,6 +82,7 @@ class FPBrowserClient:
             base_url=base_url,
             token=access_key,
             workspace_id=workspace_id,
+            project_ids=(project_ids or "").strip() or None,
         )
 
     async def browser_open(
@@ -381,6 +383,7 @@ class FPBrowserClient:
         base_url: str,
         token: Optional[str],
         workspace_id: int,
+        project_ids: Optional[str] = None,
         page_index: int,
         page_size: int,
     ) -> Tuple[int, List[Dict[str, Any]]]:
@@ -390,6 +393,8 @@ class FPBrowserClient:
             "/browser/list_v3",
             {
                 "workspaceId": int(workspace_id),
+                # 参考文档：projectIds 为可选（多个以英文逗号分隔）
+                "projectIds": (project_ids or "").strip() or None,
                 "page_index": int(page_index),
                 "page_size": int(page_size),
             },
@@ -449,6 +454,7 @@ class FPBrowserClient:
         base_url: str,
         token: Optional[str],
         workspace_id: int,
+        project_ids: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         按你的需求“完整同步”：
@@ -467,6 +473,7 @@ class FPBrowserClient:
                 base_url=base_url,
                 token=token,
                 workspace_id=workspace_id,
+                project_ids=(project_ids or "").strip() or None,
                 page_index=page_index,
                 page_size=page_size,
             )

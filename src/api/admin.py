@@ -78,11 +78,14 @@ class CreateSpaceRequest(BaseModel):
     browser_id: int
     name: str = Field(min_length=1, max_length=100)
     space_id: str = Field(min_length=1, max_length=128)
+    # 可选：RoxyBrowser /browser/list_v3 的 projectIds（格式 "10,11"）
+    project_ids: Optional[str] = Field(default=None, max_length=512)
 
 
 class UpdateSpaceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     space_id: str = Field(min_length=1, max_length=128)
+    project_ids: Optional[str] = Field(default=None, max_length=512)
 
 
 class CreateTaskTypeRequest(BaseModel):
@@ -338,7 +341,7 @@ async def list_spaces(browser_id: int, token: str = Depends(verify_admin_token))
 async def create_space(req: CreateSpaceRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    sid = await db.create_space(req.browser_id, req.name, req.space_id)
+    sid = await db.create_space(req.browser_id, req.name, req.space_id, req.project_ids)
     return {"success": True, "space_pk": sid}
 
 
@@ -346,7 +349,7 @@ async def create_space(req: CreateSpaceRequest, token: str = Depends(verify_admi
 async def update_space(space_pk: int, req: UpdateSpaceRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    await db.update_space(space_pk, req.name, req.space_id)
+    await db.update_space(space_pk, req.name, req.space_id, req.project_ids)
     return {"success": True}
 
 
@@ -390,6 +393,7 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
             base_url=browser.lan_addr,
             access_key=browser.access_key,
             space_id=space.space_id,
+            project_ids=getattr(space, "project_ids", None),
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
