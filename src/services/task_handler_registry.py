@@ -140,7 +140,7 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
 REFRESH_QUOTA_HANDLERS: Dict[str, Tuple[str, RefreshQuotaHandler]] = {
     "noop": ("默认：不刷新（保持当前值）", refresh_quota__noop),
     "reset_to_daily": ("示例：重置为 daily_quota", refresh_quota__reset_to_daily),
-    "sora_nf_check": ("Sora：读取余额 backend/nf/check（更新 remaining_count/限流/重置时间）", refresh_quota__sora_nf_check),
+    "sora_nf_check": ("Sora：读取余额 backend/nf/check", refresh_quota__sora_nf_check),
 }
 
 

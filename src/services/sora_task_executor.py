@@ -666,6 +666,7 @@ class SoraSession:
         self._schedule_idle_close()
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            await self._refresh_target_page(target_url=target_url, log_file=log_file)
             token = await self._ensure_bearer_token(target_url=target_url, log_file=log_file)
             url = _sora_backend_url_from_target(target_url, "/backend/nf/check")
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
@@ -687,6 +688,38 @@ class SoraSession:
             except Exception:
                 pass
             return out
+
+    async def _refresh_target_page(self, *, target_url: str, log_file: Path) -> None:
+        """确保目标窗口页面处于活跃状态。
+
+        说明：
+        - 某些 API（如 nf_check）可能在 bearer_token 已缓存时不会触发 goto；此处主动刷新一下页面，
+          避免窗口长时间停留在旧页面导致后续行为异常。
+        - 该方法应在 `pw_ctx.driver_lock` 保护下调用（页面操作互斥）。
+        """
+        if self.pw_ctx.page is None:
+            raise RuntimeError("page 未初始化")
+        page = self.pw_ctx.page
+        cur_url = ""
+        try:
+            cur_url = str(getattr(page, "url", "") or "")
+        except Exception:
+            cur_url = ""
+
+        # 优先尝试 reload；失败则 fallback 到 goto(target_url)
+        try:
+            if (not cur_url) or (cur_url == "about:blank"):
+                await page.goto(target_url, wait_until="domcontentloaded")
+            else:
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=15_000)
+                except Exception:
+                    await page.goto(target_url, wait_until="domcontentloaded")
+        except Exception as e:
+            try:
+                append_log(log_file, f"[sora][page] refresh failed: {e}")
+            except Exception:
+                pass
 
     async def api_invite_mine(self, *, target_url: str) -> Dict[str, Any]:
         """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
