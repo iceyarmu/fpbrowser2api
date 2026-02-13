@@ -402,6 +402,22 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条窗口记录", "affected": affected}
 
 
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/delete")
+async def delete_window_local(space_pk: int, window_key: str, token: str = Depends(verify_admin_token)):
+    """仅本地标记删除窗口（不调用指纹浏览器的删除接口）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+
+    affected = await db.delete_window_by_key(space_pk=space_pk, window_key=window_key)
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="window not found or already deleted")
+    return {"success": True, "message": "已在本地标记删除（不会同步到指纹浏览器）", "affected": affected}
+
+
 @router.get("/api/admin/browsers/{browser_id}/workspace-projects")
 async def get_browser_workspace_projects(browser_id: int, token: str = Depends(verify_admin_token)):
     """读取指纹浏览器的“空间 + 项目列表”（只读展示，不落库）。"""

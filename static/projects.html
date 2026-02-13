@@ -241,11 +241,6 @@
           </div>
         `;
         treeContainer.innerHTML = html;
-
-        // bind buttons
-        treeContainer.querySelectorAll("[data-action]").forEach(btn => {
-          btn.addEventListener("click", (e) => handleAction(btn.dataset.action, btn.dataset, e.currentTarget));
-        });
       }
 
       function renderBrowser(b, parentId, idx) {
@@ -330,7 +325,10 @@
               <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk ?? ""))}">
                 ${windows.map(w => `
                   <tr class="small2">
-                    <td class="mono text-muted">#${escapeHtml(String(w.id ?? "-"))}</td>
+                    <td class="mono text-muted">
+                      <div>#${escapeHtml(String(w.id ?? "-"))}</div>
+                      <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
+                    </td>
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
                     <td>${escapeHtml(w.platform_account || "-")}</td>
                     <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
@@ -338,7 +336,13 @@
                     <td>${escapeHtml(w.proxy_country || "-")}</td>
                     <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
                     <td>${w.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
-                    <td>${w.deleted ? `<span class="badge text-bg-danger">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+                    <td>
+                      <button class="btn btn-outline-danger btn-sm" type="button"
+                        data-action="delete_window"
+                        data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+                        data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                        data-window_name="${escapeHtml(String(w.window_name ?? ""))}">删除</button>
+                    </td>
                   </tr>
                 `).join("")}
               </tbody>
@@ -357,6 +361,8 @@
           openSpaceModal("new", { browser_id: parseInt(ds.browser_id, 10) });
         } else if (action === "workspace_projects") {
           openWorkspaceProjectsModal(parseInt(ds.browser_id, 10), fromEl);
+        } else if (action === "delete_window") {
+          deleteWindow(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, fromEl);
         } else if (action === "edit_space") {
           const s = JSON.parse(decodeURIComponent(ds.space));
           openSpaceModal("edit", s);
@@ -364,6 +370,38 @@
           deleteSpace(parseInt(ds.space_pk, 10));
         } else if (action === "sync_space") {
           syncSpace(parseInt(ds.space_pk, 10), fromEl);
+        }
+      }
+
+      async function deleteWindow(spacePk, windowKey, windowName, fromEl) {
+        const wk = String(windowKey || "").trim();
+        const name = String(windowName || "").trim() || wk;
+        if (!wk) return toast("缺少窗口标识(window_key/dirId)，无法删除", "error");
+        const ok = confirm(`确定在本地标记删除该窗口吗？\n- ${name}\n- dirId: ${wk}\n\n说明：只会在本地 DB 标记 deleted=1，不会调用指纹浏览器删除。`);
+        if (!ok) return;
+
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "删除中" });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/delete`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "删除失败");
+          toast(d.message || "已删除", "success");
+
+          // 刷新该空间窗口列表（删除后将不再返回）
+          const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
+          if (!r2) return;
+          const d2 = await r2.json();
+          if (!r2.ok) throw new Error(d2.detail || "刷新窗口列表失败");
+          await renderWindowsIncrementally(spacePk, d2.windows || []);
+        } catch (e) {
+          toast(e.message || "删除失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
         }
       }
 
@@ -596,10 +634,13 @@
         return document.querySelector(`[data-role="windowsTbody"][data-space-pk="${spacePk}"]`);
       }
 
-      function rowHtmlForWindow(w) {
+      function rowHtmlForWindow(w, spacePk) {
         return `
           <tr class="small2">
-            <td class="mono text-muted">#${escapeHtml(String(w.id ?? "-"))}</td>
+            <td class="mono text-muted">
+              <div>#${escapeHtml(String(w.id ?? "-"))}</div>
+              <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
+            </td>
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
             <td>${escapeHtml(w.platform_account || "-")}</td>
             <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
@@ -607,7 +648,13 @@
             <td>${escapeHtml(w.proxy_country || "-")}</td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
             <td>${w.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
-            <td>${w.deleted ? `<span class="badge text-bg-danger">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+            <td>
+              <button class="btn btn-outline-danger btn-sm" type="button"
+                data-action="delete_window"
+                data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
+                data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                data-window_name="${escapeHtml(String(w.window_name ?? ""))}">删除</button>
+            </td>
           </tr>
         `;
       }
@@ -634,7 +681,7 @@
           const pump = () => {
             const end = Math.min(total, idx + chunkSize);
             let html = "";
-            for (; idx < end; idx += 1) html += rowHtmlForWindow(windows[idx]);
+            for (; idx < end; idx += 1) html += rowHtmlForWindow(windows[idx], spacePk);
             if (html) tb.insertAdjacentHTML("beforeend", html);
             setSpaceProgress(spacePk, { current: end, total, text: `加载窗口：${end}/${total}` });
             if (end >= total) return resolve();
@@ -832,6 +879,13 @@
       }
 
       // bind top actions
+      // 事件委托：让动态插入的按钮（如同步后渲染的窗口行）也能响应
+      treeContainer.addEventListener("click", (e) => {
+        const btn = e.target?.closest?.("[data-action]");
+        if (!btn) return;
+        handleAction(btn.dataset.action, btn.dataset, btn);
+      });
+
       document.getElementById("btnNewProject").addEventListener("click", () => openProjectModal("new"));
       document.getElementById("btnEditProject").addEventListener("click", () => openProjectModal("edit"));
       document.getElementById("btnDeleteProject").addEventListener("click", deleteProject);

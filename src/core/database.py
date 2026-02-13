@@ -776,7 +776,8 @@ class Database:
                         proxy_country=excluded.proxy_country,
                         proxy_expire_at=excluded.proxy_expire_at,
                         enabled=excluded.enabled,
-                        deleted=excluded.deleted,
+                        -- 约定：本地标记删除后，不因“同步窗口”而被覆盖为未删除
+                        deleted=CASE WHEN windows.deleted = 1 THEN 1 ELSE excluded.deleted END,
                         raw_json=excluded.raw_json,
                         synced_at=CURRENT_TIMESTAMP,
                         updated_at=CURRENT_TIMESTAMP
@@ -814,6 +815,22 @@ class Database:
                     d["raw"] = None
             d.pop("raw_json", None)
             return WindowInfo(**d)
+
+    async def delete_window_by_key(self, *, space_pk: int, window_key: str) -> int:
+        """本地标记删除窗口（不物理删除）。
+
+        返回：影响行数（0 表示未找到该窗口或已被删除）。
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "UPDATE windows SET deleted = 1, updated_at=CURRENT_TIMESTAMP WHERE space_pk = ? AND window_key = ? AND deleted = 0",
+                (int(space_pk), str(window_key).strip()),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
 
     # ---------- task types ----------
     async def list_task_types(self) -> List[TaskType]:
