@@ -1084,7 +1084,7 @@ class SoraSession:
                 return ""
 
             drafts_wait_seconds = 150.0
-            drafts_poll_interval = 5.0
+            drafts_poll_interval = 15.0
             deadline = time.time() + drafts_wait_seconds
             draft_item: Optional[Dict[str, Any]] = None
             last_items_sample: list[str] = []
