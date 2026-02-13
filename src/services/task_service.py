@@ -12,7 +12,7 @@ from ..core.logger import logger
 from ..core.models import Task
 from .image_task_executor import simulate_image_task
 from .video_task_executor import simulate_video_task
-from .sora_task_executor import sora_gen_video
+from .sora_task_executor import get_or_create_sora_session, sora_gen_video
 
 
 @dataclass
@@ -188,6 +188,22 @@ class TaskService:
                 # 执行器侧会抛出带 no_penalty=true 的异常（或同名属性），这里做兼容判断。
                 if not no_penalty:
                     await self.db.mark_mapping_error(picked.mapping_id, threshold=picked.threshold, cooldown_seconds=1800)
+                    # 若连续错误达到/超过阈值（熔断进入错误冷却），则启动倒计时关闭窗口（释放前端状态）
+                    # 注意：仅对 Sora 窗口做处理；其它模拟执行器没有需要维护的浏览器会话
+                    try:
+                        st = await self.db.get_mapping_runtime_state(picked.mapping_id)
+                        ce = int((st or {}).get("consecutive_errors") or 0)
+                        if ce >= int(picked.threshold):
+                            sess = get_or_create_sora_session(
+                                vendor=picked.browser_vendor,
+                                base_url=picked.browser_base_url,
+                                access_key=picked.browser_access_key,
+                                space_id=picked.space_id,
+                                window_key=picked.window_key,
+                            )
+                            sess._schedule_idle_close()
+                    except Exception:
+                        pass
                 logger.exception("task failed: %s err=%s", task_id, e)
             finally:
                 # 清理内存 payload（避免堆积）

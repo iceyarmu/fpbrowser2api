@@ -1620,3 +1620,26 @@ class Database:
             )
             await db.commit()
 
+    async def get_mapping_runtime_state(self, mapping_id: int) -> Dict[str, Any]:
+        """读取窗口映射运行态字段（连续错误/错误冷却等）。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  id,
+                  consecutive_errors,
+                  error_cooldown_until,
+                  enabled,
+                  remaining_quota,
+                  cooldown_until,
+                  updated_at
+                FROM task_type_windows
+                WHERE id = ?
+                """,
+                (int(mapping_id),),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            return dict(row) if row else {}
+

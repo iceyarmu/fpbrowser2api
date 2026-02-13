@@ -444,9 +444,9 @@ async def _sora_create_task_pw(
     sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(page, device_id=None, log_file=log_file)
 
     if not bearer_token:
-        raise NonPenalizedTaskError("未能从指纹浏览器 Network 抓到 Bearer token（请确保已登录且页面会发出带 Authorization 的请求）")
+        raise RuntimeError(f"未能读取到Bearer token（请确保已登录且页面会发出带 Authorization 的请求）");
     if not sentinel_token:
-        raise NonPenalizedTaskError("未能生成 SentinelToken（__sentinel__ SDK 注入失败/被拦截）")
+        raise RuntimeError(f"未能生成 SentinelToken，触发了429");
 
     oai_device_id = None
     try:
