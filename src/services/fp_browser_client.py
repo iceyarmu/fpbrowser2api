@@ -85,6 +85,29 @@ class FPBrowserClient:
             project_ids=(project_ids or "").strip() or None,
         )
 
+    async def list_workspace_projects(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """读取“空间 + 项目列表”（RoxyBrowser：GET /browser/workspace）。
+
+        说明：
+        - 仅用于 UI 展示，只读，不写入本地 DB。
+        - 返回值尽量保持 RoxyBrowser 的 rows 结构：[{id, workspaceName, project_details:[{projectId, projectName}]}]
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        if not base_url:
+            return []
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的空间项目列表查询，请设置为 roxy")
+
+        return await self._roxy_list_workspace_projects(base_url=base_url, token=access_key)
+
     async def browser_open(
         self,
         *,
@@ -406,6 +429,58 @@ class FPBrowserClient:
         rows = data.get("rows") or []
         rows = [x for x in rows if isinstance(x, dict)]
         return total, rows
+
+    async def _roxy_get_workspace_projects_page(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        page_index: int,
+        page_size: int,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        rsp = await self._roxy_get(
+            base_url,
+            token,
+            "/browser/workspace",
+            {
+                "page_index": int(page_index),
+                "page_size": int(page_size),
+            },
+        )
+        if (rsp or {}).get("code") != 0:
+            raise RuntimeError(f"Roxy workspace 失败：{(rsp or {}).get('msg')}")
+        data = (rsp or {}).get("data") or {}
+        total = int(data.get("total") or 0)
+        rows = data.get("rows") or []
+        rows = [x for x in rows if isinstance(x, dict)]
+        return total, rows
+
+    async def _roxy_list_workspace_projects(self, *, base_url: str, token: Optional[str]) -> List[Dict[str, Any]]:
+        base_url = (base_url or "").strip().rstrip("/")
+        page_size = 50
+        page_index = 1
+        total = 0
+        all_rows: List[Dict[str, Any]] = []
+
+        while True:
+            t, rows = await self._roxy_get_workspace_projects_page(
+                base_url=base_url,
+                token=token,
+                page_index=page_index,
+                page_size=page_size,
+            )
+            if total <= 0:
+                total = t
+            if not rows:
+                break
+            all_rows.extend(rows)
+            if total > 0 and len(all_rows) >= total:
+                break
+            page_index += 1
+            if page_index > 200:
+                break
+
+        return all_rows
 
     async def _roxy_get_browser_detail(
         self,

@@ -146,6 +146,29 @@
       </div>
     </div>
 
+    <!-- Workspace Projects Modal -->
+    <div class="modal fade" id="workspaceProjectsModal" tabindex="-1">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="workspaceProjectsModalTitle">空间项目列表查询</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <input class="form-control form-control-sm" id="workspaceProjectsFilter" placeholder="搜索：空间名称 / 项目名称 / 项目ID" style="max-width: 420px;" />
+              <button class="btn btn-outline-secondary btn-sm" id="btnRefreshWorkspaceProjects">刷新</button>
+              <span class="text-muted small ms-auto" id="workspaceProjectsSummary"></span>
+            </div>
+            <div id="workspaceProjectsBody"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
@@ -159,6 +182,7 @@
       const projectModal = new bootstrap.Modal("#projectModal");
       const browserModal = new bootstrap.Modal("#browserModal");
       const spaceModal = new bootstrap.Modal("#spaceModal");
+      const workspaceProjectsModal = new bootstrap.Modal("#workspaceProjectsModal");
 
       let state = { projects: [], tree: [] };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
@@ -244,6 +268,7 @@
                   <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_browser" data-browser='${encodeURIComponent(JSON.stringify(b))}'>修改</button>
                   <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_browser" data-browser_id="${b.id}">删除</button>
                   <button class="btn btn-outline-primary btn-sm" type="button" data-action="new_space" data-browser_id="${b.id}">新增空间</button>
+                  <button class="btn btn-outline-info btn-sm" type="button" data-action="workspace_projects" data-browser_id="${b.id}">空间项目列表查询</button>
                 </div>
               </div>
             </h2>
@@ -330,6 +355,8 @@
           deleteBrowser(parseInt(ds.browser_id, 10));
         } else if (action === "new_space") {
           openSpaceModal("new", { browser_id: parseInt(ds.browser_id, 10) });
+        } else if (action === "workspace_projects") {
+          openWorkspaceProjectsModal(parseInt(ds.browser_id, 10), fromEl);
         } else if (action === "edit_space") {
           const s = JSON.parse(decodeURIComponent(ds.space));
           openSpaceModal("edit", s);
@@ -338,6 +365,170 @@
         } else if (action === "sync_space") {
           syncSpace(parseInt(ds.space_pk, 10), fromEl);
         }
+      }
+
+      // -------------------- workspace/projects (read-only) --------------------
+      const workspaceProjectsBody = document.getElementById("workspaceProjectsBody");
+      const workspaceProjectsSummary = document.getElementById("workspaceProjectsSummary");
+      const workspaceProjectsFilter = document.getElementById("workspaceProjectsFilter");
+      const btnRefreshWorkspaceProjects = document.getElementById("btnRefreshWorkspaceProjects");
+
+      let workspaceProjectsState = { browserId: null, rows: [], loading: false };
+
+      function findBrowserById(browserId) {
+        const p = state.tree?.[0];
+        const browsers = p?.browsers || [];
+        return browsers.find(x => x?.id === browserId) || null;
+      }
+
+      function setWorkspaceProjectsLoading(loading) {
+        workspaceProjectsState.loading = !!loading;
+        btnRefreshWorkspaceProjects.disabled = !!loading;
+        if (loading) {
+          workspaceProjectsBody.innerHTML = `
+            <div class="d-flex align-items-center gap-2 text-muted">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span class="small">正在读取空间与项目列表...</span>
+            </div>
+          `;
+        }
+      }
+
+      function normalizeWorkspaceRows(rows) {
+        const arr = Array.isArray(rows) ? rows : [];
+        return arr
+          .filter(x => x && typeof x === "object")
+          .map(x => {
+            const id = x.id;
+            const workspaceName = x.workspaceName ?? x.workspace_name ?? x.name ?? "";
+            const project_details = Array.isArray(x.project_details) ? x.project_details : (Array.isArray(x.projectDetails) ? x.projectDetails : []);
+            return {
+              id,
+              workspaceName: String(workspaceName || "").trim(),
+              project_details: project_details.filter(p => p && typeof p === "object").map(p => ({
+                projectId: p.projectId ?? p.project_id ?? p.id ?? "",
+                projectName: p.projectName ?? p.project_name ?? p.name ?? "",
+              })),
+            };
+          });
+      }
+
+      function renderWorkspaceProjects() {
+        const rows = normalizeWorkspaceRows(workspaceProjectsState.rows || []);
+        const q = (workspaceProjectsFilter.value || "").trim().toLowerCase();
+
+        let filtered = rows;
+        if (q) {
+          filtered = rows.filter(w => {
+            const wn = (w.workspaceName || "").toLowerCase();
+            if (wn.includes(q)) return true;
+            for (const p of (w.project_details || [])) {
+              const pn = String(p.projectName || "").toLowerCase();
+              const pid = String(p.projectId ?? "").toLowerCase();
+              if (pn.includes(q) || pid.includes(q)) return true;
+            }
+            return false;
+          });
+        }
+
+        const totalWorkspaces = rows.length;
+        const totalProjects = rows.reduce((acc, w) => acc + (w.project_details?.length || 0), 0);
+        const shownWorkspaces = filtered.length;
+        const shownProjects = filtered.reduce((acc, w) => acc + (w.project_details?.length || 0), 0);
+
+        workspaceProjectsSummary.textContent =
+          q
+            ? `显示：空间 ${shownWorkspaces}/${totalWorkspaces}，项目 ${shownProjects}/${totalProjects}`
+            : `空间 ${totalWorkspaces}，项目 ${totalProjects}`;
+
+        if (!rows.length) {
+          workspaceProjectsBody.innerHTML = `<div class="text-muted small">暂无数据（可能未配置空间/项目，或接口返回为空）。</div>`;
+          return;
+        }
+        if (q && !filtered.length) {
+          workspaceProjectsBody.innerHTML = `<div class="text-muted small">未找到匹配内容。</div>`;
+          return;
+        }
+
+        const accId = "accWorkspaceProjects";
+        const html = `
+          <div class="accordion" id="${accId}">
+            ${filtered.map((w, i) => {
+              const hid = `wph_${i}`;
+              const cid = `wpc_${i}`;
+              const plist = w.project_details || [];
+              return `
+                <div class="accordion-item">
+                  <h2 class="accordion-header" id="${hid}">
+                    <button class="accordion-button ${i === 0 ? "" : "collapsed"}" type="button" data-bs-toggle="collapse" data-bs-target="#${cid}">
+                      <div class="d-flex flex-wrap gap-2 align-items-center w-100">
+                        <div class="fw-semibold">${escapeHtml(w.workspaceName || "(未命名空间)")}</div>
+                        <span class="badge text-bg-light mono border">workspaceId:${escapeHtml(String(w.id ?? "-"))}</span>
+                        <span class="badge text-bg-info">项目数：${escapeHtml(String(plist.length))}</span>
+                      </div>
+                    </button>
+                  </h2>
+                  <div id="${cid}" class="accordion-collapse collapse ${i === 0 ? "show" : ""}" data-bs-parent="#${accId}">
+                    <div class="accordion-body">
+                      ${plist.length ? `
+                        <div class="table-responsive">
+                          <table class="table table-sm align-middle">
+                            <thead>
+                              <tr class="small2">
+                                <th style="width: 160px;">项目ID</th>
+                                <th>项目名称</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              ${plist.map(p => `
+                                <tr class="small2">
+                                  <td class="mono text-muted">${escapeHtml(String(p.projectId ?? "-"))}</td>
+                                  <td class="fw-semibold">${escapeHtml(String(p.projectName ?? ""))}</td>
+                                </tr>
+                              `).join("")}
+                            </tbody>
+                          </table>
+                        </div>
+                      ` : `<div class="text-muted small">该空间下暂无项目。</div>`}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+
+        workspaceProjectsBody.innerHTML = html;
+      }
+
+      async function loadWorkspaceProjects(browserId) {
+        workspaceProjectsState.browserId = browserId;
+        setWorkspaceProjectsLoading(true);
+        workspaceProjectsSummary.textContent = "";
+        try {
+          const r = await adminFetch(`/api/admin/browsers/${browserId}/workspace-projects`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "读取失败");
+          workspaceProjectsState.rows = d.rows || [];
+          renderWorkspaceProjects();
+        } catch (e) {
+          workspaceProjectsBody.innerHTML = `<div class="alert alert-danger mb-0">读取失败：${escapeHtml(e.message || "未知错误")}</div>`;
+          workspaceProjectsSummary.textContent = "";
+        } finally {
+          setWorkspaceProjectsLoading(false);
+        }
+      }
+
+      function openWorkspaceProjectsModal(browserId, fromEl) {
+        const b = findBrowserById(browserId);
+        document.getElementById("workspaceProjectsModalTitle").textContent =
+          b ? `空间项目列表查询 - ${b.name} (#${b.id})` : `空间项目列表查询 - #${browserId}`;
+        workspaceProjectsFilter.value = "";
+        workspaceProjectsBody.innerHTML = "";
+        workspaceProjectsSummary.textContent = "";
+        workspaceProjectsModal.show();
+        loadWorkspaceProjects(browserId);
       }
 
       function setBtnBusy(btn, busy, { loadingText = "处理中" } = {}) {
@@ -650,6 +841,12 @@
       document.getElementById("btnSaveBrowser").addEventListener("click", saveBrowser);
 
       document.getElementById("btnSaveSpace").addEventListener("click", saveSpace);
+
+      btnRefreshWorkspaceProjects.addEventListener("click", () => {
+        if (!workspaceProjectsState.browserId) return;
+        loadWorkspaceProjects(workspaceProjectsState.browserId);
+      });
+      workspaceProjectsFilter.addEventListener("input", () => renderWorkspaceProjects());
 
       document.getElementById("btnExpandAll").addEventListener("click", () => expandAll(true));
       document.getElementById("btnCollapseAll").addEventListener("click", () => expandAll(false));

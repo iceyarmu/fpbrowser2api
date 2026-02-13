@@ -402,6 +402,34 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条窗口记录", "affected": affected}
 
 
+@router.get("/api/admin/browsers/{browser_id}/workspace-projects")
+async def get_browser_workspace_projects(browser_id: int, token: str = Depends(verify_admin_token)):
+    """读取指纹浏览器的“空间 + 项目列表”（只读展示，不落库）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    browser = await db.get_browser(browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(
+        proxy_enabled=syscfg.proxy_enabled,
+        proxy_url=syscfg.proxy_url,
+    )
+
+    try:
+        rows = await client.list_workspace_projects(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"success": True, "browser_id": browser_id, "rows": rows}
+
+
 @router.get("/api/admin/tree")
 async def get_project_tree(project_id: Optional[int] = None, token: str = Depends(verify_admin_token)):
     """返回树形结构（项目 -> 浏览器 -> 空间 -> 窗口列表）。
