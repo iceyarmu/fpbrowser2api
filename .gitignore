@@ -39,3 +39,4 @@ __pycache__/
 /app.log
 /logs.txt
 /data/logs/
+/data/fpbrowser.db

@@ -46,7 +46,6 @@ class NonPenalizedTaskError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
 
-
 def _mask_secret(s: Optional[str], *, head: int = 8, tail: int = 6) -> str:
     if not s:
         return ""
@@ -599,6 +598,70 @@ class SoraSession:
     sentinel_token: Optional[str] = None
     invite_code: Optional[str] = None
 
+    async def _bring_sora_drafts_to_front(self) -> None:
+        """将 Sora drafts 页面置前（如果不存在则新开一个）。
+
+        需求背景：指纹浏览器可能开了多个标签页；即使 ensure_open 选中了可用 page，也不一定是 drafts。
+        这里确保 `https://sora.chatgpt.com/drafts` 这个窗口在每次 ensure_open 后都会被 bring_to_front。
+        """
+        drafts_url = "https://sora.chatgpt.com/drafts"
+
+        ctx = getattr(self.pw_ctx, "context", None)
+        if ctx is None:
+            return
+
+        # 先在已有 pages 中找 drafts
+        try:
+            pages = list(getattr(ctx, "pages", []) or [])
+        except Exception:
+            pages = []
+
+        drafts_page = None
+        for p in pages:
+            try:
+                is_closed = bool(getattr(p, "is_closed", lambda: False)())
+            except Exception:
+                is_closed = False
+            if is_closed:
+                continue
+            try:
+                u = str(getattr(p, "url", "") or "").strip()
+            except Exception:
+                u = ""
+            if not u:
+                continue
+            if u.startswith(drafts_url):
+                drafts_page = p
+                break
+
+        # 没找到则新开一个 drafts 页
+        if drafts_page is None:
+            try:
+                drafts_page = await ctx.new_page()
+            except Exception:
+                return
+            try:
+                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                # 即使 goto 失败，也尽量 bring_to_front（有些环境网络慢/被拦截）
+                pass
+
+        try:
+            await drafts_page.bring_to_front()
+        except Exception:
+            pass
+
+        try:
+            await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+        except Exception:
+            # 即使 goto 失败，也尽量 bring_to_front（有些环境网络慢/被拦截）
+            pass
+
+        try:
+            await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
+        except Exception:
+            pass
+
     async def ensure_open(
         self,
         *,
@@ -663,10 +726,10 @@ class SoraSession:
         """读取 Sora 余额：GET /backend/nf/check。"""
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front();
         self._schedule_idle_close()
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-            await self._refresh_target_page(target_url=target_url, log_file=log_file)
             token = await self._ensure_bearer_token(target_url=target_url, log_file=log_file)
             url = _sora_backend_url_from_target(target_url, "/backend/nf/check")
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
@@ -689,42 +752,11 @@ class SoraSession:
                 pass
             return out
 
-    async def _refresh_target_page(self, *, target_url: str, log_file: Path) -> None:
-        """确保目标窗口页面处于活跃状态。
-
-        说明：
-        - 某些 API（如 nf_check）可能在 bearer_token 已缓存时不会触发 goto；此处主动刷新一下页面，
-          避免窗口长时间停留在旧页面导致后续行为异常。
-        - 该方法应在 `pw_ctx.driver_lock` 保护下调用（页面操作互斥）。
-        """
-        if self.pw_ctx.page is None:
-            raise RuntimeError("page 未初始化")
-        page = self.pw_ctx.page
-        cur_url = ""
-        try:
-            cur_url = str(getattr(page, "url", "") or "")
-        except Exception:
-            cur_url = ""
-
-        # 优先尝试 reload；失败则 fallback 到 goto(target_url)
-        try:
-            if (not cur_url) or (cur_url == "about:blank"):
-                await page.goto(target_url, wait_until="domcontentloaded")
-            else:
-                try:
-                    await page.reload(wait_until="domcontentloaded", timeout=15_000)
-                except Exception:
-                    await page.goto(target_url, wait_until="domcontentloaded")
-        except Exception as e:
-            try:
-                append_log(log_file, f"[sora][page] refresh failed: {e}")
-            except Exception:
-                pass
-
     async def api_invite_mine(self, *, target_url: str) -> Dict[str, Any]:
         """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front();
         self._schedule_idle_close()
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -809,6 +841,7 @@ class SoraSession:
         async with self.create_lock:
             try:
                 await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+                await self._bring_sora_drafts_to_front();
                 async with self.pw_ctx.driver_lock:
                     task_id, create_tx, auth_state = await _sora_create_task_pw(
                         page=self.pw_ctx.page,
@@ -1013,12 +1046,13 @@ class SoraSession:
         _ = prompt  # 预留：未来扩展（例如校验 prompt 匹配）
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await asyncio.sleep(3);
+        await self._bring_sora_drafts_to_front();
         async with self.pw_ctx.driver_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             if not self.bearer_token:
                 raise RuntimeError("缺少 bearer_token，无法查询 drafts/发布")
-            if not self.sentinel_token:
-                self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file)
+            self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file)
             if not self.sentinel_token:
                 raise RuntimeError("缺少 sentinel_token，无法发布草稿")
 
