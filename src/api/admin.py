@@ -758,7 +758,14 @@ async def refresh_mapping_remaining_quota(
         new_remaining = await fn(RefreshQuotaContext(task_type=task_type, mapping_row=ctx_row, db=db))
         new_remaining = max(0, int(new_remaining))
     except Exception as e:
-        # 仅当“定时刷新”触发（source=auto）时，写入错误日志并自动禁用
+        is_auto = str(source or "").strip().lower() == "auto"
+        no_penalty = bool(getattr(e, "no_penalty", False))
+
+        # 手工触发：不做风控/熔断副作用，仅返回错误即可
+        if not is_auto:
+            raise HTTPException(status_code=400, detail=f"刷新额度失败：{e}")
+
+        # 定时触发：记录错误日志，并累计窗口连续错误；达到阈值才禁用
         try:
             from ..core.models import AutoRefreshErrorLog
 
@@ -775,14 +782,40 @@ async def refresh_mapping_remaining_quota(
             )
         except Exception:
             pass
-        try:
-            await db.update_task_type_window(mapping_id=mapping_id, enabled=False)
-        except Exception:
-            pass
-        raise HTTPException(status_code=400, detail=f"刷新额度失败：{e}（已记录并禁用该窗口）")
+
+        suffix = "（已记录）"
+        if no_penalty:
+            suffix = "（已记录；no_penalty：未计入连续错误）"
+        else:
+            thr = max(1, int(getattr(task_type, "continuous_error_threshold", 3) or 3))
+            try:
+                await db.mark_mapping_error(mapping_id=mapping_id, threshold=thr, cooldown_seconds=1800)
+            except Exception:
+                pass
+
+            try:
+                st = await db.get_mapping_runtime_state(mapping_id=mapping_id)
+                ce = int((st or {}).get("consecutive_errors") or 0)
+                if ce >= thr:
+                    try:
+                        await db.update_task_type_window(mapping_id=mapping_id, enabled=False)
+                        suffix = f"（已记录；连续错误 {ce}/{thr} 达到阈值，已自动禁用该窗口）"
+                    except Exception:
+                        suffix = f"（已记录；连续错误 {ce}/{thr} 达到阈值）"
+                else:
+                    suffix = f"（已记录；已累计连续错误 {ce}/{thr}）"
+            except Exception:
+                suffix = f"（已记录；已累计连续错误，阈值 {thr}）"
+
+        raise HTTPException(status_code=400, detail=f"刷新额度失败：{e}{suffix}")
 
 
     await db.update_task_type_window(mapping_id=mapping_id, remaining_quota=new_remaining)
+    # 一次成功：连续错误清零（手工/定时都可清零）
+    try:
+        await db.mark_mapping_success(mapping_id=mapping_id)
+    except Exception:
+        pass
     return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
 
 
