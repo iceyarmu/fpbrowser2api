@@ -767,6 +767,9 @@ class SoraSession:
                 raise RuntimeError("no local proxies in pool (please sync proxies)")
             counts = await db.count_proxy_bindings(int(space_pk))
 
+            print("proxies1:", proxies)
+            print("counts:", counts)
+
             # 按“绑定窗口数”(使用次数) 最少优先选择；且与当前 proxy_id / 当前出口 IP 不同
             candidates = []
             for p in proxies:
@@ -785,6 +788,8 @@ class SoraSession:
                 raise RuntimeError("no available proxy candidate different from current ip/proxy")
 
             candidates.sort(key=lambda x: (x[0], x[1]))
+            print("proxies2:", candidates)
+            print("counts:", counts)
             picked_use_cnt, picked_proxy_id, picked_last_ip = candidates[0]
 
             try:
@@ -801,6 +806,7 @@ class SoraSession:
             if isinstance(wpl, list) and wpl:
                 mdf_payload["windowPlatformList"] = wpl
 
+            print("mdf_payload", mdf_payload)
             await self.pw_ctx.fp_client.browser_mdf(
                 vendor=self.pw_ctx.vendor,
                 base_url=self.pw_ctx.base_url,
