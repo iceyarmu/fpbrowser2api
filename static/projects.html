@@ -222,7 +222,7 @@
         const r = await adminFetch("/api/admin/projects");
         if (!r) return;
         const d = await r.json();
-        state.projects = d.projects || [];
+        state.projects = Array.isArray(d.projects) ? d.projects : [];
         projectSelect.innerHTML = state.projects
           .map(p => `<option value="${p.id}">#${p.id} ${escapeHtml(p.name)}</option>`)
           .join("");
@@ -249,21 +249,28 @@
         const r = await adminFetch(`/api/admin/tree?project_id=${pid}`);
         if (!r) return;
         const d = await r.json();
-        state.tree = d.tree || [];
+        if (!r.ok) {
+          const msg = d?.detail || "加载项目树失败";
+          toast(msg, "error");
+          treeContainer.innerHTML = `<div class="alert alert-danger small mb-0">加载失败：${escapeHtml(msg)}</div>`;
+          return;
+        }
+        state.tree = Array.isArray(d.tree) ? d.tree : [];
         renderTree();
       }
 
       function renderTree() {
-        const p = state.tree[0];
+        const p = Array.isArray(state.tree) ? state.tree[0] : null;
         if (!p) {
           treeContainer.innerHTML = `<div class="alert alert-info">暂无数据。</div>`;
           return;
         }
 
+        const browsers = Array.isArray(p.browsers) ? p.browsers : [];
         const accordionId = "accBrowsers";
         const html = `
           <div class="accordion" id="${accordionId}">
-            ${(p.browsers || []).map((b, bi) => renderBrowser(b, accordionId, bi)).join("")}
+            ${browsers.length ? browsers.map((b, bi) => renderBrowser(b, accordionId, bi)).join("") : `<div class="text-muted small py-2">该项目暂无指纹浏览器数据（请先新增指纹浏览器/空间，或确认未被删除）。</div>`}
           </div>
         `;
         treeContainer.innerHTML = html;
@@ -343,6 +350,17 @@
         `;
       }
 
+      function renderLink(url) {
+        const u = String(url || "").trim();
+        if (!u) return "-";
+        const safe = escapeHtml(u);
+        return `<a target="_blank" rel="noreferrer" href="${safe}">${safe}</a>`;
+      }
+
+      function enabledBadge(enabled) {
+        return enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`;
+      }
+
       function renderWindowsTable(windows, spacePk) {
         if (!windows.length) return `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
         return `
@@ -372,19 +390,19 @@
                     </td>
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
                     <td>${escapeHtml(w.platform_account || "-")}</td>
-                    <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+                    <td class="mono">${renderLink(w.platform_url)}</td>
                     <td style="min-width: 220px;">
                       <select class="form-select form-select-sm mono" data-role="proxySelect"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
                         data-window_key="${escapeHtml(String(w.window_key ?? ""))}">
                         <option value="">(加载代理中...)</option>
                       </select>
-                      <div class="text-muted small">说明：选择后会调用 `/browser/mdf` 立即修改。</div>
+                      <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
                     </td>
                     <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
                     <td>${escapeHtml(w.proxy_country || "-")}</td>
                     <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
-                    <td>${w.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+                    <td>${enabledBadge(!!w.enabled)}</td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_window"
@@ -695,7 +713,7 @@
             </td>
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
             <td>${escapeHtml(w.platform_account || "-")}</td>
-            <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+            <td class="mono">${renderLink(w.platform_url)}</td>
             <td style="min-width: 220px;">
               <select class="form-select form-select-sm mono" data-role="proxySelect"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
@@ -706,7 +724,7 @@
             <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
             <td>${escapeHtml(w.proxy_country || "-")}</td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
-            <td>${w.enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`}</td>
+            <td>${enabledBadge(!!w.enabled)}</td>
             <td>
               <button class="btn btn-outline-danger btn-sm" type="button"
                 data-action="delete_window"
