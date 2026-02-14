@@ -585,7 +585,7 @@ class SoraSession:
 
     # 监控配置（watch 时更新）
     monitor_log_path: Optional[str] = None
-    poll_interval_seconds: float = 1.0
+    poll_interval_seconds: float = 5.0
     sniff_timeout_seconds: float = 4.0
     idle_close_seconds: float = 30.0
 
@@ -1332,7 +1332,6 @@ class SoraSession:
                                 self.watchers.pop(tid, None)
                 if not self.watchers:
                     return
-                print("poll drafts")
                 await asyncio.sleep(float(self.poll_interval_seconds))
         finally:
             if not self.watchers:
@@ -1466,7 +1465,23 @@ class SoraSession:
         if not post_id:
             raise RuntimeError(f"发布草稿失败：未返回 post_id resp={safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)}")
 
-        share_url = f"https://sora.chatgpt.com/p/{post_id}"
+        # 优先回传可下载的视频直链（downloadable_url）；取不到再回退到帖子链接
+        downloadable_url = ""
+        try:
+            post_obj = (post_resp or {}).get("post") or {}
+            attachments = post_obj.get("attachments")
+            if isinstance(attachments, list):
+                for att in attachments:
+                    if not isinstance(att, dict):
+                        continue
+                    du = str(att.get("downloadable_url") or "").strip()
+                    if du:
+                        downloadable_url = du
+                        break
+        except Exception:
+            downloadable_url = ""
+
+        share_url = downloadable_url or f"https://sora.chatgpt.com/p/{post_id}"
         watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
         return {
             "task_id": str(task_id),
@@ -1541,7 +1556,7 @@ async def sora_gen_video(
     monitor_log_path = (str(payload.get("sora_monitor_log_path") or "").strip() or None)
 
     max_wait_seconds = float(payload.get("sora_pending_max_wait_seconds") or max(30.0, min(float(timeout_seconds), 60.0 * 10)))
-    poll_interval_seconds = float(payload.get("sora_pending_poll_interval_seconds") or 1.0)
+    poll_interval_seconds = float(payload.get("sora_pending_poll_interval_seconds") or 5.0)
     sniff_timeout_seconds = float(payload.get("sora_pending_sniff_timeout_seconds") or 4.0)
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
 
