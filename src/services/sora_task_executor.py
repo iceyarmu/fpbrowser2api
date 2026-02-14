@@ -690,6 +690,40 @@ class SoraSession:
             await asyncio.sleep(0.5)
         except Exception:
             pass
+
+        # 重开窗口前：清空本地缓存 + 一键随机指纹（降低 Cloudflare “复用旧环境”导致的持续拦截概率）
+        try:
+            append_log(log_file, "[sora][drafts] pre-open: clear_local_cache + random_env")
+        except Exception:
+            pass
+
+        try:
+            await self.pw_ctx.fp_client.browser_clear_local_cache(
+                vendor=self.pw_ctx.vendor,
+                base_url=self.pw_ctx.base_url,
+                access_key=self.pw_ctx.access_key,
+                window_keys=[self.pw_ctx.window_key],
+            )
+        except Exception as e:
+            try:
+                append_log(log_file, f"[sora][drafts] clear_local_cache failed: {e}")
+            except Exception:
+                pass
+
+        try:
+            await self.pw_ctx.fp_client.browser_random_env(
+                vendor=self.pw_ctx.vendor,
+                base_url=self.pw_ctx.base_url,
+                access_key=self.pw_ctx.access_key,
+                space_id=self.pw_ctx.space_id,
+                window_key=self.pw_ctx.window_key,
+            )
+        except Exception as e:
+            try:
+                append_log(log_file, f"[sora][drafts] random_env failed: {e}")
+            except Exception:
+                pass
+
         await self.pw_ctx.ensure_open(
             args=self.browser_open_args,
             force_open=self.browser_force_open,

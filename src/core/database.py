@@ -20,6 +20,7 @@ from .models import (
     BrowserSpace,
     FingerprintBrowser,
     Project,
+    ProxyInfo,
     RequestLog,
     SystemConfig,
     Task,
@@ -161,6 +162,41 @@ class Database:
 
             await db.execute(
                 """
+                CREATE TABLE IF NOT EXISTS proxies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    space_pk INTEGER NOT NULL,
+                    proxy_id INTEGER NOT NULL,
+                    ip_type TEXT,
+                    protocol TEXT,
+                    host TEXT,
+                    port TEXT,
+                    proxy_username TEXT,
+                    proxy_password TEXT,
+                    refresh_url TEXT,
+                    remark TEXT,
+                    check_status INTEGER,
+                    check_channel TEXT,
+                    check_channel_value TEXT,
+                    last_ip TEXT,
+                    last_country TEXT,
+                    last_state TEXT,
+                    last_city TEXT,
+                    check_time TEXT,
+                    create_time TEXT,
+                    update_time TEXT,
+                    deleted BOOLEAN DEFAULT 0,
+                    raw_json TEXT,
+                    synced_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (space_pk, proxy_id),
+                    FOREIGN KEY (space_pk) REFERENCES spaces(id)
+                )
+                """
+            )
+
+            await db.execute(
+                """
                 CREATE TABLE IF NOT EXISTS task_types (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -263,6 +299,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_space_pk ON proxies(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_created_at ON auto_refresh_error_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_mapping_id ON auto_refresh_error_logs(mapping_id)")
@@ -862,6 +899,129 @@ class Database:
                 return int(cur.rowcount or 0)
             except Exception:
                 return 0
+
+    # ---------- proxies ----------
+    async def list_proxies(self, space_pk: int) -> List[ProxyInfo]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM proxies
+                WHERE deleted = 0 AND space_pk = ?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (int(space_pk),),
+            )
+            rows = await cur.fetchall()
+            result: List[ProxyInfo] = []
+            for r in rows:
+                d = dict(r)
+                if d.get("raw_json"):
+                    try:
+                        d["raw"] = json.loads(d["raw_json"])
+                    except Exception:
+                        d["raw"] = None
+                d.pop("raw_json", None)
+                result.append(ProxyInfo(**d))
+            return result
+
+    async def upsert_proxies(self, space_pk: int, proxies: List[Dict[str, Any]]) -> int:
+        """把同步到的代理列表保存到 DB（按 space_pk+proxy_id 唯一 upsert）。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys=ON")
+            affected = 0
+            for p in (proxies or []):
+                if not isinstance(p, dict):
+                    continue
+                proxy_id_raw = p.get("id") if p.get("id") is not None else p.get("proxy_id")
+                try:
+                    proxy_id = int(proxy_id_raw)
+                except Exception:
+                    continue
+
+                ip_type = (p.get("ipType") or p.get("ip_type"))
+                protocol = (p.get("protocol") or p.get("proxyCategory") or p.get("proxy_category"))
+                host = p.get("host")
+                port = p.get("port")
+                proxy_username = p.get("proxyUserName") or p.get("proxy_username")
+                proxy_password = p.get("proxyPassword") or p.get("proxy_password")
+                refresh_url = p.get("refreshUrl") or p.get("refresh_url")
+                remark = p.get("remark") or p.get("remarks") or p.get("proxyRemarks")
+
+                check_status = p.get("checkStatus")
+                check_channel = p.get("checkChannel")
+                check_channel_value = p.get("checkChannelValue")
+                last_ip = p.get("lastIp")
+                last_country = p.get("lastCountry")
+                last_state = p.get("lastState")
+                last_city = p.get("lastCity")
+                check_time = p.get("checkTime")
+                create_time = p.get("createTime")
+                update_time = p.get("updateTime")
+
+                raw_json = json.dumps(p, ensure_ascii=False)
+                await db.execute(
+                    """
+                    INSERT INTO proxies (
+                        space_pk, proxy_id,
+                        ip_type, protocol, host, port,
+                        proxy_username, proxy_password, refresh_url, remark,
+                        check_status, check_channel, check_channel_value,
+                        last_ip, last_country, last_state, last_city,
+                        check_time, create_time, update_time,
+                        deleted, raw_json, synced_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(space_pk, proxy_id) DO UPDATE SET
+                        ip_type=excluded.ip_type,
+                        protocol=excluded.protocol,
+                        host=excluded.host,
+                        port=excluded.port,
+                        proxy_username=excluded.proxy_username,
+                        proxy_password=excluded.proxy_password,
+                        refresh_url=excluded.refresh_url,
+                        remark=excluded.remark,
+                        check_status=excluded.check_status,
+                        check_channel=excluded.check_channel,
+                        check_channel_value=excluded.check_channel_value,
+                        last_ip=excluded.last_ip,
+                        last_country=excluded.last_country,
+                        last_state=excluded.last_state,
+                        last_city=excluded.last_city,
+                        check_time=excluded.check_time,
+                        create_time=excluded.create_time,
+                        update_time=excluded.update_time,
+                        deleted=excluded.deleted,
+                        raw_json=excluded.raw_json,
+                        synced_at=CURRENT_TIMESTAMP,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        int(space_pk),
+                        int(proxy_id),
+                        str(ip_type).strip() if ip_type is not None else None,
+                        str(protocol).strip() if protocol is not None else None,
+                        str(host).strip() if host is not None else None,
+                        str(port).strip() if port is not None else None,
+                        str(proxy_username).strip() if proxy_username is not None else None,
+                        str(proxy_password).strip() if proxy_password is not None else None,
+                        str(refresh_url).strip() if refresh_url is not None else None,
+                        str(remark).strip() if remark is not None else None,
+                        int(check_status) if str(check_status or "").strip().isdigit() else None,
+                        str(check_channel).strip() if check_channel is not None else None,
+                        str(check_channel_value).strip() if check_channel_value is not None else None,
+                        str(last_ip).strip() if last_ip is not None else None,
+                        str(last_country).strip() if last_country is not None else None,
+                        str(last_state).strip() if last_state is not None else None,
+                        str(last_city).strip() if last_city is not None else None,
+                        str(check_time).strip() if check_time is not None else None,
+                        str(create_time).strip() if create_time is not None else None,
+                        str(update_time).strip() if update_time is not None else None,
+                        raw_json,
+                    ),
+                )
+                affected += 1
+            await db.commit()
+            return affected
 
     # ---------- task types ----------
     async def list_task_types(self) -> List[TaskType]:

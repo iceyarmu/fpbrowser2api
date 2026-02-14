@@ -93,6 +93,40 @@ class WindowInfo(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class ProxyInfo(BaseModel):
+    """代理 IP 信息（从指纹浏览器同步而来，存本地 DB 便于 UI 选择/复用）。"""
+
+    id: Optional[int] = None  # 本地 DB PK
+    space_pk: int  # BrowserSpace.id
+
+    proxy_id: int  # 指纹浏览器代理库 id（RoxyBrowser: /proxy/list rows.id）
+    ip_type: Optional[str] = None
+    protocol: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[str] = None
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
+    refresh_url: Optional[str] = None
+    remark: Optional[str] = None
+
+    check_status: Optional[int] = None
+    check_channel: Optional[str] = None
+    check_channel_value: Optional[str] = None
+    last_ip: Optional[str] = None
+    last_country: Optional[str] = None
+    last_state: Optional[str] = None
+    last_city: Optional[str] = None
+    check_time: Optional[str] = None
+    create_time: Optional[str] = None
+    update_time: Optional[str] = None
+
+    raw: Optional[Dict[str, Any]] = None
+    synced_at: Optional[datetime] = None
+    deleted: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class TaskType(BaseModel):
     id: Optional[int] = None
     name: str

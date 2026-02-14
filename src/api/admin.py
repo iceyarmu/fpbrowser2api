@@ -127,6 +127,12 @@ class UpdateTaskTypeWindowRequest(BaseModel):
     consecutive_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
 
 
+class UpdateWindowProxyRequest(BaseModel):
+    """在指纹浏览器侧修改某个窗口的代理配置（通过本地已保存的 proxy_id 选择）。"""
+
+    proxy_id: int = Field(ge=0, description="本地代理列表中的 proxy_id；0 表示不使用代理")
+
+
 # -------------------- auth helper --------------------
 async def verify_admin_token(authorization: str = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
@@ -366,6 +372,86 @@ async def list_windows(space_pk: int, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     return {"success": True, "windows": [w.model_dump() for w in await db.list_windows(space_pk)]}
+
+
+@router.get("/api/admin/spaces/{space_pk}/proxies")
+async def list_local_proxies(space_pk: int, token: str = Depends(verify_admin_token)):
+    """查看本地 DB 保存的代理列表（按空间/工作空间维度）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {"success": True, "proxies": [p.model_dump(exclude={"raw"}) for p in await db.list_proxies(space_pk)]}
+
+
+@router.post("/api/admin/spaces/{space_pk}/sync-proxies")
+async def sync_space_proxies(space_pk: int, token: str = Depends(verify_admin_token)):
+    """同步某个空间的代理列表（从指纹浏览器拉取后写入本地 DB）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        proxies = await client.list_proxies(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    affected = await db.upsert_proxies(space_pk=space_pk, proxies=proxies)
+    return {"success": True, "message": f"同步完成，写入/更新 {affected} 条代理记录", "affected": affected}
+
+
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-proxy")
+async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProxyRequest, token: str = Depends(verify_admin_token)):
+    """将某个窗口的代理配置改为本地代理列表中的某个 proxy_id（实际调用 /browser/mdf）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    # 代理配置：
+    # - proxy_id=0：不使用代理（按 Roxy 约定 moduleId=0 + noproxy）
+    # - proxy_id>0：优先使用 choose + moduleId（由指纹浏览器从代理库绑定）
+    proxy_id = int(req.proxy_id or 0)
+    if proxy_id <= 0:
+        proxy_info = {"moduleId": 0, "proxyMethod": "custom", "proxyCategory": "noproxy"}
+    else:
+        proxy_info = {"moduleId": proxy_id, "proxyMethod": "choose"}
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        rsp = await client.browser_mdf(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            window_key=wk,
+            data={"proxyInfo": proxy_info},
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"success": True, "message": "已提交修改窗口代理请求", "roxy_response": rsp}
 
 
 @router.post("/api/admin/spaces/{space_pk}/sync-windows")

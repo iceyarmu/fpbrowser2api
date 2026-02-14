@@ -174,6 +174,134 @@ class FPBrowserClient:
             dir_id=window_key,
         )
 
+    async def browser_random_env(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        window_key: str,
+    ) -> Dict[str, Any]:
+        """窗口随机指纹（RoxyBrowser：POST /browser/random_env）。
+
+        参考文档：
+        - https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E7%AA%97%E5%8F%A3%E9%9A%8F%E6%9C%BA%E6%8C%87%E7%BA%B9
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        window_key = (window_key or "").strip()
+        if not base_url or not space_id or not window_key:
+            raise RuntimeError("browser_random_env 参数不足：base_url/space_id/window_key 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_random_env，请设置为 roxy")
+
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        return await self._roxy_random_env(
+            base_url=base_url,
+            token=access_key,
+            workspace_id=workspace_id,
+            dir_id=window_key,
+        )
+
+    async def browser_clear_local_cache(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        window_keys: List[str],
+    ) -> Dict[str, Any]:
+        """清空窗口本地缓存（RoxyBrowser：POST /browser/clear_local_cache）。
+
+        参考文档：
+        - https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E6%B8%85%E7%A9%BA%E7%AA%97%E5%8F%A3%E6%9C%AC%E5%9C%B0%E7%BC%93%E5%AD%98
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        keys = [str(x or "").strip() for x in (window_keys or [])]
+        keys = [x for x in keys if x]
+        if not base_url or not keys:
+            raise RuntimeError("browser_clear_local_cache 参数不足：base_url/window_keys 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_clear_local_cache，请设置为 roxy")
+
+        return await self._roxy_clear_local_cache(base_url=base_url, token=access_key, dir_ids=keys)
+
+    async def browser_mdf(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        window_key: str,
+        data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """修改浏览器窗口（RoxyBrowser：POST /browser/mdf）。
+
+        说明：
+        - 会强制注入 workspaceId/dirId（以 space_id/window_key 为准），其余字段透传给指纹浏览器。
+
+        参考文档：
+        - https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E4%BF%AE%E6%94%B9%E6%B5%8F%E8%A7%88%E5%99%A8%E7%AA%97%E5%8F%A3
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        window_key = (window_key or "").strip()
+        if not base_url or not space_id or not window_key:
+            raise RuntimeError("browser_mdf 参数不足：base_url/space_id/window_key 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_mdf，请设置为 roxy")
+
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        payload = dict(data or {})
+        payload["workspaceId"] = int(workspace_id)
+        payload["dirId"] = str(window_key)
+        return await self._roxy_browser_mdf(base_url=base_url, token=access_key, data=payload)
+
+    async def list_proxies(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+    ) -> List[Dict[str, Any]]:
+        """读取代理 IP 列表（RoxyBrowser：GET /proxy/list）。
+
+        参考文档：
+        - https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E8%8E%B7%E5%8F%96%E4%BB%A3%E7%90%86-ip-%E5%88%97%E8%A1%A8
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            return []
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 list_proxies，请设置为 roxy")
+
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        return await self._roxy_list_proxies(base_url=base_url, token=access_key, workspace_id=workspace_id)
+
     async def is_window_open(
         self,
         *,
@@ -369,6 +497,25 @@ class FPBrowserClient:
         )
         return rsp or {}
 
+    async def _roxy_random_env(self, *, base_url: str, token: Optional[str], workspace_id: int, dir_id: str) -> Dict[str, Any]:
+        return await self._roxy_post(
+            base_url,
+            token,
+            "/browser/random_env",
+            {"workspaceId": int(workspace_id), "dirId": str(dir_id)},
+        )
+
+    async def _roxy_clear_local_cache(self, *, base_url: str, token: Optional[str], dir_ids: List[str]) -> Dict[str, Any]:
+        return await self._roxy_post(
+            base_url,
+            token,
+            "/browser/clear_local_cache",
+            {"dirIds": [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()]},
+        )
+
+    async def _roxy_browser_mdf(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._roxy_post(base_url, token, "/browser/mdf", data or {})
+
     async def _roxy_close_browser(self, *, base_url: str, token: Optional[str], dir_id: str) -> Dict[str, Any]:
         dir_str = str(dir_id).strip();
         # 精简：优先走与 open 相同的 httpx POST。
@@ -429,6 +576,60 @@ class FPBrowserClient:
         rows = data.get("rows") or []
         rows = [x for x in rows if isinstance(x, dict)]
         return total, rows
+
+    async def _roxy_get_proxy_list_page(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        workspace_id: int,
+        page_index: int,
+        page_size: int,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        rsp = await self._roxy_get(
+            base_url,
+            token,
+            "/proxy/list",
+            {
+                "workspaceId": int(workspace_id),
+                "page_index": int(page_index),
+                "page_size": int(page_size),
+            },
+        )
+        if (rsp or {}).get("code") != 0:
+            raise RuntimeError(f"Roxy proxy/list 失败：{(rsp or {}).get('msg')}")
+        data = (rsp or {}).get("data") or {}
+        total = int(data.get("total") or 0)
+        rows = data.get("rows") or []
+        rows = [x for x in rows if isinstance(x, dict)]
+        return total, rows
+
+    async def _roxy_list_proxies(self, *, base_url: str, token: Optional[str], workspace_id: int) -> List[Dict[str, Any]]:
+        base_url = (base_url or "").strip().rstrip("/")
+        page_size = 100
+        page_index = 1
+        total = 0
+        all_rows: List[Dict[str, Any]] = []
+
+        while True:
+            t, rows = await self._roxy_get_proxy_list_page(
+                base_url=base_url,
+                token=token,
+                workspace_id=workspace_id,
+                page_index=page_index,
+                page_size=page_size,
+            )
+            if total <= 0:
+                total = t
+            if not rows:
+                break
+            all_rows.extend(rows)
+            if total > 0 and len(all_rows) >= total:
+                break
+            page_index += 1
+            if page_index > 200:
+                break
+        return all_rows
 
     async def _roxy_get_workspace_projects_page(
         self,
@@ -583,6 +784,9 @@ class FPBrowserClient:
                 proxy_info = {}
             last_ip = proxy_info.get("lastIp")
             last_country = proxy_info.get("lastCountry")
+            proxy_module_id = proxy_info.get("moduleId")
+            proxy_method = proxy_info.get("proxyMethod")
+            proxy_category = proxy_info.get("proxyCategory")
 
             # RoxyBrowser: windowSortNum（窗口序号，优先用于 UI 展示）
             window_sort_num_raw = detail.get("windowSortNum")
@@ -601,6 +805,9 @@ class FPBrowserClient:
                 "platformUrl": platform_url,
                 "lastIp": str(last_ip).strip() if last_ip is not None else None,
                 "lastCountry": str(last_country).strip() if last_country is not None else None,
+                "proxyModuleId": int(proxy_module_id) if str(proxy_module_id or "").strip().isdigit() else proxy_module_id,
+                "proxyMethod": str(proxy_method).strip() if proxy_method is not None else None,
+                "proxyCategory": str(proxy_category).strip() if proxy_category is not None else None,
             }
 
             result.append(

@@ -169,6 +169,31 @@
       </div>
     </div>
 
+    <!-- Proxies Modal -->
+    <div class="modal fade" id="proxiesModal" tabindex="-1">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="proxiesModalTitle">代理列表</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <input class="form-control form-control-sm" id="proxiesFilter" placeholder="搜索：host / 端口 / 最后IP / 国家 / 备注 / proxy_id" style="max-width: 460px;" />
+              <button class="btn btn-outline-secondary btn-sm" id="btnRefreshProxies">刷新</button>
+              <button class="btn btn-primary btn-sm" id="btnSyncProxies">同步该空间代理到本地</button>
+              <span class="text-muted small ms-auto" id="proxiesSummary"></span>
+            </div>
+            <div id="proxiesBody"></div>
+            <div class="form-text">说明：这里展示的是“已同步到本地数据库”的代理信息；点击“同步”会从指纹浏览器拉取该空间(workspaceId)的代理列表并写入本地。</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
@@ -183,6 +208,7 @@
       const browserModal = new bootstrap.Modal("#browserModal");
       const spaceModal = new bootstrap.Modal("#spaceModal");
       const workspaceProjectsModal = new bootstrap.Modal("#workspaceProjectsModal");
+      const proxiesModal = new bootstrap.Modal("#proxiesModal");
 
       let state = { projects: [], tree: [] };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
@@ -241,6 +267,18 @@
           </div>
         `;
         treeContainer.innerHTML = html;
+
+        // 初次渲染：为已存在窗口的空间异步填充“代理配置”下拉框
+        window.setTimeout(() => {
+          const cards = document.querySelectorAll(`[data-role="spaceCard"]`);
+          cards.forEach(card => {
+            const sp = parseInt(card.dataset.spacePk || "", 10);
+            if (!sp) return;
+            ensureProxiesLoaded(sp)
+              .then(() => fillProxySelects(sp))
+              .catch(() => fillProxySelects(sp));
+          });
+        }, 0);
       }
 
       function renderBrowser(b, parentId, idx) {
@@ -293,6 +331,7 @@
               <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_space" data-space='${encodeURIComponent(JSON.stringify(s))}'>修改</button>
               <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_space" data-space_pk="${s.id}">删除</button>
               <button class="btn btn-primary btn-sm" type="button" data-action="sync_space" data-space_pk="${s.id}">同步窗口</button>
+              <button class="btn btn-outline-primary btn-sm" type="button" data-action="proxies" data-space_pk="${s.id}">代理列表</button>
             </div>
             <div class="card-body">
               <div class="mb-2" data-role="syncProgress" data-space-pk="${s.id}"></div>
@@ -315,6 +354,7 @@
                   <th>窗口名称</th>
                   <th>账号</th>
                   <th>网址</th>
+                  <th>代理配置</th>
                   <th>代理</th>
                   <th>国家</th>
                   <th>到期</th>
@@ -333,6 +373,14 @@
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
                     <td>${escapeHtml(w.platform_account || "-")}</td>
                     <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+                    <td style="min-width: 220px;">
+                      <select class="form-select form-select-sm mono" data-role="proxySelect"
+                        data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+                        data-window_key="${escapeHtml(String(w.window_key ?? ""))}">
+                        <option value="">(加载代理中...)</option>
+                      </select>
+                      <div class="text-muted small">说明：选择后会调用 `/browser/mdf` 立即修改。</div>
+                    </td>
                     <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
                     <td>${escapeHtml(w.proxy_country || "-")}</td>
                     <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
@@ -371,6 +419,8 @@
           deleteSpace(parseInt(ds.space_pk, 10));
         } else if (action === "sync_space") {
           syncSpace(parseInt(ds.space_pk, 10), fromEl);
+        } else if (action === "proxies") {
+          openProxiesModal(parseInt(ds.space_pk, 10));
         }
       }
 
@@ -621,6 +671,7 @@
                   <th>窗口名称</th>
                   <th>账号</th>
                   <th>网址</th>
+                  <th>代理配置</th>
                   <th>代理</th>
                   <th>国家</th>
                   <th>到期</th>
@@ -645,6 +696,13 @@
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
             <td>${escapeHtml(w.platform_account || "-")}</td>
             <td class="mono">${w.platform_url ? `<a target="_blank" href="${escapeHtml(w.platform_url)}">${escapeHtml(w.platform_url)}</a>` : "-"}</td>
+            <td style="min-width: 220px;">
+              <select class="form-select form-select-sm mono" data-role="proxySelect"
+                data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
+                data-window_key="${escapeHtml(String(w.window_key ?? ""))}">
+                <option value="">(加载代理中...)</option>
+              </select>
+            </td>
             <td class="mono">${escapeHtml(w.proxy_addr || "-")}</td>
             <td>${escapeHtml(w.proxy_country || "-")}</td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
@@ -690,7 +748,220 @@
           };
           pump();
         });
+
+        // 异步填充“代理配置”下拉框（不阻塞窗口列表渲染）
+        ensureProxiesLoaded(spacePk)
+          .then(() => fillProxySelects(spacePk))
+          .catch(() => fillProxySelects(spacePk));
       }
+
+      // -------------------- proxies (local + sync) --------------------
+      const proxiesBody = document.getElementById("proxiesBody");
+      const proxiesSummary = document.getElementById("proxiesSummary");
+      const proxiesFilter = document.getElementById("proxiesFilter");
+      const btnRefreshProxies = document.getElementById("btnRefreshProxies");
+      const btnSyncProxies = document.getElementById("btnSyncProxies");
+
+      let proxiesState = { spacePk: null, proxies: [], loading: false };
+      const proxiesCache = new Map(); // spacePk -> proxies[]
+
+      function setProxiesLoading(loading) {
+        proxiesState.loading = !!loading;
+        btnRefreshProxies.disabled = !!loading;
+        btnSyncProxies.disabled = !!loading;
+        if (loading) {
+          proxiesBody.innerHTML = `
+            <div class="d-flex align-items-center gap-2 text-muted">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span class="small">正在读取本地代理列表...</span>
+            </div>
+          `;
+        }
+      }
+
+      function normalizeProxies(arr) {
+        const xs = Array.isArray(arr) ? arr : [];
+        return xs.filter(x => x && typeof x === "object").map(x => ({
+          proxy_id: x.proxy_id ?? x.id ?? 0,
+          host: x.host ?? "",
+          port: x.port ?? "",
+          protocol: x.protocol ?? "",
+          ip_type: x.ip_type ?? "",
+          last_ip: x.last_ip ?? "",
+          last_country: x.last_country ?? "",
+          remark: x.remark ?? "",
+          check_status: x.check_status,
+          refresh_url: x.refresh_url ?? "",
+        }));
+      }
+
+      function proxyLabel(p) {
+        const pid = String(p.proxy_id ?? "");
+        const hp = `${p.host || "-"}:${p.port || "-"}`;
+        const extra = [p.protocol, p.ip_type].filter(Boolean).join("/");
+        return `#${pid} ${hp}${extra ? ` (${extra})` : ""}`;
+      }
+
+      function renderProxies() {
+        const items = normalizeProxies(proxiesState.proxies || []);
+        const q = (proxiesFilter.value || "").trim().toLowerCase();
+        let filtered = items;
+        if (q) {
+          filtered = items.filter(p => {
+            const hay = `${p.proxy_id} ${p.host} ${p.port} ${p.last_ip} ${p.last_country} ${p.remark} ${p.protocol} ${p.ip_type}`.toLowerCase();
+            return hay.includes(q);
+          });
+        }
+        proxiesSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 条`;
+
+        if (!filtered.length) {
+          proxiesBody.innerHTML = `<div class="text-muted small">暂无本地代理数据，请点击“同步该空间代理到本地”。</div>`;
+          return;
+        }
+        proxiesBody.innerHTML = `
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr class="small2">
+                  <th>proxy_id</th>
+                  <th>地址</th>
+                  <th>协议/IP类型</th>
+                  <th>最后IP</th>
+                  <th>国家</th>
+                  <th>状态</th>
+                  <th>备注</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.map(p => `
+                  <tr class="small2">
+                    <td class="mono">#${escapeHtml(String(p.proxy_id || "-"))}</td>
+                    <td class="mono">${escapeHtml(`${p.host || "-"}:${p.port || "-"}`)}</td>
+                    <td class="mono">${escapeHtml([p.protocol, p.ip_type].filter(Boolean).join("/") || "-")}</td>
+                    <td class="mono">${escapeHtml(p.last_ip || "-")}</td>
+                    <td>${escapeHtml(p.last_country || "-")}</td>
+                    <td class="mono">${escapeHtml(p.check_status ?? "-")}</td>
+                    <td>${escapeHtml(p.remark || "-")}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      async function loadLocalProxies(spacePk, { force } = { force: false }) {
+        if (!force && proxiesCache.has(spacePk)) return proxiesCache.get(spacePk) || [];
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies`);
+        if (!r) return [];
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取本地代理失败");
+        const items = d.proxies || [];
+        proxiesCache.set(spacePk, items);
+        return items;
+      }
+
+      async function ensureProxiesLoaded(spacePk) {
+        try {
+          await loadLocalProxies(spacePk, { force: false });
+        } catch (_e) {
+          // ignore
+        }
+      }
+
+      function fillProxySelects(spacePk) {
+        const items = normalizeProxies(proxiesCache.get(spacePk) || []);
+        const selects = document.querySelectorAll(`select[data-role="proxySelect"][data-space_pk="${spacePk}"]`);
+        selects.forEach(sel => {
+          const cur = sel.value;
+          sel.innerHTML = `
+            <option value="0">(不使用代理)</option>
+            ${items.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p))}</option>`).join("")}
+          `;
+          if (cur !== null && cur !== undefined && String(cur).trim() !== "") {
+            sel.value = String(cur);
+          } else {
+            sel.value = "0";
+          }
+        });
+      }
+
+      async function openProxiesModal(spacePk) {
+        proxiesState.spacePk = spacePk;
+        document.getElementById("proxiesModalTitle").textContent = `代理列表（space_pk=${spacePk}）`;
+        proxiesFilter.value = "";
+        proxiesModal.show();
+        await refreshProxies(spacePk);
+      }
+
+      async function refreshProxies(spacePk) {
+        try {
+          setProxiesLoading(true);
+          const items = await loadLocalProxies(spacePk, { force: true });
+          proxiesState.proxies = items;
+          renderProxies();
+        } catch (e) {
+          toast(e.message || "读取代理失败", "error");
+          proxiesState.proxies = [];
+          proxiesBody.innerHTML = `<div class="text-muted small">读取失败：${escapeHtml(e.message || "")}</div>`;
+        } finally {
+          setProxiesLoading(false);
+        }
+      }
+
+      async function syncProxies(spacePk) {
+        try {
+          setProxiesLoading(true);
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, { method: "POST", body: JSON.stringify({}) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "同步代理失败");
+          toast(d.message || "同步完成", "success");
+          await refreshProxies(spacePk);
+          // 同步后也刷新下拉框
+          fillProxySelects(spacePk);
+        } catch (e) {
+          toast(e.message || "同步代理失败", "error");
+        } finally {
+          setProxiesLoading(false);
+        }
+      }
+
+      btnRefreshProxies.addEventListener("click", async () => {
+        if (!proxiesState.spacePk) return;
+        await refreshProxies(proxiesState.spacePk);
+      });
+      btnSyncProxies.addEventListener("click", async () => {
+        if (!proxiesState.spacePk) return;
+        await syncProxies(proxiesState.spacePk);
+      });
+      proxiesFilter.addEventListener("input", () => renderProxies());
+
+      // 代理下拉改动：立即调用后端 /browser/mdf
+      treeContainer.addEventListener("change", async (ev) => {
+        const el = ev.target;
+        if (!el || !(el instanceof HTMLSelectElement)) return;
+        if (el.dataset.role !== "proxySelect") return;
+        const spacePk = parseInt(el.dataset.space_pk || "", 10);
+        const wk = String(el.dataset.window_key || "").trim();
+        const proxyId = parseInt(String(el.value || "0"), 10);
+        if (!spacePk || !wk) return;
+        try {
+          el.disabled = true;
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-proxy`, {
+            method: "POST",
+            body: JSON.stringify({ proxy_id: proxyId }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "修改代理失败");
+          toast("已提交窗口代理修改", "success");
+        } catch (e) {
+          toast(e.message || "修改代理失败", "error");
+        } finally {
+          el.disabled = false;
+        }
+      });
 
       function openProjectModal(mode) {
         document.getElementById("projectModalTitle").textContent = mode === "new" ? "新增项目" : "修改项目";
