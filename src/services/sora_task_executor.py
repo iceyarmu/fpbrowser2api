@@ -837,117 +837,116 @@ class SoraSession:
         sora_host = "sora.chatgpt.com"
 
         async with self._bring_drafts_lock:
-            async with self._pw_driver_guard():
-                ctx = getattr(self.pw_ctx, "context", None)
-                if ctx is None:
+            ctx = getattr(self.pw_ctx, "context", None)
+            if ctx is None:
+                return
+
+            try:
+                pages = list(getattr(ctx, "pages", []) or [])
+            except Exception:
+                pages = []
+
+            open_pages = []
+            for p in pages:
+                try:
+                    is_closed = bool(getattr(p, "is_closed", lambda: False)())
+                except Exception:
+                    is_closed = False
+                if not is_closed:
+                    open_pages.append(p)
+
+            # 找出同站点(sora.chatgpt.com)的页面，并挑一个 drafts 作为保留页
+            sora_pages: list[tuple[Any, str]] = []
+            drafts_pages: list[Any] = []
+            for p in open_pages:
+                try:
+                    u = str(getattr(p, "url", "") or "").strip()
+                except Exception:
+                    u = ""
+                if not u:
+                    continue
+                try:
+                    host = (urlparse(u).netloc or "").strip().lower()
+                except Exception:
+                    host = ""
+                if host != sora_host:
+                    continue
+                sora_pages.append((p, u))
+                if u.startswith(drafts_url):
+                    drafts_pages.append(p)
+
+            drafts_page = drafts_pages[0] if drafts_pages else None
+            if drafts_page is None:
+                # 没有 drafts：新开一个
+                try:
+                    drafts_page = await ctx.new_page()
+                except Exception:
                     return
-
-                try:
-                    pages = list(getattr(ctx, "pages", []) or [])
-                except Exception:
-                    pages = []
-
-                open_pages = []
-                for p in pages:
-                    try:
-                        is_closed = bool(getattr(p, "is_closed", lambda: False)())
-                    except Exception:
-                        is_closed = False
-                    if not is_closed:
-                        open_pages.append(p)
-
-                # 找出同站点(sora.chatgpt.com)的页面，并挑一个 drafts 作为保留页
-                sora_pages: list[tuple[Any, str]] = []
-                drafts_pages: list[Any] = []
-                for p in open_pages:
-                    try:
-                        u = str(getattr(p, "url", "") or "").strip()
-                    except Exception:
-                        u = ""
-                    if not u:
-                        continue
-                    try:
-                        host = (urlparse(u).netloc or "").strip().lower()
-                    except Exception:
-                        host = ""
-                    if host != sora_host:
-                        continue
-                    sora_pages.append((p, u))
-                    if u.startswith(drafts_url):
-                        drafts_pages.append(p)
-
-                drafts_page = drafts_pages[0] if drafts_pages else None
-                if drafts_page is None:
-                    # 没有 drafts：新开一个
-                    try:
-                        drafts_page = await ctx.new_page()
-                    except Exception:
-                        return
-                    try:
-                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-                    except Exception:
-                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
-                        pass
-
-                # 关闭其它 sora.chatgpt.com 的页面（包括重复 drafts），只保留 drafts_page
-                for p, u in sora_pages:
-                    if p is drafts_page:
-                        continue
-                    try:
-                        await p.close()
-                    except Exception:
-                        pass
-
-                # 强制将 drafts_page 置前并作为后续操作的统一 page
-                try:
-                    self.pw_ctx.page = drafts_page
-                except Exception:
-                    pass
-                try:
-                    await drafts_page.bring_to_front()
-                except Exception:
-                    pass
-                try:
-                    cur_u = str(getattr(drafts_page, "url", "") or "").strip()
-                except Exception:
-                    cur_u = ""
-
                 try:
                     await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
                 except Exception:
+                    # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
                     pass
 
+            # 关闭其它 sora.chatgpt.com 的页面（包括重复 drafts），只保留 drafts_page
+            for p, u in sora_pages:
+                if p is drafts_page:
+                    continue
                 try:
-                    await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
+                    await p.close()
                 except Exception:
                     pass
 
-                await asyncio.sleep(1.0)
+            # 强制将 drafts_page 置前并作为后续操作的统一 page
+            try:
+                self.pw_ctx.page = drafts_page
+            except Exception:
+                pass
+            try:
+                await drafts_page.bring_to_front()
+            except Exception:
+                pass
+            try:
+                cur_u = str(getattr(drafts_page, "url", "") or "").strip()
+            except Exception:
+                cur_u = ""
 
-                # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
-                try:
-                    clicked = await self._maybe_click_login_button_if_prompted(drafts_page)
-                    if clicked:
-                        try:
-                            await asyncio.sleep(0.8)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            try:
+                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
 
-                # Cloudflare interstitial 自愈：先等最多 10 秒自动放行，超时仍是 Cloudflare 才重启一次。
-                try:
-                    maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
-                    if maybe_cf:
-                        still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=10.0)
-                        if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
-                            new_page = await self._restart_window_and_restore_single_drafts(
-                                drafts_url=drafts_url, sora_host=sora_host
-                            )
-                            if new_page is not None:
-                                drafts_page = new_page
-                except Exception:
-                    pass
+            try:
+                await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
+            except Exception:
+                pass
+
+            await asyncio.sleep(1.0)
+
+            # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
+            try:
+                clicked = await self._maybe_click_login_button_if_prompted(drafts_page)
+                if clicked:
+                    try:
+                        await asyncio.sleep(0.8)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Cloudflare interstitial 自愈：先等最多 10 秒自动放行，超时仍是 Cloudflare 才重启一次。
+            try:
+                maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
+                if maybe_cf:
+                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=10.0)
+                    if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
+                        new_page = await self._restart_window_and_restore_single_drafts(
+                            drafts_url=drafts_url, sora_host=sora_host
+                        )
+                        if new_page is not None:
+                            drafts_page = new_page
+            except Exception:
+                pass
 
     async def ensure_open(
         self,
