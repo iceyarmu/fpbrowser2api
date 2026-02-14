@@ -233,28 +233,7 @@ class PlaywrightBrowserContext:
 
         # 优先走“复用已连接的 browser/context”。
         if self.browser is not None and self.context is not None:
-            if not bool(require_page):
-                # 仅要求“窗口/上下文已连接”，不要求确认/创建 page（由上层站点逻辑决定打开哪个 URL）。
-                return
-            # require_page=True：处理 page 被手动关闭的情况。
-            page_ok = False
-            if self.page is not None:
-                try:
-                    page_ok = not bool(getattr(self.page, "is_closed", lambda: False)())
-                except Exception:
-                    page_ok = False
-            if page_ok:
-                return
-            try:
-                self.page = await pick_working_page_from_context(self.context)
-                try:
-                    await self.page.bring_to_front()
-                except Exception:
-                    pass
-                return
-            except Exception:
-                # 复用失败则继续走“重新连接/重建”逻辑
-                self.page = None
+            return
 
         try:
             from playwright.async_api import async_playwright  # type: ignore
@@ -353,13 +332,6 @@ class PlaywrightBrowserContext:
             self.context = best_ctx or ctxs[0]
         else:
             self.context = await self.browser.new_context()
-
-        if bool(require_page):
-            self.page = await pick_working_page_from_context(self.context)
-            try:
-                await self.page.bring_to_front()
-            except Exception:
-                pass
 
     async def close(self) -> None:
         self.last_used_at = time.time()
