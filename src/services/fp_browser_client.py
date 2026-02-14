@@ -589,7 +589,7 @@ class FPBrowserClient:
         rsp = await self._roxy_get(
             base_url,
             token,
-            "/proxy/list",
+            "/proxy/bought_list",
             {
                 "workspaceId": int(workspace_id),
                 "page_index": int(page_index),
