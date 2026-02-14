@@ -1044,7 +1044,8 @@ class Database:
                     (sid, wk),
                 )
                 row = await cur.fetchone()
-                if row and row.get("space_pk") is not None:
+                # aiosqlite.Row（sqlite3.Row）不是 dict，没有 .get()
+                if row and dict(row).get("space_pk") is not None:
                     try:
                         return int(row["space_pk"])
                     except Exception:
@@ -1055,7 +1056,7 @@ class Database:
                 (sid,),
             )
             row2 = await cur2.fetchone()
-            if row2 and row2.get("id") is not None:
+            if row2 and dict(row2).get("id") is not None:
                 try:
                     return int(row2["id"])
                 except Exception:
