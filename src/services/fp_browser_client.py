@@ -273,6 +273,45 @@ class FPBrowserClient:
         payload["dirId"] = str(window_key)
         return await self._roxy_browser_mdf(base_url=base_url, token=access_key, data=payload)
 
+    async def get_browser_detail(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        window_key: str,
+    ) -> Dict[str, Any]:
+        """获取窗口明细（RoxyBrowser：GET /browser/detail）。
+
+        主要用途：在调用 /browser/mdf 做局部更新（例如只改 proxyInfo）时，
+        先读取当前窗口信息并保留关键字段（如 windowPlatformList），避免某些 Roxy 版本把未传字段“清空”。
+
+        参考文档：
+        - https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E8%8E%B7%E5%8F%96%E6%B5%8F%E8%A7%88%E5%99%A8%E7%AA%97%E5%8F%A3%E6%98%8E%E7%BB%86
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        window_key = (window_key or "").strip()
+        if not base_url or not space_id or not window_key:
+            raise RuntimeError("get_browser_detail 参数不足：base_url/space_id/window_key 不能为空")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 get_browser_detail，请设置为 roxy")
+
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        return await self._roxy_get_browser_detail(
+            base_url=base_url,
+            token=access_key,
+            workspace_id=int(workspace_id),
+            dir_id=str(window_key),
+        )
+
     async def list_proxies(
         self,
         *,

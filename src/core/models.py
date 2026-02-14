@@ -80,6 +80,10 @@ class WindowInfo(BaseModel):
     platform_account: Optional[str] = None
     platform_url: Optional[str] = None
 
+    # 指纹浏览器侧绑定的代理库 id（RoxyBrowser: proxyInfo.moduleId）
+    # 说明：用于 UI 默认选中当前代理、以及统计“代理绑定数”
+    proxy_id: Optional[int] = None
+
     proxy_addr: Optional[str] = None
     proxy_country: Optional[str] = None
     proxy_expire_at: Optional[str] = None
@@ -100,6 +104,8 @@ class ProxyInfo(BaseModel):
     space_pk: int  # BrowserSpace.id
 
     proxy_id: int  # 指纹浏览器代理库 id（RoxyBrowser: /proxy/list rows.id）
+    # 代理过期时间（若指纹浏览器返回；字段名不统一，这里统一落到 expire_at）
+    expire_at: Optional[str] = None
     ip_type: Optional[str] = None
     protocol: Optional[str] = None
     host: Optional[str] = None

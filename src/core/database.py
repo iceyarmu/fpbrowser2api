@@ -145,6 +145,7 @@ class Database:
                     window_name TEXT NOT NULL,
                     platform_account TEXT,
                     platform_url TEXT,
+                    proxy_id INTEGER,
                     proxy_addr TEXT,
                     proxy_country TEXT,
                     proxy_expire_at TEXT,
@@ -166,6 +167,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     space_pk INTEGER NOT NULL,
                     proxy_id INTEGER NOT NULL,
+                    expire_at TEXT,
                     ip_type TEXT,
                     protocol TEXT,
                     host TEXT,
@@ -397,10 +399,59 @@ class Database:
             if await self._table_exists(db, "windows"):
                 columns_to_add = [
                     ("window_sort_num", "INTEGER"),
+                    ("proxy_id", "INTEGER"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "windows", col_name):
                         await db.execute(f"ALTER TABLE windows ADD COLUMN {col_name} {col_type}")
+
+                # 仅当新增了 proxy_id 列（或历史数据未回填）时，尝试从 raw_json 回填
+                # raw_json 结构：{"raw": {"proxyModuleId": <int>}, ...}
+                if await self._column_exists(db, "windows", "proxy_id"):
+                    try:
+                        await db.execute(
+                            """
+                            UPDATE windows
+                            SET proxy_id = CAST(json_extract(raw_json, '$.raw.proxyModuleId') AS INTEGER)
+                            WHERE proxy_id IS NULL
+                              AND raw_json IS NOT NULL
+                              AND json_extract(raw_json, '$.raw.proxyModuleId') IS NOT NULL
+                            """
+                        )
+                    except Exception:
+                        # json_extract 依赖 SQLite JSON1；若不可用则用 Python 手工回填
+                        try:
+                            cur = await db.execute(
+                                "SELECT id, raw_json FROM windows WHERE proxy_id IS NULL AND raw_json IS NOT NULL"
+                            )
+                            rows = await cur.fetchall()
+                            for rid, raw_json in rows:
+                                try:
+                                    obj = json.loads(raw_json or "{}")
+                                except Exception:
+                                    continue
+                                raw_obj = obj.get("raw")
+                                if not isinstance(raw_obj, dict):
+                                    continue
+                                pid_raw = raw_obj.get("proxyModuleId")
+                                if pid_raw in (None, "", "-"):
+                                    continue
+                                try:
+                                    pid = int(pid_raw)
+                                except Exception:
+                                    continue
+                                await db.execute("UPDATE windows SET proxy_id = ? WHERE id = ?", (pid, int(rid)))
+                        except Exception:
+                            pass
+
+            # proxies: expire_at（代理过期时间，用于 UI 过滤/展示）
+            if await self._table_exists(db, "proxies"):
+                columns_to_add = [
+                    ("expire_at", "TEXT"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "proxies", col_name):
+                        await db.execute(f"ALTER TABLE proxies ADD COLUMN {col_name} {col_type}")
 
             # task_type_windows: 移除 max_concurrency（窗口层并发不再配置）
             if await self._table_exists(db, "task_type_windows"):
@@ -819,6 +870,21 @@ class Database:
                 window_name = str(w.get("window_name") or w.get("name") or window_key).strip()
                 platform_account = (w.get("platform_account") or w.get("account") or w.get("username"))
                 platform_url = (w.get("platform_url") or w.get("url"))
+                # proxy_id: 优先从 raw.proxyModuleId 获取（Roxy: proxyInfo.moduleId）
+                proxy_id_raw = None
+                raw_obj = w.get("raw")
+                if isinstance(raw_obj, dict):
+                    proxy_id_raw = (
+                        raw_obj.get("proxyModuleId")
+                        if raw_obj.get("proxyModuleId") is not None
+                        else (raw_obj.get("proxy_module_id") if raw_obj.get("proxy_module_id") is not None else raw_obj.get("moduleId"))
+                    )
+                if proxy_id_raw is None:
+                    proxy_id_raw = w.get("proxy_id") if w.get("proxy_id") is not None else w.get("proxyModuleId")
+                try:
+                    proxy_id = int(proxy_id_raw) if proxy_id_raw not in (None, "", "-") else None
+                except Exception:
+                    proxy_id = None
                 proxy_addr = (w.get("proxy_addr") or w.get("proxy") or w.get("proxy_url"))
                 proxy_country = (w.get("proxy_country") or w.get("country"))
                 proxy_expire_at = (w.get("proxy_expire_at") or w.get("expire_at") or w.get("proxy_expire"))
@@ -831,14 +897,16 @@ class Database:
                     INSERT INTO windows (
                         space_pk, window_key, window_sort_num, window_name,
                         platform_account, platform_url,
+                        proxy_id,
                         proxy_addr, proxy_country, proxy_expire_at,
                         enabled, deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     ON CONFLICT(space_pk, window_key) DO UPDATE SET
                         window_sort_num=excluded.window_sort_num,
                         window_name=excluded.window_name,
                         platform_account=excluded.platform_account,
                         platform_url=excluded.platform_url,
+                        proxy_id=excluded.proxy_id,
                         proxy_addr=excluded.proxy_addr,
                         proxy_country=excluded.proxy_country,
                         proxy_expire_at=excluded.proxy_expire_at,
@@ -856,6 +924,7 @@ class Database:
                         window_name,
                         platform_account,
                         platform_url,
+                        proxy_id,
                         proxy_addr,
                         proxy_country,
                         proxy_expire_at,
@@ -867,6 +936,32 @@ class Database:
                 affected += 1
             await db.commit()
             return affected
+
+    async def count_proxy_bindings(self, space_pk: int) -> Dict[int, int]:
+        """统计某个空间下：每个 proxy_id 被多少个“本地未删除窗口”绑定。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT COALESCE(proxy_id, 0) AS proxy_id, COUNT(*) AS cnt
+                FROM windows
+                WHERE deleted = 0 AND space_pk = ?
+                GROUP BY COALESCE(proxy_id, 0)
+                """,
+                (int(space_pk),),
+            )
+            rows = await cur.fetchall()
+            out: Dict[int, int] = {}
+            for r in rows:
+                try:
+                    pid = int(r["proxy_id"] or 0)
+                except Exception:
+                    pid = 0
+                try:
+                    out[pid] = int(r["cnt"] or 0)
+                except Exception:
+                    out[pid] = 0
+            return out
 
     async def get_window(self, window_pk: int) -> Optional[WindowInfo]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -900,6 +995,73 @@ class Database:
             except Exception:
                 return 0
 
+    async def update_window_proxy_id(self, *, space_pk: int, window_key: str, proxy_id: Optional[int]) -> int:
+        """仅更新本地窗口记录的 proxy_id（用于 UI 立即生效的“当前代理”显示/统计）。
+
+        返回：影响行数（0 表示未找到或已删除）。
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE windows
+                SET proxy_id = ?, updated_at=CURRENT_TIMESTAMP
+                WHERE space_pk = ? AND window_key = ? AND deleted = 0
+                """,
+                (proxy_id, int(space_pk), str(window_key).strip()),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
+    async def resolve_space_pk_for_window(self, *, space_id: str, window_key: str) -> Optional[int]:
+        """根据 (workspaceId=space_id, window_key) 解析本地 space_pk。
+
+        说明：
+        - tasks 执行器侧通常只有 space_id(window workspaceId) + window_key(dirId)，没有本地 spaces.id。
+        - 本方法优先通过 windows+spaces join 精确定位；兜底仅按 space_id 找最近的 space_pk。
+        """
+        sid = str(space_id or "").strip()
+        wk = str(window_key or "").strip()
+        if not sid:
+            return None
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if wk:
+                cur = await db.execute(
+                    """
+                    SELECT w.space_pk AS space_pk
+                    FROM windows w
+                    JOIN spaces s ON s.id = w.space_pk
+                    WHERE s.deleted = 0
+                      AND w.deleted = 0
+                      AND s.space_id = ?
+                      AND w.window_key = ?
+                    ORDER BY w.id DESC
+                    LIMIT 1
+                    """,
+                    (sid, wk),
+                )
+                row = await cur.fetchone()
+                if row and row.get("space_pk") is not None:
+                    try:
+                        return int(row["space_pk"])
+                    except Exception:
+                        pass
+
+            cur2 = await db.execute(
+                "SELECT id FROM spaces WHERE deleted = 0 AND space_id = ? ORDER BY id DESC LIMIT 1",
+                (sid,),
+            )
+            row2 = await cur2.fetchone()
+            if row2 and row2.get("id") is not None:
+                try:
+                    return int(row2["id"])
+                except Exception:
+                    return None
+            return None
+
     # ---------- proxies ----------
     async def list_proxies(self, space_pk: int) -> List[ProxyInfo]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -930,6 +1092,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
+            incoming_ids: List[int] = []
             for p in (proxies or []):
                 if not isinstance(p, dict):
                     continue
@@ -938,6 +1101,21 @@ class Database:
                     proxy_id = int(proxy_id_raw)
                 except Exception:
                     continue
+                incoming_ids.append(int(proxy_id))
+
+                # 过期时间字段：不同版本/不同代理源字段名可能不同，尽量兼容
+                expire_at = (
+                    p.get("expireAt")
+                    or p.get("expire_at")
+                    or p.get("expireTime")
+                    or p.get("expire_time")
+                    or p.get("expirationTime")
+                    or p.get("expiration_time")
+                    or p.get("endTime")
+                    or p.get("end_time")
+                    or p.get("dueTime")
+                    or p.get("due_time")
+                )
 
                 ip_type = (p.get("ipType") or p.get("ip_type"))
                 protocol = (p.get("protocol") or p.get("proxyCategory") or p.get("proxy_category"))
@@ -964,14 +1142,16 @@ class Database:
                     """
                     INSERT INTO proxies (
                         space_pk, proxy_id,
+                        expire_at,
                         ip_type, protocol, host, port,
                         proxy_username, proxy_password, refresh_url, remark,
                         check_status, check_channel, check_channel_value,
                         last_ip, last_country, last_state, last_city,
                         check_time, create_time, update_time,
                         deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     ON CONFLICT(space_pk, proxy_id) DO UPDATE SET
+                        expire_at=excluded.expire_at,
                         ip_type=excluded.ip_type,
                         protocol=excluded.protocol,
                         host=excluded.host,
@@ -998,6 +1178,7 @@ class Database:
                     (
                         int(space_pk),
                         int(proxy_id),
+                        str(expire_at).strip() if expire_at is not None else None,
                         str(ip_type).strip() if ip_type is not None else None,
                         str(protocol).strip() if protocol is not None else None,
                         str(host).strip() if host is not None else None,
@@ -1020,8 +1201,53 @@ class Database:
                     ),
                 )
                 affected += 1
+
+            # 同步策略：以同步结果为准（全量覆盖本地可见代理列表）
+            # - 同步返回存在的代理：deleted=0（由 upsert 写入/更新）
+            # - 同步未返回的代理：本地标记 deleted=1（让 UI 不再展示）
+            #
+            # 注意：如果同步结果为空列表，也认为该空间当前无代理，清空本地展示。
+            try:
+                uniq = sorted(set(int(x) for x in (incoming_ids or []) if isinstance(x, int)))
+                if uniq:
+                    placeholders = ",".join(["?"] * len(uniq))
+                    await db.execute(
+                        f"""
+                        UPDATE proxies
+                        SET deleted = 1, updated_at = CURRENT_TIMESTAMP
+                        WHERE space_pk = ?
+                          AND deleted = 0
+                          AND proxy_id NOT IN ({placeholders})
+                        """,
+                        (int(space_pk), *uniq),
+                    )
+                else:
+                    await db.execute(
+                        """
+                        UPDATE proxies
+                        SET deleted = 1, updated_at = CURRENT_TIMESTAMP
+                        WHERE space_pk = ? AND deleted = 0
+                        """,
+                        (int(space_pk),),
+                    )
+            except Exception:
+                pass
             await db.commit()
             return affected
+
+    async def delete_proxy(self, *, space_pk: int, proxy_id: int) -> int:
+        """本地删除某个代理（仅标记 deleted=1，不影响指纹浏览器侧）。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE proxies
+                SET deleted = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE space_pk = ? AND proxy_id = ?
+                """,
+                (int(space_pk), int(proxy_id)),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
 
     # ---------- task types ----------
     async def list_task_types(self) -> List[TaskType]:

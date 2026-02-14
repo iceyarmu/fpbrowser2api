@@ -382,6 +382,29 @@ async def list_local_proxies(space_pk: int, token: str = Depends(verify_admin_to
     return {"success": True, "proxies": [p.model_dump(exclude={"raw"}) for p in await db.list_proxies(space_pk)]}
 
 
+@router.get("/api/admin/spaces/{space_pk}/proxy-bindings")
+async def list_proxy_bindings(space_pk: int, token: str = Depends(verify_admin_token)):
+    """返回代理绑定数：proxy_id -> 被多少个本地未删除窗口绑定。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {"success": True, "counts": await db.count_proxy_bindings(space_pk)}
+
+
+@router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/delete")
+async def delete_local_proxy(space_pk: int, proxy_id: int, token: str = Depends(verify_admin_token)):
+    """本地删除代理（仅标记 deleted=1，不影响指纹浏览器侧）。
+
+    说明：
+    - 后续再次“同步该空间代理到本地”时，以同步结果为准：若该 proxy_id 仍存在，会被恢复显示（deleted=0）。
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    affected = await db.delete_proxy(space_pk=int(space_pk), proxy_id=int(proxy_id))
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="proxy not found")
+    return {"success": True, "message": "已在本地删除该代理", "affected": affected}
+
+
 @router.post("/api/admin/spaces/{space_pk}/sync-proxies")
 async def sync_space_proxies(space_pk: int, token: str = Depends(verify_admin_token)):
     """同步某个空间的代理列表（从指纹浏览器拉取后写入本地 DB）。"""
@@ -440,16 +463,42 @@ async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProx
     syscfg = await db.get_system_config()
     client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
     try:
+        # 关键：先读取窗口明细并保留 windowPlatformList，避免某些 Roxy 版本在 /browser/mdf 时把账号/网址清空
+        # 参考文档：/browser/detail + /browser/mdf
+        # https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E4%BF%AE%E6%94%B9%E6%B5%8F%E8%A7%88%E5%99%A8%E7%AA%97%E5%8F%A3
+        detail = {}
+        try:
+            detail = await client.get_browser_detail(
+                vendor=browser.vendor,
+                base_url=browser.lan_addr,
+                access_key=browser.access_key,
+                space_id=space.space_id,
+                window_key=wk,
+            )
+        except Exception:
+            detail = {}
+
+        mdf_payload = {"proxyInfo": proxy_info}
+        wpl = (detail or {}).get("windowPlatformList")
+        if isinstance(wpl, list) and wpl:
+            mdf_payload["windowPlatformList"] = wpl
+
         rsp = await client.browser_mdf(
             vendor=browser.vendor,
             base_url=browser.lan_addr,
             access_key=browser.access_key,
             space_id=space.space_id,
             window_key=wk,
-            data={"proxyInfo": proxy_info},
+            data=mdf_payload,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # 同步更新本地 DB，确保 UI “当前代理/绑定数” 立即生效
+    try:
+        await db.update_window_proxy_id(space_pk=space_pk, window_key=wk, proxy_id=proxy_id)
+    except Exception:
+        pass
 
     return {"success": True, "message": "已提交修改窗口代理请求", "roxy_response": rsp}
 

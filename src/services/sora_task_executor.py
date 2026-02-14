@@ -33,6 +33,7 @@ from .playwright_broswer_context import (
     safe_trim,
 )
 from .task_executor_types import ProgressCB
+from ..core.database import Database
 
 
 class NonPenalizedTaskError(RuntimeError):
@@ -721,6 +722,102 @@ class SoraSession:
         except Exception as e:
             try:
                 append_log(log_file, f"[sora][drafts] random_env failed: {e}")
+            except Exception:
+                pass
+
+        # random_env 后：从本地代理 IP 池选择“使用次数最少”的代理并切换（且必须与当前出口 IP 不同）
+        try:
+            append_log(log_file, "[sora][drafts] post-random_env: selecting least-used proxy from local pool")
+        except Exception:
+            pass
+
+        try:
+            db = Database()
+            space_pk = await db.resolve_space_pk_for_window(space_id=self.pw_ctx.space_id, window_key=self.pw_ctx.window_key)
+            if not space_pk:
+                raise RuntimeError("resolve space_pk failed")
+
+            # 读取当前窗口明细（拿当前出口 IP + 保留 windowPlatformList，避免 /browser/mdf 清空账号/网址）
+            try:
+                detail = await self.pw_ctx.fp_client.get_browser_detail(
+                    vendor=self.pw_ctx.vendor,
+                    base_url=self.pw_ctx.base_url,
+                    access_key=self.pw_ctx.access_key,
+                    space_id=self.pw_ctx.space_id,
+                    window_key=self.pw_ctx.window_key,
+                )
+            except Exception:
+                detail = {}
+
+            cur_proxy_info = (detail or {}).get("proxyInfo") if isinstance((detail or {}).get("proxyInfo"), dict) else {}
+            cur_proxy_id = None
+            cur_exit_ip = None
+            try:
+                mid = cur_proxy_info.get("moduleId")
+                cur_proxy_id = int(mid) if mid not in (None, "", "-") else None
+            except Exception:
+                cur_proxy_id = None
+            try:
+                cur_exit_ip = str(cur_proxy_info.get("lastIp") or "").strip() or None
+            except Exception:
+                cur_exit_ip = None
+
+            proxies = await db.list_proxies(int(space_pk))
+            if not proxies:
+                raise RuntimeError("no local proxies in pool (please sync proxies)")
+            counts = await db.count_proxy_bindings(int(space_pk))
+
+            # 按“绑定窗口数”(使用次数) 最少优先选择；且与当前 proxy_id / 当前出口 IP 不同
+            candidates = []
+            for p in proxies:
+                pid = int(getattr(p, "proxy_id", 0) or 0)
+                if pid <= 0:
+                    continue
+                if cur_proxy_id is not None and pid == cur_proxy_id:
+                    continue
+                lip = str(getattr(p, "last_ip", "") or "").strip() or None
+                if cur_exit_ip and lip and lip == cur_exit_ip:
+                    continue
+                use_cnt = int(counts.get(pid, 0) or 0)
+                candidates.append((use_cnt, pid, lip))
+
+            if not candidates:
+                raise RuntimeError("no available proxy candidate different from current ip/proxy")
+
+            candidates.sort(key=lambda x: (x[0], x[1]))
+            picked_use_cnt, picked_proxy_id, picked_last_ip = candidates[0]
+
+            try:
+                append_log(
+                    log_file,
+                    f"[sora][drafts] picked proxy_id={picked_proxy_id} use_cnt={picked_use_cnt} last_ip={picked_last_ip or '-'} cur_proxy_id={cur_proxy_id} cur_ip={cur_exit_ip or '-'}",
+                )
+            except Exception:
+                pass
+
+            proxy_info = {"moduleId": int(picked_proxy_id), "proxyMethod": "choose"}
+            mdf_payload = {"proxyInfo": proxy_info}
+            wpl = (detail or {}).get("windowPlatformList")
+            if isinstance(wpl, list) and wpl:
+                mdf_payload["windowPlatformList"] = wpl
+
+            await self.pw_ctx.fp_client.browser_mdf(
+                vendor=self.pw_ctx.vendor,
+                base_url=self.pw_ctx.base_url,
+                access_key=self.pw_ctx.access_key,
+                space_id=self.pw_ctx.space_id,
+                window_key=self.pw_ctx.window_key,
+                data=mdf_payload,
+            )
+
+            # 回写本地窗口 proxy_id，便于“绑定数/当前代理”统计
+            try:
+                await db.update_window_proxy_id(space_pk=int(space_pk), window_key=self.pw_ctx.window_key, proxy_id=int(picked_proxy_id))
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                append_log(log_file, f"[sora][drafts] pick/switch proxy skipped: {e}")
             except Exception:
                 pass
 
