@@ -720,11 +720,12 @@ class SoraSession:
                     cur_u = str(getattr(drafts_page, "url", "") or "").strip()
                 except Exception:
                     cur_u = ""
-                if not cur_u.startswith(drafts_url):
-                    try:
-                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-                    except Exception:
-                        pass
+
+                try:
+                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                except Exception:
+                    pass
+                
                 try:
                     await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
                 except Exception:
