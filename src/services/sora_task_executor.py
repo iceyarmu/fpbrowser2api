@@ -430,36 +430,90 @@ async def _sora_create_task_pw(
     first_image_url: Optional[str],
     orientation: str,
     n_frames: int,
+    bearer_token: Optional[str] = None,
+    sentinel_token: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    oai_device_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """通过指纹浏览器环境直接调用 /backend/nf/create（不再模拟 UI 输入/点击）。"""
     log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-    await page.goto(target_url, wait_until="domcontentloaded")
-    try:
-        await page.wait_for_load_state("domcontentloaded", timeout=30_000)
-    except Exception:
-        pass
 
-    bearer_info = await _sora_extract_bearer_from_any_post_pw(page, timeout_seconds=20.0, log_file=log_file)
-    bearer_token = str(bearer_info.get("token") or "").strip() or None
-    user_agent = str(bearer_info.get("user_agent") or "").strip() or None
-    if not user_agent:
-        user_agent = await _pw_get_user_agent(page)
-    sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(page, device_id=None, log_file=log_file)
-
-    if not bearer_token:
-        raise RuntimeError(f"未能读取到Bearer token（请确保已登录且页面会发出带 Authorization 的请求）");
+    # 先生成 SentinelToken（并用于填充 OAI-Device-Id），再确保 BearerToken
     if not sentinel_token:
-        raise RuntimeError(f"未能生成 SentinelToken，触发了429");
+        sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(page, device_id=oai_device_id, log_file=log_file)
 
-    oai_device_id = None
-    try:
-        sentinel_data = json.loads(str(sentinel_token))
-        if isinstance(sentinel_data, dict):
-            oai_device_id = str(sentinel_data.get("id") or "").strip() or None
-    except Exception:
-        oai_device_id = None
+    if not oai_device_id:
+        try:
+            sentinel_data = json.loads(str(sentinel_token or ""))
+            if isinstance(sentinel_data, dict):
+                oai_device_id = str(sentinel_data.get("id") or "").strip() or None
+        except Exception:
+            oai_device_id = None
     if not oai_device_id:
         oai_device_id = str(uuid4())
+
+    bearer_info: Dict[str, Any] = {}
+    if not bearer_token:
+        bearer_info = await _sora_extract_bearer_from_any_post_pw(page, timeout_seconds=20.0, log_file=log_file)
+        bearer_token = str(bearer_info.get("token") or "").strip() or None
+
+    if not user_agent:
+        try:
+            user_agent = str((bearer_info or {}).get("user_agent") or "").strip() or None
+        except Exception:
+            user_agent = None
+    if not user_agent:
+        user_agent = await _pw_get_user_agent(page)
+
+    if not bearer_token:
+        raise RuntimeError("未能读取到Bearer token（请确保已登录且页面会发出带 Authorization 的请求）")
+    if not sentinel_token:
+        raise RuntimeError("未能生成 SentinelToken，触发了429")
+
+    # 模拟用户在 textarea 输入 prompt（仅输入，不点击任何按钮；发送由后续 post 接口完成）
+    try:
+        prompt_s = str(prompt or "")
+    except Exception:
+        prompt_s = ""
+    prompt_s = prompt_s.strip()
+    if prompt_s:
+        filled = False
+        # 选择器按“更精确 -> 更通用”降级
+        selectors = [
+            'textarea[data-testid="prompt-textarea"]',
+            'textarea[placeholder*="Describe"]',
+            "textarea",
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                await loc.first.wait_for(state="visible", timeout=2500)
+                try:
+                    await loc.first.click(timeout=1500)
+                except Exception:
+                    # click 不是必须；focus 失败也继续尝试 fill
+                    pass
+
+                # 优先用 fill（不会触发点击发送）
+                await loc.first.fill(prompt_s, timeout=5000)
+
+                ok = False
+                try:
+                    v = await loc.first.input_value(timeout=1500)
+                    if str(v or "").strip():
+                        ok = True
+                except Exception:
+                    ok = False
+
+                if ok:
+                    append_log(log_file, f"[sora][ui] prompt filled into textarea selector={sel!r} len={len(prompt_s)}")
+                    filled = True
+                    break
+            except Exception:
+                continue
+
+        if not filled:
+            append_log(log_file, "[sora][ui] prompt fill skipped: textarea not found/visible")
 
     inpaint_items: list[Dict[str, Any]] = []
     if first_image_url:
@@ -711,6 +765,8 @@ class SoraSession:
             except Exception:
                 pass
 
+        #注释掉下方代码
+        '''
         try:
             await self.pw_ctx.fp_client.browser_random_env(
                 vendor=self.pw_ctx.vendor,
@@ -724,108 +780,15 @@ class SoraSession:
                 append_log(log_file, f"[sora][drafts] random_env failed: {e}")
             except Exception:
                 pass
-
+        
         # random_env 后：从本地代理 IP 池选择“使用次数最少”的代理并切换（且必须与当前出口 IP 不同）
         try:
             append_log(log_file, "[sora][drafts] post-random_env: selecting least-used proxy from local pool")
         except Exception:
             pass
-
-        try:
-            db = Database()
-            space_pk = await db.resolve_space_pk_for_window(space_id=self.pw_ctx.space_id, window_key=self.pw_ctx.window_key)
-            if not space_pk:
-                raise RuntimeError("resolve space_pk failed")
-
-            # 读取当前窗口明细（拿当前出口 IP + 保留 windowPlatformList，避免 /browser/mdf 清空账号/网址）
-            try:
-                detail = await self.pw_ctx.fp_client.get_browser_detail(
-                    vendor=self.pw_ctx.vendor,
-                    base_url=self.pw_ctx.base_url,
-                    access_key=self.pw_ctx.access_key,
-                    space_id=self.pw_ctx.space_id,
-                    window_key=self.pw_ctx.window_key,
-                )
-            except Exception:
-                detail = {}
-
-            cur_proxy_info = (detail or {}).get("proxyInfo") if isinstance((detail or {}).get("proxyInfo"), dict) else {}
-            cur_proxy_id = None
-            cur_exit_ip = None
-            try:
-                mid = cur_proxy_info.get("moduleId")
-                cur_proxy_id = int(mid) if mid not in (None, "", "-") else None
-            except Exception:
-                cur_proxy_id = None
-            try:
-                cur_exit_ip = str(cur_proxy_info.get("lastIp") or "").strip() or None
-            except Exception:
-                cur_exit_ip = None
-
-            proxies = await db.list_proxies(int(space_pk))
-            if not proxies:
-                raise RuntimeError("no local proxies in pool (please sync proxies)")
-            counts = await db.count_proxy_bindings(int(space_pk))
-
-            print("proxies1:", proxies)
-            print("counts:", counts)
-
-            # 按“绑定窗口数”(使用次数) 最少优先选择；且与当前 proxy_id / 当前出口 IP 不同
-            candidates = []
-            for p in proxies:
-                pid = int(getattr(p, "proxy_id", 0) or 0)
-                if pid <= 0:
-                    continue
-                if cur_proxy_id is not None and pid == cur_proxy_id:
-                    continue
-                lip = str(getattr(p, "last_ip", "") or "").strip() or None
-                if cur_exit_ip and lip and lip == cur_exit_ip:
-                    continue
-                use_cnt = int(counts.get(pid, 0) or 0)
-                candidates.append((use_cnt, pid, lip))
-
-            if not candidates:
-                raise RuntimeError("no available proxy candidate different from current ip/proxy")
-
-            candidates.sort(key=lambda x: (x[0], x[1]))
-            print("proxies2:", candidates)
-            print("counts:", counts)
-            picked_use_cnt, picked_proxy_id, picked_last_ip = candidates[0]
-
-            try:
-                append_log(
-                    log_file,
-                    f"[sora][drafts] picked proxy_id={picked_proxy_id} use_cnt={picked_use_cnt} last_ip={picked_last_ip or '-'} cur_proxy_id={cur_proxy_id} cur_ip={cur_exit_ip or '-'}",
-                )
-            except Exception:
-                pass
-
-            proxy_info = {"moduleId": int(picked_proxy_id), "proxyMethod": "choose"}
-            mdf_payload = {"proxyInfo": proxy_info}
-            wpl = (detail or {}).get("windowPlatformList")
-            if isinstance(wpl, list) and wpl:
-                mdf_payload["windowPlatformList"] = wpl
-
-            print("mdf_payload", mdf_payload)
-            await self.pw_ctx.fp_client.browser_mdf(
-                vendor=self.pw_ctx.vendor,
-                base_url=self.pw_ctx.base_url,
-                access_key=self.pw_ctx.access_key,
-                space_id=self.pw_ctx.space_id,
-                window_key=self.pw_ctx.window_key,
-                data=mdf_payload,
-            )
-
-            # 回写本地窗口 proxy_id，便于“绑定数/当前代理”统计
-            try:
-                await db.update_window_proxy_id(space_pk=int(space_pk), window_key=self.pw_ctx.window_key, proxy_id=int(picked_proxy_id))
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                append_log(log_file, f"[sora][drafts] pick/switch proxy skipped: {e}")
-            except Exception:
-                pass
+        '''
+        # 说明：窗口切 IP 的逻辑已封装为独立方法，且不在“重启窗口自愈 Cloudflare”流程中触发。
+        # 触发时机改为：TaskService 在“连续错误达到阈值/进入冷却”时再切换 IP。
 
         await self.pw_ctx.ensure_open(
             args=self.browser_open_args,
@@ -904,6 +867,111 @@ class SoraSession:
             pass
         return drafts_page2
 
+    async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
+        """从本地代理池挑选“使用次数最少”的代理并切换（尽量与当前代理/出口 IP 不同）。
+
+        返回：
+        - picked_proxy_id：成功切换时返回代理ID
+        - None：未切换（无可用代理/接口异常等）
+        """
+        lf = log_file
+        if lf is None:
+            lf = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+
+        async with self._bring_drafts_lock:
+            try:
+                db = Database()
+                space_pk = await db.resolve_space_pk_for_window(space_id=self.pw_ctx.space_id, window_key=self.pw_ctx.window_key)
+                if not space_pk:
+                    raise RuntimeError("resolve space_pk failed")
+
+                # 读取当前窗口明细（拿当前出口 IP + 保留 windowPlatformList，避免 /browser/mdf 清空账号/网址）
+                try:
+                    detail = await self.pw_ctx.fp_client.get_browser_detail(
+                        vendor=self.pw_ctx.vendor,
+                        base_url=self.pw_ctx.base_url,
+                        access_key=self.pw_ctx.access_key,
+                        space_id=self.pw_ctx.space_id,
+                        window_key=self.pw_ctx.window_key,
+                    )
+                except Exception:
+                    detail = {}
+
+                cur_proxy_info = (detail or {}).get("proxyInfo") if isinstance((detail or {}).get("proxyInfo"), dict) else {}
+                cur_proxy_id = None
+                cur_exit_ip = None
+                try:
+                    mid = cur_proxy_info.get("moduleId")
+                    cur_proxy_id = int(mid) if mid not in (None, "", "-") else None
+                except Exception:
+                    cur_proxy_id = None
+                try:
+                    cur_exit_ip = str(cur_proxy_info.get("lastIp") or "").strip() or None
+                except Exception:
+                    cur_exit_ip = None
+
+                proxies = await db.list_proxies(int(space_pk))
+                if not proxies:
+                    raise RuntimeError("no local proxies in pool (please sync proxies)")
+                counts = await db.count_proxy_bindings(int(space_pk))
+
+                # 按“绑定窗口数”(使用次数) 最少优先选择；且与当前 proxy_id / 当前出口 IP 不同
+                candidates: list[tuple[int, int, Optional[str]]] = []
+                for p in proxies:
+                    pid = int(getattr(p, "proxy_id", 0) or 0)
+                    if pid <= 0:
+                        continue
+                    if cur_proxy_id is not None and pid == cur_proxy_id:
+                        continue
+                    lip = str(getattr(p, "last_ip", "") or "").strip() or None
+                    if cur_exit_ip and lip and lip == cur_exit_ip:
+                        continue
+                    use_cnt = int(counts.get(pid, 0) or 0)
+                    candidates.append((use_cnt, pid, lip))
+
+                if not candidates:
+                    raise RuntimeError("no available proxy candidate different from current ip/proxy")
+
+                candidates.sort(key=lambda x: (x[0], x[1]))
+                picked_use_cnt, picked_proxy_id, picked_last_ip = candidates[0]
+
+                try:
+                    append_log(
+                        lf,
+                        f"[sora][proxy] picked proxy_id={picked_proxy_id} use_cnt={picked_use_cnt} last_ip={picked_last_ip or '-'} cur_proxy_id={cur_proxy_id} cur_ip={cur_exit_ip or '-'}",
+                    )
+                except Exception:
+                    pass
+
+                proxy_info = {"moduleId": int(picked_proxy_id), "proxyMethod": "choose"}
+                mdf_payload: Dict[str, Any] = {"proxyInfo": proxy_info}
+                wpl = (detail or {}).get("windowPlatformList")
+                if isinstance(wpl, list) and wpl:
+                    mdf_payload["windowPlatformList"] = wpl
+
+                await self.pw_ctx.fp_client.browser_mdf(
+                    vendor=self.pw_ctx.vendor,
+                    base_url=self.pw_ctx.base_url,
+                    access_key=self.pw_ctx.access_key,
+                    space_id=self.pw_ctx.space_id,
+                    window_key=self.pw_ctx.window_key,
+                    data=mdf_payload,
+                )
+
+                # 回写本地窗口 proxy_id，便于“绑定数/当前代理”统计
+                try:
+                    await db.update_window_proxy_id(space_pk=int(space_pk), window_key=self.pw_ctx.window_key, proxy_id=int(picked_proxy_id))
+                except Exception:
+                    pass
+
+                return int(picked_proxy_id)
+            except Exception as e:
+                try:
+                    append_log(lf, f"[sora][proxy] pick/switch proxy skipped: {e}")
+                except Exception:
+                    pass
+                return None
+
     async def _maybe_click_login_button_if_prompted(self, page) -> bool:
         """若页面出现未登录提示，则尝试点击 'Log in' 按钮/链接。"""
         if page is None:
@@ -963,7 +1031,7 @@ class SoraSession:
         except Exception:
             return False
 
-    async def _bring_sora_drafts_to_front(self) -> None:
+    async def _bring_sora_drafts_to_front(self, refresh_target=True) -> None:
         """将 Sora drafts 页面置前，并确保同一站点只保留一个 drafts tab。
 
         需求背景：指纹浏览器可能开了多个标签页；即使 ensure_open 选中了可用 page，也不一定是 drafts。
@@ -1048,17 +1116,18 @@ class SoraSession:
             except Exception:
                 cur_u = ""
 
-            try:
-                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-            except Exception:
-                pass
+            if refresh_target:
+                try:
+                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                except Exception:
+                    pass
 
-            try:
-                await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
-            except Exception:
-                pass
+                try:
+                    await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
+                except Exception:
+                    pass
 
-            await asyncio.sleep(1.0)
+                await asyncio.sleep(1.0)
 
             # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
             try:
@@ -1269,7 +1338,53 @@ class SoraSession:
         async with self.create_lock:
             try:
                 await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-                await self._bring_sora_drafts_to_front()
+                await self._bring_sora_drafts_to_front(refresh_target=False)
+
+                log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+
+                # 先生成 sentinel_token，并填充/更新 oai_device_id
+                async with self._bring_drafts_lock:
+                    if self.pw_ctx.page is None:
+                        raise RuntimeError("无法获取可用 page（context/pages 不可用或 drafts 打开失败）")
+                    self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
+                        self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file
+                    )
+                    if not self.sentinel_token:
+                        raise RuntimeError("未能生成 SentinelToken，触发了429")
+                    try:
+                        sentinel_data = json.loads(str(self.sentinel_token))
+                        if isinstance(sentinel_data, dict):
+                            did = str(sentinel_data.get("id") or "").strip() or None
+                            if did:
+                                self.oai_device_id = did
+                    except Exception:
+                        pass
+                    if not self.oai_device_id:
+                        self.oai_device_id = str(uuid4())
+
+                # bearer_token 优先复用会话缓存；缺失则 bring_to_front + refresh 一次后再抓取
+                if not self.bearer_token:
+                    await self._bring_sora_drafts_to_front()
+                    async with self._bring_drafts_lock:
+                        if self.pw_ctx.page is None:
+                            raise RuntimeError("page 未初始化")
+                        info = await _sora_extract_bearer_from_any_post_pw(self.pw_ctx.page, timeout_seconds=20.0, log_file=log_file)
+                        tok = str(info.get("token") or "").strip()
+                        if not tok:
+                            raise RuntimeError("未抓到 Bearer token（请确认窗口已登录 Sora）")
+                        self.bearer_token = tok
+                        try:
+                            ua = str(info.get("user_agent") or "").strip() or None
+                            if ua:
+                                self.user_agent = ua
+                        except Exception:
+                            pass
+                        if not self.user_agent:
+                            try:
+                                self.user_agent = await _pw_get_user_agent(self.pw_ctx.page)
+                            except Exception:
+                                pass
+
                 async with self._bring_drafts_lock:
                     task_id, create_tx, auth_state = await _sora_create_task_pw(
                         page=self.pw_ctx.page,
@@ -1279,12 +1394,16 @@ class SoraSession:
                         first_image_url=first_image_url,
                         orientation=orientation,
                         n_frames=n_frames,
+                        bearer_token=str(self.bearer_token or "") or None,
+                        sentinel_token=str(self.sentinel_token or "") or None,
+                        user_agent=str(self.user_agent or "") or None,
+                        oai_device_id=str(self.oai_device_id or "") or None,
                     )
                     try:
-                        self.bearer_token = auth_state.get("bearer_token")
-                        self.sentinel_token = auth_state.get("sentinel_token")
-                        self.user_agent = auth_state.get("user_agent")
-                        self.oai_device_id = auth_state.get("oai_device_id")
+                        self.bearer_token = auth_state.get("bearer_token") or self.bearer_token
+                        self.sentinel_token = auth_state.get("sentinel_token") or self.sentinel_token
+                        self.user_agent = auth_state.get("user_agent") or self.user_agent
+                        self.oai_device_id = auth_state.get("oai_device_id") or self.oai_device_id
                     except Exception:
                         pass
                     return task_id, create_tx

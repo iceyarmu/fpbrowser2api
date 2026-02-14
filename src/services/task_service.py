@@ -187,7 +187,7 @@ class TaskService:
                 # 某些错误不应计入“窗口连续错误”（例如：Sora create 400 invalid_request、未抓到 POST 等环境/请求错误）
                 # 执行器侧会抛出带 no_penalty=true 的异常（或同名属性），这里做兼容判断。
                 if not no_penalty:
-                    await self.db.mark_mapping_error(picked.mapping_id, threshold=picked.threshold, cooldown_seconds=1800)
+                    await self.db.mark_mapping_error(picked.mapping_id, threshold=picked.threshold, cooldown_seconds=3600)
                     # 若连续错误达到/超过阈值（熔断进入错误冷却），则启动倒计时关闭窗口（释放前端状态）
                     # 注意：仅对 Sora 窗口做处理；其它模拟执行器没有需要维护的浏览器会话
                     try:
@@ -201,6 +201,11 @@ class TaskService:
                                 space_id=picked.space_id,
                                 window_key=picked.window_key,
                             )
+                            # 连续错误达到阈值：切换 IP（更换代理），降低后续继续被风控/封禁概率
+                            try:
+                                await sess.switch_window_ip_by_proxy_pool()
+                            except Exception:
+                                pass
                             sess._schedule_idle_close()
                     except Exception:
                         pass

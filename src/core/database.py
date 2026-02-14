@@ -2017,11 +2017,13 @@ class Database:
             )
             await db.commit()
 
-    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 1800) -> None:
+    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 3600, cooldown_seconds_short: int = 900) -> None:
         """一次失败：累计错误 + 连续错误，并在达到阈值时写入冷却时间。"""
         thr = max(1, int(threshold))
         cd = max(10, int(cooldown_seconds))
+        cd_short = max(10, int(cooldown_seconds_short))
         modifier = f"+{cd} seconds"
+        modifier_short = f"+{cd_short} seconds"
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -2030,12 +2032,12 @@ class Database:
                     consecutive_errors = consecutive_errors + 1,
                     error_cooldown_until = CASE
                       WHEN (consecutive_errors + 1) >= ? THEN datetime('now', ?)
-                      ELSE error_cooldown_until
+                      ELSE datetime('now', ?)
                     END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (thr, modifier, int(mapping_id)),
+                (thr, modifier, modifier_short, int(mapping_id)),
             )
             await db.commit()
 

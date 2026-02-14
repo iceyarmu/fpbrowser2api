@@ -789,7 +789,7 @@ async def refresh_mapping_remaining_quota(
         else:
             thr = max(1, int(getattr(task_type, "continuous_error_threshold", 3) or 3))
             try:
-                await db.mark_mapping_error(mapping_id=mapping_id, threshold=thr, cooldown_seconds=1800)
+                await db.mark_mapping_error(mapping_id=mapping_id, threshold=thr, cooldown_seconds=3600)
             except Exception:
                 pass
 
