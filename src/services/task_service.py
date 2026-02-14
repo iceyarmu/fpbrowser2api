@@ -92,7 +92,7 @@ class TaskService:
             task_code=str(r["task_code"]),
             task_concurrency=int(r.get("task_concurrency") or 1),
             threshold=int(r.get("continuous_error_threshold") or 3),
-            timeout_seconds=int(r.get("timeout_seconds") or 1800),
+            timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
             browser_vendor=str(r.get("vendor") or "generic"),
             browser_base_url=str(r.get("lan_addr") or ""),

@@ -699,14 +699,14 @@ class SoraSession:
             await asyncio.sleep(1.0)
 
             # Cloudflare interstitial 自愈：如果 drafts 实际被 CF 拦截（Just a moment... / cdn-cgi），
-            # 则关闭指纹浏览器窗口并重开一次，确保窗口里只保留一个 drafts tab 且置前。
-            async def _is_cloudflare_page(p) -> bool:
+            # 则先等待一段时间让其自动放行；若超时仍是 Cloudflare，再关闭指纹浏览器窗口并重开一次，
+            # 确保窗口里只保留一个 drafts tab 且置前。
+            async def _is_cloudflare_page(p, *, deep: bool = False) -> bool:
                 try:
                     u = str(getattr(p, "url", "") or "").strip()
                 except Exception:
                     u = ""
                 ul = u.lower()
-                # 常见挑战页会跳到 /cdn-cgi/ 或标题包含 Just a moment/Attention required
                 if "/cdn-cgi/" in ul:
                     return True
                 try:
@@ -716,7 +716,9 @@ class SoraSession:
                 tl = (title or "").strip().lower()
                 if "just a moment" in tl or "attention required" in tl:
                     return True
-                # 兜底：检查 HTML 关键字（只在必要时走一次）
+                # 轮询等待时优先用 fast 判断；只有最终确认时才 deep 看 HTML
+                if not deep:
+                    return False
                 try:
                     html = await p.content()
                 except Exception:
@@ -727,6 +729,43 @@ class SoraSession:
                 if ("turnstile" in hl or "cf-challenge" in hl) and ("/cdn-cgi/" in hl or "cloudflare" in hl):
                     return True
                 return False
+
+            async def _wait_cloudflare_auto_pass(p, *, max_wait_seconds: float = 10.0) -> bool:
+                """等待 Cloudflare 可能自动放行。
+
+                返回：
+                - True: 超时后仍像 Cloudflare（可考虑重启）
+                - False: 已不再像 Cloudflare（无需重启）
+                """
+                try:
+                    deadline = time.time() + max(0.0, float(max_wait_seconds))
+                except Exception:
+                    deadline = time.time() + 10.0
+
+                poll = 1.0
+                while time.time() < deadline:
+                    try:
+                        is_closed = bool(getattr(p, "is_closed", lambda: False)())
+                    except Exception:
+                        is_closed = False
+                    if is_closed:
+                        return True
+
+                    try:
+                        still_cf = await _is_cloudflare_page(p, deep=False)
+                    except Exception:
+                        still_cf = True
+                    if not still_cf:
+                        return False
+
+                    remain = deadline - time.time()
+                    if remain <= 0:
+                        break
+                    try:
+                        await asyncio.sleep(min(poll, max(0.1, remain)))
+                    except Exception:
+                        break
+                return True
 
             async def _restart_window_and_restore_single_drafts() -> Any:
                 log_file = (
@@ -758,7 +797,6 @@ class SoraSession:
                 if ctx2 is None:
                     return None
 
-                # 重开后：保证只有一个 sora drafts tab
                 try:
                     pages2 = list(getattr(ctx2, "pages", []) or [])
                 except Exception:
@@ -828,18 +866,20 @@ class SoraSession:
             # 只尝试一次自愈，避免死循环
             recovered = False
             try:
-                if await _is_cloudflare_page(drafts_page):
-                    recovered = True
-                    new_page = await _restart_window_and_restore_single_drafts()
-                    if new_page is not None:
-                        drafts_page = new_page
+                maybe_cf = await _is_cloudflare_page(drafts_page, deep=False)
+                if maybe_cf:
+                    still_cf_after_wait = await _wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=10.0)
+                    if still_cf_after_wait and await _is_cloudflare_page(drafts_page, deep=True):
+                        recovered = True
+                        new_page = await _restart_window_and_restore_single_drafts()
+                        if new_page is not None:
+                            drafts_page = new_page
             except Exception:
                 recovered = False
 
-            # 若自愈后仍是 Cloudflare，就不再反复重启；后续 fetch 失败会走既有的“记录并禁用”逻辑。
             if recovered:
                 try:
-                    _ = await _is_cloudflare_page(drafts_page)
+                    _ = await _is_cloudflare_page(drafts_page, deep=False)
                 except Exception:
                     pass
 
