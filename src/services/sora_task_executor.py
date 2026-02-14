@@ -1194,21 +1194,22 @@ class SoraSession:
                         self.watchers.pop(tid, None)
 
                 if missing_tids:
-                    try:
-                        drafts = await _sora_api_get_video_drafts_pw(
-                            self.pw_ctx.page,
-                            target_url=str(getattr(self.pw_ctx.page, "url", "") or "https://sora.chatgpt.com/drafts"),
-                            bearer_token=str(self.bearer_token or ""),
-                            limit=15,
-                            log_file=log_file,
-                        )
-                        items = drafts.get("items", []) if isinstance(drafts, dict) else []
-                    except Exception as e:
-                        items = []
+                    async with self._bring_drafts_lock:
                         try:
-                            append_log(log_file, f"[sora][drafts] fetch failed: {e}")
-                        except Exception:
-                            pass
+                            drafts = await _sora_api_get_video_drafts_pw(
+                                self.pw_ctx.page,
+                                target_url=str(getattr(self.pw_ctx.page, "url", "") or "https://sora.chatgpt.com/drafts"),
+                                bearer_token=str(self.bearer_token or ""),
+                                limit=15,
+                                log_file=log_file,
+                            )
+                            items = drafts.get("items", []) if isinstance(drafts, dict) else []
+                        except Exception as e:
+                            items = []
+                            try:
+                                append_log(log_file, f"[sora][drafts] fetch failed: {e}")
+                            except Exception:
+                                pass
 
                     if isinstance(items, list) and items:
                         by_task: Dict[str, Dict[str, Any]] = {}
@@ -1224,9 +1225,9 @@ class SoraSession:
                                 if w and not w.future.done():
                                     w.future.set_result({"task_id": tid, "status": "completed", "progress_pct": 1.0, "done": True, "draft": it})
                                 self.watchers.pop(tid, None)
-
                 if not self.watchers:
                     return
+                print("poll drafts")
                 await asyncio.sleep(float(self.poll_interval_seconds))
         finally:
             if not self.watchers:
@@ -1249,89 +1250,100 @@ class SoraSession:
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await asyncio.sleep(5)
         await self._bring_sora_drafts_to_front()
+        
+        log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        if not self.bearer_token:
+            raise RuntimeError("缺少 bearer_token，无法查询 drafts/发布")
+
+
+        def _get_item_task_id(it: Dict[str, Any]) -> str:
+            try:
+                v = it.get("task_id")
+                if v:
+                    return str(v)
+            except Exception:
+                pass
+            try:
+                v = it.get("taskId")
+                if v:
+                    return str(v)
+            except Exception:
+                pass
+            try:
+                t = it.get("task")
+                if isinstance(t, dict) and t.get("id"):
+                    return str(t.get("id"))
+            except Exception:
+                pass
+            return ""
+
+        drafts_wait_seconds = 150.0
+        drafts_poll_interval = 15.0
+        deadline = time.time() + drafts_wait_seconds
+        draft_item: Optional[Dict[str, Any]] = None
+        last_items_sample: list[str] = []
+        attempt = 0
+        while time.time() < deadline and draft_item is None:
+            attempt += 1
+            items = []
+            async with self._bring_drafts_lock:
+                try:
+                    drafts = await _sora_api_get_video_drafts_pw(
+                        self.pw_ctx.page,
+                        target_url=target_url,
+                        bearer_token=str(self.bearer_token),
+                        limit=int(drafts_limit),
+                        log_file=log_file,
+                    )
+                    items = drafts.get("items", []) if isinstance(drafts, dict) else []
+                    if not isinstance(items, list):
+                        items = []
+                except Exception as e:
+                    items = []
+                    try:
+                        append_log(log_file, f"[sora][drafts] fetch failed: {e}")
+                    except Exception:
+                        pass
+
+            last_items_sample = []
+            for it in items[:20]:
+                if isinstance(it, dict):
+                    tid = _get_item_task_id(it)
+                    if tid:
+                        last_items_sample.append(tid)
+
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if _get_item_task_id(it) == str(task_id):
+                    draft_item = it
+                    break
+
+            append_log(
+                log_file,
+                f"[sora][drafts] poll attempt={attempt} found={bool(draft_item)} items={len(items)} "
+                f"sample_task_ids={safe_trim(','.join(last_items_sample), 260)!r}",
+            )
+
+            if draft_item is not None:
+                break
+            await asyncio.sleep(float(drafts_poll_interval))
+            await self._bring_sora_drafts_to_front()
+
+        if not draft_item:
+            raise RuntimeError(
+                f"草稿箱未找到任务对应视频（已轮询 {drafts_wait_seconds:.0f}s）：task_id={task_id} "
+                f"sample_task_ids={safe_trim(','.join(last_items_sample), 260)}"
+            )
+
+        generation_id = str(draft_item.get("id") or "").strip()
+        if not generation_id:
+            raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
+
         async with self._bring_drafts_lock:
-            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-            if not self.bearer_token:
-                raise RuntimeError("缺少 bearer_token，无法查询 drafts/发布")
             self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file)
             if not self.sentinel_token:
                 raise RuntimeError("缺少 sentinel_token，无法发布草稿")
-
-            def _get_item_task_id(it: Dict[str, Any]) -> str:
-                try:
-                    v = it.get("task_id")
-                    if v:
-                        return str(v)
-                except Exception:
-                    pass
-                try:
-                    v = it.get("taskId")
-                    if v:
-                        return str(v)
-                except Exception:
-                    pass
-                try:
-                    t = it.get("task")
-                    if isinstance(t, dict) and t.get("id"):
-                        return str(t.get("id"))
-                except Exception:
-                    pass
-                return ""
-
-            drafts_wait_seconds = 150.0
-            drafts_poll_interval = 15.0
-            deadline = time.time() + drafts_wait_seconds
-            draft_item: Optional[Dict[str, Any]] = None
-            last_items_sample: list[str] = []
-            attempt = 0
-            while time.time() < deadline and draft_item is None:
-                attempt += 1
-                drafts = await _sora_api_get_video_drafts_pw(
-                    self.pw_ctx.page,
-                    target_url=target_url,
-                    bearer_token=str(self.bearer_token),
-                    limit=int(drafts_limit),
-                    log_file=log_file,
-                )
-                items = drafts.get("items", []) if isinstance(drafts, dict) else []
-                if not isinstance(items, list):
-                    items = []
-
-                last_items_sample = []
-                for it in items[:20]:
-                    if isinstance(it, dict):
-                        tid = _get_item_task_id(it)
-                        if tid:
-                            last_items_sample.append(tid)
-
-                for it in items:
-                    if not isinstance(it, dict):
-                        continue
-                    if _get_item_task_id(it) == str(task_id):
-                        draft_item = it
-                        break
-
-                append_log(
-                    log_file,
-                    f"[sora][drafts] poll attempt={attempt} found={bool(draft_item)} items={len(items)} "
-                    f"sample_task_ids={safe_trim(','.join(last_items_sample), 260)!r}",
-                )
-
-                if draft_item is not None:
-                    break
-                await asyncio.sleep(float(drafts_poll_interval))
-                await self._bring_sora_drafts_to_front()
-
-            if not draft_item:
-                raise RuntimeError(
-                    f"草稿箱未找到任务对应视频（已轮询 {drafts_wait_seconds:.0f}s）：task_id={task_id} "
-                    f"sample_task_ids={safe_trim(','.join(last_items_sample), 260)}"
-                )
-
-            generation_id = str(draft_item.get("id") or "").strip()
-            if not generation_id:
-                raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
-
             post_resp = await _sora_api_post_project_y_post_pw(
                 self.pw_ctx.page,
                 target_url=target_url,
@@ -1340,24 +1352,25 @@ class SoraSession:
                 generation_id=generation_id,
                 log_file=log_file,
             )
+        
+        post_id = ""
+        try:
+            post_id = str(((post_resp or {}).get("post") or {}).get("id") or "").strip()
+        except Exception:
             post_id = ""
-            try:
-                post_id = str(((post_resp or {}).get("post") or {}).get("id") or "").strip()
-            except Exception:
-                post_id = ""
-            if not post_id:
-                raise RuntimeError(f"发布草稿失败：未返回 post_id resp={safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)}")
+        if not post_id:
+            raise RuntimeError(f"发布草稿失败：未返回 post_id resp={safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)}")
 
-            share_url = f"https://sora.chatgpt.com/p/{post_id}"
-            watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
-            return {
-                "task_id": str(task_id),
-                "generation_id": generation_id,
-                "post_id": post_id,
-                "share_url": share_url,
-                "watermark_free_url": watermark_free_url,
-                "draft": draft_item,
-            }
+        share_url = f"https://sora.chatgpt.com/p/{post_id}"
+        watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
+        return {
+            "task_id": str(task_id),
+            "generation_id": generation_id,
+            "post_id": post_id,
+            "share_url": share_url,
+            "watermark_free_url": watermark_free_url,
+            "draft": draft_item,
+        }
 
 
 _SORA_LOCK = asyncio.Lock()
