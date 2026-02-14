@@ -502,6 +502,7 @@ async def list_all_windows(project_id: Optional[int] = None, token: str = Depend
                             "space_id": s.get("space_id"),
                             "space_name": s.get("name"),
                             "window_pk": w.get("id"),
+                            "window_sort_num": w.get("window_sort_num"),
                             "window_name": w.get("window_name"),
                             "platform_account": w.get("platform_account"),
                             "platform_url": w.get("platform_url"),

@@ -387,6 +387,7 @@
         current: null,
         mappings: [],
         windows: [],
+        boundWindowPks: new Set(),
         winSelected: new Set(),
         mapSelected: new Set(),
         handlers: { create: [], quota: [] },
@@ -913,6 +914,7 @@
             </td>
             <td>
               <div class="d-flex flex-wrap gap-2 align-items-center">
+                <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}</span>
                 <div class="fw-semibold quota-click" title="点击按窗口名称排序" data-role="winName">${escapeHtml(m.window_name || "-")}</div>
                 <div class="btn-group btn-group-sm" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-w-72" data-act="manualOpen" data-mid="${m.id}">打开</button>
@@ -1232,7 +1234,9 @@
         if (!r) return;
         const d = await r.json();
         state.windows = d.windows || [];
-        state.winSelected = new Set();
+        // 已绑定窗口：默认勾选（并禁用），避免重复绑定误操作
+        state.boundWindowPks = new Set((state.mappings || []).map(x => parseInt(x?.window_pk, 10)).filter(x => !Number.isNaN(x)));
+        state.winSelected = new Set(); // 仅记录“新增绑定”的窗口
         document.getElementById("winFilter").value = "";
         renderWinList();
         winModal.show();
@@ -1258,9 +1262,20 @@
         }
         body.innerHTML = items.map(w => `
           <tr class="small2">
-            <td><input type="checkbox" class="chkWin" value="${w.window_pk}" ${state.winSelected.has(w.window_pk) ? "checked" : ""} /></td>
+            <td>
+              <input
+                type="checkbox"
+                class="chkWin"
+                value="${w.window_pk}"
+                ${state.boundWindowPks?.has(w.window_pk) ? "checked disabled" : (state.winSelected.has(w.window_pk) ? "checked" : "")}
+              />
+            </td>
             <td class="cell-stack">
-              <div class="fw-semibold">${escapeHtml(w.window_name || "-")}</div>
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <span class="badge text-bg-light mono border">#${escapeHtml(String((w.window_sort_num ?? w.window_pk) ?? "-"))}</span>
+                <div class="fw-semibold">${escapeHtml(w.window_name || "-")}</div>
+                ${state.boundWindowPks?.has(w.window_pk) ? `<span class="badge text-bg-success">已绑定</span>` : ""}
+              </div>
               <div class="text-muted">${escapeHtml(w.project_name || "-")} / ${escapeHtml(w.browser_name || "-")}</div>
               <div class="mono text-muted">${escapeHtml(w.space_id || "-")} <span class="text-muted">·</span> ${escapeHtml(w.space_name || "-")}</div>
             </td>
@@ -1280,15 +1295,18 @@
         body.querySelectorAll(".chkWin").forEach(chk => {
           chk.addEventListener("change", (e) => {
             const pk = parseInt(e.target.value, 10);
+            if (state.boundWindowPks?.has(pk)) return;
             if (e.target.checked) state.winSelected.add(pk);
             else state.winSelected.delete(pk);
             document.getElementById("winSelectedCount").textContent = String(state.winSelected.size || 0);
             const boxes = Array.from(body.querySelectorAll(".chkWin"));
-            document.getElementById("chkAll").checked = boxes.length > 0 && boxes.every(x => x.checked);
+            const selectable = boxes.filter(x => !x.disabled);
+            document.getElementById("chkAll").checked = selectable.length > 0 && selectable.every(x => x.checked);
           });
         });
         const boxes = Array.from(body.querySelectorAll(".chkWin"));
-        document.getElementById("chkAll").checked = boxes.length > 0 && boxes.every(x => x.checked);
+        const selectable = boxes.filter(x => !x.disabled);
+        document.getElementById("chkAll").checked = selectable.length > 0 && selectable.every(x => x.checked);
       }
 
       async function bindWindows() {
@@ -1343,6 +1361,7 @@
       document.getElementById("chkAll").addEventListener("change", (e) => {
         const checked = e.target.checked;
         document.querySelectorAll("#winBody .chkWin").forEach(chk => {
+          if (chk.disabled) return; // 已绑定窗口不参与全选
           chk.checked = checked;
           const pk = parseInt(chk.value, 10);
           if (checked) state.winSelected.add(pk);

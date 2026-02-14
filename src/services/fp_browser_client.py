@@ -584,8 +584,18 @@ class FPBrowserClient:
             last_ip = proxy_info.get("lastIp")
             last_country = proxy_info.get("lastCountry")
 
+            # RoxyBrowser: windowSortNum（窗口序号，优先用于 UI 展示）
+            window_sort_num_raw = detail.get("windowSortNum")
+            if window_sort_num_raw is None:
+                window_sort_num_raw = r.get("windowSortNum")
+            try:
+                window_sort_num = int(window_sort_num_raw) if window_sort_num_raw not in (None, "", "-") else None
+            except Exception:
+                window_sort_num = None
+
             minimal_raw = {
                 "dirId": dir_id,
+                "windowSortNum": window_sort_num,
                 "windowName": window_name,
                 "platformUserName": platform_user,
                 "platformUrl": platform_url,
@@ -596,6 +606,7 @@ class FPBrowserClient:
             result.append(
                 {
                     "window_key": dir_id,
+                    "window_sort_num": window_sort_num,
                     "window_name": window_name,
                     "platform_account": platform_user,
                     "platform_url": platform_url,

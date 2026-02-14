@@ -72,6 +72,10 @@ class WindowInfo(BaseModel):
     space_pk: int  # BrowserSpace.id
     window_key: str  # 指纹浏览器窗口唯一标识（若无则使用 name/url 的 hash）
 
+    # 来自指纹浏览器侧的“窗口序号”（RoxyBrowser: windowSortNum）
+    # 说明：该值更接近“用户感知的窗口ID”，前端展示优先用它。
+    window_sort_num: Optional[int] = None
+
     window_name: str
     platform_account: Optional[str] = None
     platform_url: Optional[str] = None

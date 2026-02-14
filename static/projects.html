@@ -326,7 +326,8 @@
                 ${windows.map(w => `
                   <tr class="small2">
                     <td class="mono text-muted">
-                      <div>#${escapeHtml(String(w.id ?? "-"))}</div>
+                      <div>#${escapeHtml(String((w.window_sort_num ?? w.id) ?? "-"))}</div>
+                      <div class="small text-muted">pk:${escapeHtml(String(w.id ?? "-"))}</div>
                       <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
                     </td>
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>

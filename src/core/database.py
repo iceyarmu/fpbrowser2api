@@ -140,6 +140,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     space_pk INTEGER NOT NULL,
                     window_key TEXT NOT NULL,
+                    window_sort_num INTEGER,
                     window_name TEXT NOT NULL,
                     platform_account TEXT,
                     platform_url TEXT,
@@ -354,6 +355,15 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "spaces", col_name):
                         await db.execute(f"ALTER TABLE spaces ADD COLUMN {col_name} {col_type}")
+
+            # windows: window_sort_num（RoxyBrowser: windowSortNum，用于 UI 展示）
+            if await self._table_exists(db, "windows"):
+                columns_to_add = [
+                    ("window_sort_num", "INTEGER"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "windows", col_name):
+                        await db.execute(f"ALTER TABLE windows ADD COLUMN {col_name} {col_type}")
 
             # task_type_windows: 移除 max_concurrency（窗口层并发不再配置）
             if await self._table_exists(db, "task_type_windows"):
@@ -722,7 +732,11 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT * FROM windows WHERE deleted = 0 AND space_pk = ? ORDER BY window_name ASC, id ASC",
+                """
+                SELECT * FROM windows
+                WHERE deleted = 0 AND space_pk = ?
+                ORDER BY (window_sort_num IS NULL) ASC, window_sort_num ASC, window_name ASC, id ASC
+                """,
                 (space_pk,),
             )
             rows = await cur.fetchall()
@@ -750,6 +764,21 @@ class Database:
                 window_key = str(w.get("window_key") or w.get("id") or w.get("dirId") or w.get("name") or "").strip()
                 if not window_key:
                     continue
+                # window_sort_num: 优先取标准 snake_case，其次取 Roxy 的 camelCase，最后从 raw 里兜底
+                window_sort_num_raw = (
+                    w.get("window_sort_num")
+                    if w.get("window_sort_num") is not None
+                    else (w.get("windowSortNum") if w.get("windowSortNum") is not None else None)
+                )
+                if window_sort_num_raw is None:
+                    raw_obj = w.get("raw")
+                    if isinstance(raw_obj, dict):
+                        window_sort_num_raw = raw_obj.get("windowSortNum")
+                try:
+                    window_sort_num = int(window_sort_num_raw) if window_sort_num_raw not in (None, "", "-") else None
+                except Exception:
+                    window_sort_num = None
+
                 window_name = str(w.get("window_name") or w.get("name") or window_key).strip()
                 platform_account = (w.get("platform_account") or w.get("account") or w.get("username"))
                 platform_url = (w.get("platform_url") or w.get("url"))
@@ -763,12 +792,13 @@ class Database:
                 await db.execute(
                     """
                     INSERT INTO windows (
-                        space_pk, window_key, window_name,
+                        space_pk, window_key, window_sort_num, window_name,
                         platform_account, platform_url,
                         proxy_addr, proxy_country, proxy_expire_at,
                         enabled, deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     ON CONFLICT(space_pk, window_key) DO UPDATE SET
+                        window_sort_num=excluded.window_sort_num,
                         window_name=excluded.window_name,
                         platform_account=excluded.platform_account,
                         platform_url=excluded.platform_url,
@@ -785,6 +815,7 @@ class Database:
                     (
                         space_pk,
                         window_key,
+                        window_sort_num,
                         window_name,
                         platform_account,
                         platform_url,
@@ -1067,6 +1098,7 @@ class Database:
                 SELECT
                   m.*,
                   w.window_name,
+                  w.window_sort_num,
                   w.platform_account,
                   w.platform_url,
                   w.proxy_addr,
