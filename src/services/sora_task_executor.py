@@ -601,6 +601,231 @@ class SoraSession:
     sentinel_token: Optional[str] = None
     invite_code: Optional[str] = None
 
+    async def _is_cloudflare_page(self, page, *, deep: bool = False) -> bool:
+        """判断当前页面是否为 Cloudflare 拦截/挑战页。"""
+        if page is None:
+            return False
+        try:
+            u = str(getattr(page, "url", "") or "").strip()
+        except Exception:
+            u = ""
+        ul = u.lower()
+        if "/cdn-cgi/" in ul:
+            return True
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        tl = (title or "").strip().lower()
+        if "just a moment" in tl or "attention required" in tl:
+            return True
+        # 轮询等待时优先用 fast 判断；只有最终确认时才 deep 看 HTML（更耗时）
+        if not deep:
+            return False
+        try:
+            html = await page.content()
+        except Exception:
+            html = ""
+        hl = (html or "").lower()
+        if "cloudflare" in hl and ("just a moment" in hl or "/cdn-cgi/" in hl or "cf-ray" in hl):
+            return True
+        if ("turnstile" in hl or "cf-challenge" in hl) and ("/cdn-cgi/" in hl or "cloudflare" in hl):
+            return True
+        return False
+
+    async def _wait_cloudflare_auto_pass(self, page, *, max_wait_seconds: float = 10.0) -> bool:
+        """等待 Cloudflare 可能自动放行。
+
+        返回：
+        - True: 超时后仍像 Cloudflare（可考虑重启）
+        - False: 已不再像 Cloudflare（无需重启）
+        """
+        try:
+            deadline = time.time() + max(0.0, float(max_wait_seconds))
+        except Exception:
+            deadline = time.time() + 10.0
+
+        poll = 1.0
+        while time.time() < deadline:
+            try:
+                is_closed = bool(getattr(page, "is_closed", lambda: False)())
+            except Exception:
+                is_closed = False
+            if is_closed:
+                return True
+
+            try:
+                still_cf = await self._is_cloudflare_page(page, deep=False)
+            except Exception:
+                still_cf = True
+            if not still_cf:
+                return False
+
+            remain = deadline - time.time()
+            if remain <= 0:
+                break
+            try:
+                await asyncio.sleep(min(poll, max(0.1, remain)))
+            except Exception:
+                break
+        return True
+
+    async def _restart_window_and_restore_single_drafts(self, *, drafts_url: str, sora_host: str) -> Any:
+        """关闭并重开窗口，并确保只保留一个 drafts tab 且置前。"""
+        log_file = (
+            Path(self.monitor_log_path)
+            if self.monitor_log_path
+            else (Path(__file__).resolve().parents[2] / "logs.txt")
+        )
+        try:
+            append_log(log_file, "[sora][drafts] detected cloudflare interstitial, restarting fp window once")
+        except Exception:
+            pass
+
+        try:
+            await self.pw_ctx.close()
+        except Exception:
+            pass
+        try:
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+        await self.pw_ctx.ensure_open(
+            args=self.browser_open_args,
+            force_open=self.browser_force_open,
+            headless=self.browser_headless,
+            require_page=False,
+        )
+
+        ctx2 = getattr(self.pw_ctx, "context", None)
+        if ctx2 is None:
+            return None
+
+        try:
+            pages2 = list(getattr(ctx2, "pages", []) or [])
+        except Exception:
+            pages2 = []
+
+        open_pages2 = []
+        for p2 in pages2:
+            try:
+                is_closed2 = bool(getattr(p2, "is_closed", lambda: False)())
+            except Exception:
+                is_closed2 = False
+            if not is_closed2:
+                open_pages2.append(p2)
+
+        sora_pages2: list[tuple[Any, str]] = []
+        drafts_pages2: list[Any] = []
+        for p2 in open_pages2:
+            try:
+                u2 = str(getattr(p2, "url", "") or "").strip()
+            except Exception:
+                u2 = ""
+            if not u2:
+                continue
+            try:
+                host2 = (urlparse(u2).netloc or "").strip().lower()
+            except Exception:
+                host2 = ""
+            if host2 != sora_host:
+                continue
+            sora_pages2.append((p2, u2))
+            if u2.startswith(drafts_url):
+                drafts_pages2.append(p2)
+
+        drafts_page2 = drafts_pages2[0] if drafts_pages2 else None
+        if drafts_page2 is None:
+            try:
+                drafts_page2 = await ctx2.new_page()
+            except Exception:
+                return None
+        try:
+            await drafts_page2.goto(drafts_url, wait_until="domcontentloaded")
+        except Exception:
+            pass
+
+        for p2, _u2 in sora_pages2:
+            if p2 is drafts_page2:
+                continue
+            try:
+                await p2.close()
+            except Exception:
+                pass
+
+        try:
+            self.pw_ctx.page = drafts_page2
+        except Exception:
+            pass
+        try:
+            await drafts_page2.bring_to_front()
+        except Exception:
+            pass
+        try:
+            await drafts_page2.evaluate("() => { try { window.focus(); } catch(e) {} }")
+        except Exception:
+            pass
+        return drafts_page2
+
+    async def _maybe_click_login_button_if_prompted(self, page) -> bool:
+        """若页面出现未登录提示，则尝试点击 'Log in' 按钮/链接。"""
+        if page is None:
+            return False
+        phrase = "Log in to create and edit images and videos"
+        has_prompt = False
+
+        # 优先用 locator（更快），不行再用 HTML 兜底
+        try:
+            if hasattr(page, "get_by_text"):
+                loc = page.get_by_text(phrase)
+                try:
+                    has_prompt = bool(await loc.first.is_visible())
+                except Exception:
+                    try:
+                        has_prompt = (await loc.count()) > 0
+                    except Exception:
+                        has_prompt = False
+            else:
+                loc = page.locator(f"text={phrase}")
+                has_prompt = (await loc.count()) > 0
+        except Exception:
+            has_prompt = False
+
+        if not has_prompt:
+            try:
+                html = await page.content()
+                has_prompt = phrase.lower() in (html or "").lower()
+            except Exception:
+                has_prompt = False
+
+        if not has_prompt:
+            return False
+
+        # 点击 Log in（按钮优先，其次链接；最后 CSS 兜底）
+        try:
+            if hasattr(page, "get_by_role"):
+                try:
+                    btn = page.get_by_role("button", name="Log in")
+                    await btn.first.click(timeout=3000)
+                    return True
+                except Exception:
+                    pass
+                try:
+                    link = page.get_by_role("link", name="Log in")
+                    await link.first.click(timeout=3000)
+                    return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            loc2 = page.locator('button:has-text("Log in"), a:has-text("Log in")')
+            await loc2.first.click(timeout=3000)
+            return True
+        except Exception:
+            return False
+
     async def _bring_sora_drafts_to_front(self) -> None:
         """将 Sora drafts 页面置前，并确保同一站点只保留一个 drafts tab。
 
@@ -612,274 +837,115 @@ class SoraSession:
         sora_host = "sora.chatgpt.com"
 
         async with self._bring_drafts_lock:
-            ctx = getattr(self.pw_ctx, "context", None)
-            if ctx is None:
-                return
-
-            try:
-                pages = list(getattr(ctx, "pages", []) or [])
-            except Exception:
-                pages = []
-
-            open_pages = []
-            for p in pages:
-                try:
-                    is_closed = bool(getattr(p, "is_closed", lambda: False)())
-                except Exception:
-                    is_closed = False
-                if not is_closed:
-                    open_pages.append(p)
-
-            # 找出同站点(sora.chatgpt.com)的页面，并挑一个 drafts 作为保留页
-            sora_pages: list[tuple[Any, str]] = []
-            drafts_pages: list[Any] = []
-            for p in open_pages:
-                try:
-                    u = str(getattr(p, "url", "") or "").strip()
-                except Exception:
-                    u = ""
-                if not u:
-                    continue
-                try:
-                    host = (urlparse(u).netloc or "").strip().lower()
-                except Exception:
-                    host = ""
-                if host != sora_host:
-                    continue
-                sora_pages.append((p, u))
-                if u.startswith(drafts_url):
-                    drafts_pages.append(p)
-
-            drafts_page = drafts_pages[0] if drafts_pages else None
-            if drafts_page is None:
-                # 没有 drafts：新开一个
-                try:
-                    drafts_page = await ctx.new_page()
-                except Exception:
+            async with self._pw_driver_guard():
+                ctx = getattr(self.pw_ctx, "context", None)
+                if ctx is None:
                     return
+
                 try:
-                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    pages = list(getattr(ctx, "pages", []) or [])
                 except Exception:
-                    # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
-                    pass
+                    pages = []
 
-            # 关闭其它 sora.chatgpt.com 的页面（包括重复 drafts），只保留 drafts_page
-            for p, u in sora_pages:
-                if p is drafts_page:
-                    continue
-                try:
-                    await p.close()
-                except Exception:
-                    pass
-
-            # 强制将 drafts_page 置前并作为后续操作的统一 page
-            try:
-                self.pw_ctx.page = drafts_page
-            except Exception:
-                pass
-            try:
-                await drafts_page.bring_to_front()
-            except Exception:
-                pass
-            try:
-                cur_u = str(getattr(drafts_page, "url", "") or "").strip()
-            except Exception:
-                cur_u = ""
-
-            try:
-                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-            except Exception:
-                pass
-
-            try:
-                await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
-            except Exception:
-                pass
-
-            await asyncio.sleep(1.0)
-
-            # Cloudflare interstitial 自愈：如果 drafts 实际被 CF 拦截（Just a moment... / cdn-cgi），
-            # 则先等待一段时间让其自动放行；若超时仍是 Cloudflare，再关闭指纹浏览器窗口并重开一次，
-            # 确保窗口里只保留一个 drafts tab 且置前。
-            async def _is_cloudflare_page(p, *, deep: bool = False) -> bool:
-                try:
-                    u = str(getattr(p, "url", "") or "").strip()
-                except Exception:
-                    u = ""
-                ul = u.lower()
-                if "/cdn-cgi/" in ul:
-                    return True
-                try:
-                    title = await p.title()
-                except Exception:
-                    title = ""
-                tl = (title or "").strip().lower()
-                if "just a moment" in tl or "attention required" in tl:
-                    return True
-                # 轮询等待时优先用 fast 判断；只有最终确认时才 deep 看 HTML
-                if not deep:
-                    return False
-                try:
-                    html = await p.content()
-                except Exception:
-                    html = ""
-                hl = (html or "").lower()
-                if "cloudflare" in hl and ("just a moment" in hl or "/cdn-cgi/" in hl or "cf-ray" in hl):
-                    return True
-                if ("turnstile" in hl or "cf-challenge" in hl) and ("/cdn-cgi/" in hl or "cloudflare" in hl):
-                    return True
-                return False
-
-            async def _wait_cloudflare_auto_pass(p, *, max_wait_seconds: float = 10.0) -> bool:
-                """等待 Cloudflare 可能自动放行。
-
-                返回：
-                - True: 超时后仍像 Cloudflare（可考虑重启）
-                - False: 已不再像 Cloudflare（无需重启）
-                """
-                try:
-                    deadline = time.time() + max(0.0, float(max_wait_seconds))
-                except Exception:
-                    deadline = time.time() + 10.0
-
-                poll = 1.0
-                while time.time() < deadline:
+                open_pages = []
+                for p in pages:
                     try:
                         is_closed = bool(getattr(p, "is_closed", lambda: False)())
                     except Exception:
                         is_closed = False
-                    if is_closed:
-                        return True
+                    if not is_closed:
+                        open_pages.append(p)
 
+                # 找出同站点(sora.chatgpt.com)的页面，并挑一个 drafts 作为保留页
+                sora_pages: list[tuple[Any, str]] = []
+                drafts_pages: list[Any] = []
+                for p in open_pages:
                     try:
-                        still_cf = await _is_cloudflare_page(p, deep=False)
+                        u = str(getattr(p, "url", "") or "").strip()
                     except Exception:
-                        still_cf = True
-                    if not still_cf:
-                        return False
-
-                    remain = deadline - time.time()
-                    if remain <= 0:
-                        break
-                    try:
-                        await asyncio.sleep(min(poll, max(0.1, remain)))
-                    except Exception:
-                        break
-                return True
-
-            async def _restart_window_and_restore_single_drafts() -> Any:
-                log_file = (
-                    Path(self.monitor_log_path)
-                    if self.monitor_log_path
-                    else (Path(__file__).resolve().parents[2] / "logs.txt")
-                )
-                try:
-                    append_log(log_file, "[sora][drafts] detected cloudflare interstitial, restarting fp window once")
-                except Exception:
-                    pass
-
-                try:
-                    await self.pw_ctx.close()
-                except Exception:
-                    pass
-                try:
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass
-                await self.pw_ctx.ensure_open(
-                    args=self.browser_open_args,
-                    force_open=self.browser_force_open,
-                    headless=self.browser_headless,
-                    require_page=False,
-                )
-
-                ctx2 = getattr(self.pw_ctx, "context", None)
-                if ctx2 is None:
-                    return None
-
-                try:
-                    pages2 = list(getattr(ctx2, "pages", []) or [])
-                except Exception:
-                    pages2 = []
-
-                open_pages2 = []
-                for p2 in pages2:
-                    try:
-                        is_closed2 = bool(getattr(p2, "is_closed", lambda: False)())
-                    except Exception:
-                        is_closed2 = False
-                    if not is_closed2:
-                        open_pages2.append(p2)
-
-                sora_pages2: list[tuple[Any, str]] = []
-                drafts_pages2: list[Any] = []
-                for p2 in open_pages2:
-                    try:
-                        u2 = str(getattr(p2, "url", "") or "").strip()
-                    except Exception:
-                        u2 = ""
-                    if not u2:
+                        u = ""
+                    if not u:
                         continue
                     try:
-                        host2 = (urlparse(u2).netloc or "").strip().lower()
+                        host = (urlparse(u).netloc or "").strip().lower()
                     except Exception:
-                        host2 = ""
-                    if host2 != sora_host:
+                        host = ""
+                    if host != sora_host:
                         continue
-                    sora_pages2.append((p2, u2))
-                    if u2.startswith(drafts_url):
-                        drafts_pages2.append(p2)
+                    sora_pages.append((p, u))
+                    if u.startswith(drafts_url):
+                        drafts_pages.append(p)
 
-                drafts_page2 = drafts_pages2[0] if drafts_pages2 else None
-                if drafts_page2 is None:
+                drafts_page = drafts_pages[0] if drafts_pages else None
+                if drafts_page is None:
+                    # 没有 drafts：新开一个
                     try:
-                        drafts_page2 = await ctx2.new_page()
+                        drafts_page = await ctx.new_page()
                     except Exception:
-                        return None
-                try:
-                    await drafts_page2.goto(drafts_url, wait_until="domcontentloaded")
-                except Exception:
-                    pass
+                        return
+                    try:
+                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
+                        pass
 
-                for p2, _u2 in sora_pages2:
-                    if p2 is drafts_page2:
+                # 关闭其它 sora.chatgpt.com 的页面（包括重复 drafts），只保留 drafts_page
+                for p, u in sora_pages:
+                    if p is drafts_page:
                         continue
                     try:
-                        await p2.close()
+                        await p.close()
                     except Exception:
                         pass
 
+                # 强制将 drafts_page 置前并作为后续操作的统一 page
                 try:
-                    self.pw_ctx.page = drafts_page2
+                    self.pw_ctx.page = drafts_page
                 except Exception:
                     pass
                 try:
-                    await drafts_page2.bring_to_front()
+                    await drafts_page.bring_to_front()
                 except Exception:
                     pass
                 try:
-                    await drafts_page2.evaluate("() => { try { window.focus(); } catch(e) {} }")
+                    cur_u = str(getattr(drafts_page, "url", "") or "").strip()
                 except Exception:
-                    pass
-                return drafts_page2
+                    cur_u = ""
 
-            # 只尝试一次自愈，避免死循环
-            recovered = False
-            try:
-                maybe_cf = await _is_cloudflare_page(drafts_page, deep=False)
-                if maybe_cf:
-                    still_cf_after_wait = await _wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=10.0)
-                    if still_cf_after_wait and await _is_cloudflare_page(drafts_page, deep=True):
-                        recovered = True
-                        new_page = await _restart_window_and_restore_single_drafts()
-                        if new_page is not None:
-                            drafts_page = new_page
-            except Exception:
-                recovered = False
-
-            if recovered:
                 try:
-                    _ = await _is_cloudflare_page(drafts_page, deep=False)
+                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                except Exception:
+                    pass
+
+                try:
+                    await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
+                except Exception:
+                    pass
+
+                await asyncio.sleep(1.0)
+
+                # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
+                try:
+                    clicked = await self._maybe_click_login_button_if_prompted(drafts_page)
+                    if clicked:
+                        try:
+                            await asyncio.sleep(0.8)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Cloudflare interstitial 自愈：先等最多 10 秒自动放行，超时仍是 Cloudflare 才重启一次。
+                try:
+                    maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
+                    if maybe_cf:
+                        still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=10.0)
+                        if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
+                            new_page = await self._restart_window_and_restore_single_drafts(
+                                drafts_url=drafts_url, sora_host=sora_host
+                            )
+                            if new_page is not None:
+                                drafts_page = new_page
                 except Exception:
                     pass
 
