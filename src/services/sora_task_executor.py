@@ -421,6 +421,53 @@ async def _sora_api_post_project_y_post_pw(
     return obj if isinstance(obj, dict) else {}
 
 
+async def _sora_ui_fill_prompt_textarea(page, *, prompt: Any, log_file: Path) -> bool:
+    """模拟用户在 textarea 输入 prompt（仅输入，不点击任何按钮；发送由后续 post 接口完成）。"""
+    try:
+        prompt_s = str(prompt or "")
+    except Exception:
+        prompt_s = ""
+    prompt_s = prompt_s.strip()
+    if not prompt_s:
+        return False
+
+    # 选择器按“更精确 -> 更通用”降级
+    selectors = [
+        'textarea[data-testid="prompt-textarea"]',
+        'textarea[placeholder*="Describe"]',
+        "textarea",
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            await loc.first.wait_for(state="visible", timeout=2500)
+            try:
+                await loc.first.click(timeout=1500)
+            except Exception:
+                # click 不是必须；focus 失败也继续尝试 fill
+                pass
+
+            # 优先用 fill（不会触发点击发送）
+            await loc.first.fill(prompt_s, timeout=5000)
+
+            ok = False
+            try:
+                v = await loc.first.input_value(timeout=1500)
+                if str(v or "").strip():
+                    ok = True
+            except Exception:
+                ok = False
+
+            if ok:
+                append_log(log_file, f"[sora][ui] prompt filled into textarea selector={sel!r} len={len(prompt_s)}")
+                return True
+        except Exception:
+            continue
+
+    append_log(log_file, "[sora][ui] prompt fill skipped: textarea not found/visible")
+    return False
+
+
 async def _sora_create_task_pw(
     *,
     page,
@@ -470,50 +517,7 @@ async def _sora_create_task_pw(
     if not sentinel_token:
         raise RuntimeError("未能生成 SentinelToken，触发了429")
 
-    # 模拟用户在 textarea 输入 prompt（仅输入，不点击任何按钮；发送由后续 post 接口完成）
-    try:
-        prompt_s = str(prompt or "")
-    except Exception:
-        prompt_s = ""
-    prompt_s = prompt_s.strip()
-    if prompt_s:
-        filled = False
-        # 选择器按“更精确 -> 更通用”降级
-        selectors = [
-            'textarea[data-testid="prompt-textarea"]',
-            'textarea[placeholder*="Describe"]',
-            "textarea",
-        ]
-        for sel in selectors:
-            try:
-                loc = page.locator(sel)
-                await loc.first.wait_for(state="visible", timeout=2500)
-                try:
-                    await loc.first.click(timeout=1500)
-                except Exception:
-                    # click 不是必须；focus 失败也继续尝试 fill
-                    pass
-
-                # 优先用 fill（不会触发点击发送）
-                await loc.first.fill(prompt_s, timeout=5000)
-
-                ok = False
-                try:
-                    v = await loc.first.input_value(timeout=1500)
-                    if str(v or "").strip():
-                        ok = True
-                except Exception:
-                    ok = False
-
-                if ok:
-                    append_log(log_file, f"[sora][ui] prompt filled into textarea selector={sel!r} len={len(prompt_s)}")
-                    filled = True
-                    break
-            except Exception:
-                continue
-
-        if not filled:
-            append_log(log_file, "[sora][ui] prompt fill skipped: textarea not found/visible")
+    await _sora_ui_fill_prompt_textarea(page, prompt=prompt, log_file=log_file)
 
     inpaint_items: list[Dict[str, Any]] = []
     if first_image_url:
@@ -1363,8 +1367,13 @@ class SoraSession:
                         self.oai_device_id = str(uuid4())
 
                 # bearer_token 优先复用会话缓存；缺失则 bring_to_front + refresh 一次后再抓取
+                async with self._bring_drafts_lock:
+                    if self.pw_ctx.page is None:
+                        raise RuntimeError("page 未初始化")
+                    await _sora_ui_fill_prompt_textarea(self.pw_ctx.page, prompt=prompt, log_file=log_file)
+
                 if not self.bearer_token:
-                    await self._bring_sora_drafts_to_front()
+                    await self._bring_sora_drafts_to_front(refresh_target=False)
                     async with self._bring_drafts_lock:
                         if self.pw_ctx.page is None:
                             raise RuntimeError("page 未初始化")
