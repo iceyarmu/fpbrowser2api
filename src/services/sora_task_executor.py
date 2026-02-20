@@ -1802,7 +1802,8 @@ class SoraSession:
             raise RuntimeError(f"发布草稿失败,生成视频包含违规内容")
 
         share_url = downloadable_url or f"https://sora.chatgpt.com/p/{post_id}"
-        watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
+        # https://oscdn2.dyysy.com/MP4/{post_id}.mp4
+        watermark_free_url = ""
         return {
             "task_id": str(task_id),
             "generation_id": generation_id,
