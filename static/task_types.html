@@ -31,6 +31,8 @@
       .invite-click { cursor: pointer; user-select: none; }
       .invite-click:hover { text-decoration: underline; }
       .enabled-click { cursor: pointer; user-select: none; }
+      .token-click { cursor: pointer; user-select: none; }
+      .token-click:hover { text-decoration: underline; }
     </style>
   </head>
   <body class="bg-light">
@@ -175,9 +177,8 @@
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口名称排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>空间</th>
-                      <th class="quota-sort" id="thQuota" title="点击按 remaining_quota 排序">额度 <span class="text-muted" id="quotaSortHint">↕</span></th>
-                      <th>余额</th>
-                      <th>重置时间</th>
+                      <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted" id="balanceSortHint">↕</span></th>
+                      <th>AccessToken / 过期</th>
                       <th>邀请码</th>
                       <th>状态</th>
                       <th>占用</th>
@@ -325,6 +326,37 @@
       </div>
     </div>
 
+    <!-- Convert Session Token Modal -->
+    <div class="modal fade" id="tokenModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">获取 access_token / 过期时间</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="tokenEditMappingId" />
+            <div class="small text-muted mb-2" id="tokenEditHint">-</div>
+            <div class="row g-2">
+              <div class="col-12">
+                <label class="form-label mono">access_token</label>
+                <input class="form-control mono" id="tokenAccessToken" placeholder="可选：手工输入 access_token（填写则仅保存，不自动获取）" />
+              </div>
+              <div class="col-12">
+                <label class="form-label mono">过期时间（expires）</label>
+                <input class="form-control mono" id="tokenExpires" placeholder="可选：例如 2026-02-20T12:34:56.000Z" />
+                <div class="form-text">留空 access_token 时，将在对应指纹浏览器窗口内自动请求 <span class="mono">/api/auth/session</span> 获取并保存（走该窗口代理）。</div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" id="btnConvertToken">保存（留空则自动获取）</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Manual Close Hint Modal (countdown only; backend does actual countdown close) -->
     <div class="modal fade" id="closeHintModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
@@ -381,6 +413,7 @@
       const errorModal = new bootstrap.Modal("#errorModal");
       const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
+      const tokenModal = new bootstrap.Modal("#tokenModal");
 
       let state = {
         types: [],
@@ -428,6 +461,13 @@
         const c = String(code || "");
         const t = (state.types || []).find(x => String(x.code || "") === c);
         return String(t?.name || c || "-");
+      }
+
+      function maskToken(tok) {
+        const s = String(tok || "").trim();
+        if (!s) return "";
+        if (s.length <= 16) return s.slice(0, 6) + "...";
+        return s.slice(0, 10) + "...(masked)..." + s.slice(-6);
       }
 
       const LS_KEYS_UI = {
@@ -802,7 +842,7 @@
       async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -874,7 +914,7 @@
           hintEl.textContent = ui.mappingSortDir === "asc" ? "↑" : "↓";
           hintEl.className = "text-primary";
         };
-        mk(document.getElementById("quotaSortHint"), ui.mappingSortKey === "remaining_quota");
+        mk(document.getElementById("balanceSortHint"), ui.mappingSortKey === "remaining_quota");
         mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
       }
@@ -901,7 +941,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="11" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -928,19 +968,30 @@
               <div class="mono">${escapeHtml(m.space_id || "-")}</div>
               <div class="text-muted">${escapeHtml(m.space_name || "-")}</div>
             </td>
-            <td class="mono">
+            <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div class="fw-semibold quota-click" title="点击按额度排序" data-role="remainingQuota" data-mid="${m.id}">${m.remaining_quota}</div>
+                <div class="fw-semibold quota-click" title="点击按额度排序" data-role="remainingQuota" data-mid="${m.id}">
+                  额度: <span class="fw-semibold">${m.remaining_quota}</span>
+                </div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
               </div>
-            </td>
-            <td class="mono cell-stack">
               <div>remaining: <span class="fw-semibold">${m.sora_remaining_count ?? "-"}</span></div>
               <div>rate_limit: ${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">YES</span>` : `<span class="badge text-bg-success">NO</span>`}</div>
-              <div>reset(s): <span class="fw-semibold">${m.sora_access_resets_in_seconds ?? "-"}</span></div>
+              <div>重置时间: <span class="fw-semibold">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
-            <td class="mono">
-              <div class="fw-semibold">${escapeHtml(m.cooldown_until || "-")}</div>
+            <td class="mono cell-stack">
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div
+                  class="token-click truncate-1"
+                  style="max-width: 360px;"
+                  title="点击复制 access_token"
+                  data-role="accessToken"
+                  data-mid="${m.id}"
+                  data-token="${escapeHtml(m.sora_access_token || "")}"
+                >access_token: <span class="fw-semibold">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="获取/更新 access_token" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
+              </div>
+              <div>expires: <span class="fw-semibold">${escapeHtml(m.sora_access_expires || "-")}</span></div>
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -994,6 +1045,17 @@
         body.querySelectorAll('[data-role="remainingQuota"]').forEach(el => {
           el.addEventListener("click", () => {
             toggleQuotaSort();
+          });
+        });
+
+        // 点击 access_token：复制完整 token
+        body.querySelectorAll('[data-role="accessToken"]').forEach(el => {
+          el.addEventListener("click", () => {
+            const tok = String(el.dataset.token || "").trim();
+            if (!tok) return toast("access_token 为空", "warning");
+            copyToClipboard(tok)
+              .then(() => toast("已复制 access_token", "success"))
+              .catch(() => toast("复制失败，请手动复制", "error"));
           });
         });
 
@@ -1069,6 +1131,9 @@
         if (act === "refreshInvite") {
           return refreshInvite(mappingId);
         }
+        if (act === "convertAccessToken") {
+          return openTokenModal(mappingId);
+        }
         if (act === "resetConsecutiveErrors") {
           return resetConsecutiveErrors(mappingId);
         }
@@ -1118,6 +1183,46 @@
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "请求失败");
         return d;
+      }
+
+      function openTokenModal(mappingId) {
+        const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+        document.getElementById("tokenEditMappingId").value = String(mappingId);
+        const hint = `窗口：${m?.window_name || "-"} · 账号：${m?.platform_account || "-"} · mapping_id=${String(mappingId)}`;
+        const hintEl = document.getElementById("tokenEditHint");
+        if (hintEl) hintEl.textContent = hint;
+        document.getElementById("tokenAccessToken").value = String(m?.sora_access_token || "");
+        document.getElementById("tokenExpires").value = String(m?.sora_access_expires || "");
+        tokenModal.show();
+      }
+
+      async function convertAndSaveToken() {
+        const btn = document.getElementById("btnConvertToken");
+        try {
+          const mappingId = parseInt(document.getElementById("tokenEditMappingId").value, 10);
+          if (Number.isNaN(mappingId)) throw new Error("mapping_id 无效");
+          const access_token = (document.getElementById("tokenAccessToken").value || "").trim();
+          const expires = (document.getElementById("tokenExpires").value || "").trim();
+          setBtnBusy(btn, true, { loadingText: "保存中" });
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+            method: "POST",
+            body: { access_token: access_token || null, expires: expires || null },
+          });
+          const tok = String(d?.access_token || "").trim();
+          const exp = String(d?.expires || "").trim();
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (m) {
+            m.sora_access_token = tok || null;
+            m.sora_access_expires = exp || null;
+          }
+          renderMappings();
+          toast((access_token ? "已保存" : "已自动获取并保存"), "success");
+          tokenModal.hide();
+        } catch (e) {
+          toast(e.message || "保存失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
       }
 
       async function manualOpenWindow(mappingId, fromEl) {
@@ -1339,20 +1444,21 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
       document.getElementById("btnSaveMapping").addEventListener("click", saveMappingFromModal);
+      document.getElementById("btnConvertToken").addEventListener("click", convertAndSaveToken);
       document.getElementById("typeSelect").addEventListener("change", (e) => {
         const v = e.target.value;
         if (!v) {
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
@@ -1378,12 +1484,8 @@
           const v = (d?.remaining_quota ?? 0);
           const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
           if (m) m.remaining_quota = v;
-          // 如果当前按额度排序，为避免“数值变了但顺序没变”的错觉，直接重渲染
-          if (ui.mappingSortKey === "remaining_quota") renderMappings();
-          else {
-            const el = document.querySelector(`[data-role="remainingQuota"][data-mid="${mappingId}"]`);
-            if (el) el.textContent = String(v);
-          }
+          // 余额信息列包含富文本结构：为避免局部更新破坏 DOM，统一重渲染
+          renderMappings();
           toast(`已刷新：remaining_quota=${v}`, "success");
         } catch (e) {
           // 如果后端提示“已禁用”，这里同步 UI（兼容定时/手动场景）
@@ -1628,7 +1730,7 @@
       });
       document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
       document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", () => openAutoRefreshErrorModal({ mappingId: null }));
-      document.getElementById("thQuota")?.addEventListener("click", toggleQuotaSort);
+      document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
       document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));
 

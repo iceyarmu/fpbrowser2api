@@ -231,6 +231,8 @@ class Database:
                     sora_rate_limit_reached BOOLEAN DEFAULT 0,
                     sora_access_resets_in_seconds INTEGER DEFAULT 0,
                     sora_invite_code TEXT,
+                    sora_access_token TEXT,
+                    sora_access_expires TEXT,
                     -- 额度重置时间点（来自 nf/check：now + access_resets_in_seconds）
                     cooldown_until TIMESTAMP,
                     -- 连续错误熔断冷却时间（与 cooldown_until 区分）
@@ -518,6 +520,8 @@ class Database:
                     ("sora_rate_limit_reached", "BOOLEAN DEFAULT 0"),
                     ("sora_access_resets_in_seconds", "INTEGER DEFAULT 0"),
                     ("sora_invite_code", "TEXT"),
+                    ("sora_access_token", "TEXT"),
+                    ("sora_access_expires", "TEXT"),
                     ("error_cooldown_until", "TIMESTAMP"),
                 ]
                 for col_name, col_type in columns_to_add:
@@ -1556,6 +1560,8 @@ class Database:
         sora_rate_limit_reached: Optional[bool] = None,
         sora_access_resets_in_seconds: Optional[int] = None,
         sora_invite_code: Optional[str] = None,
+        sora_access_token: Optional[str] = None,
+        sora_access_expires: Optional[str] = None,
         cooldown_until: Optional[str] = None,  # ISO string or None
         error_cooldown_until: Optional[str] = None,  # ISO string or None
         total_errors: Optional[int] = None,
@@ -1584,6 +1590,10 @@ class Database:
             _set("sora_access_resets_in_seconds", int(sora_access_resets_in_seconds))
         if sora_invite_code is not None:
             _set("sora_invite_code", (sora_invite_code or "").strip() or None)
+        if sora_access_token is not None:
+            _set("sora_access_token", (sora_access_token or "").strip() or None)
+        if sora_access_expires is not None:
+            _set("sora_access_expires", (sora_access_expires or "").strip() or None)
         if cooldown_until is not None:
             _set("cooldown_until", cooldown_until if cooldown_until else None)
         if error_cooldown_until is not None:

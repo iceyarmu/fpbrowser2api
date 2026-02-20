@@ -30,6 +30,8 @@ class PickedWindow:
     browser_base_url: str
     browser_access_key: Optional[str]
     space_id: str
+    sora_access_token: Optional[str] = None
+    sora_access_expires: Optional[str] = None
 
 
 class TaskService:
@@ -98,6 +100,8 @@ class TaskService:
             browser_base_url=str(r.get("lan_addr") or ""),
             browser_access_key=r.get("access_key"),
             space_id=str(r.get("space_id") or ""),
+            sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
+            sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
         )
         if not picked.window_key:
             try:
@@ -134,6 +138,8 @@ class TaskService:
                             space_id=picked.space_id,
                             window_key=picked.window_key,
                             timeout_seconds=float(picked.timeout_seconds),
+                            access_token=picked.sora_access_token,
+                            access_expires=picked.sora_access_expires,
                         ),
                         timeout=float(picked.timeout_seconds),
                     )

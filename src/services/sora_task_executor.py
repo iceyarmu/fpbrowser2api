@@ -125,6 +125,38 @@ def _sora_backend_url_from_target(target_url: str, path: str) -> str:
     except Exception:
         return "https://sora.chatgpt.com" + str(path)
 
+async def sora_fetch_access_token_in_window(
+    *,
+    sess: "SoraSession",
+    target_url: str = "https://sora.chatgpt.com/drafts",
+) -> Dict[str, Any]:
+    """在“指纹浏览器窗口页面上下文”里调用 `/api/auth/session` 获取 access_token + expires。
+
+    说明：
+    - 使用 `page_fetch_json`（credentials: include），会自动携带该窗口 Cookie（含代理/指纹网络栈）。
+    - 不允许手工传 Cookie header（page_fetch_tx 会屏蔽 cookie/ua/origin/referer 等头）。
+    """
+    if sess.pw_ctx.page is None:
+        raise RuntimeError("page 未初始化")
+
+    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
+    await sess._bring_sora_drafts_to_front()
+
+    log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+    url = "https://sora.chatgpt.com/api/auth/session"
+    tx = await page_fetch_json(sess.pw_ctx.page, url=url, method="GET", headers={"Accept": "application/json"}, json_data=None, log_file=log_file)
+    data = tx.get("_json")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"读取 session 失败：status={tx.get('status')} body={safe_trim(str(tx.get('response_body') or ''), 500)!r}")
+
+    access_token = str(data.get("accessToken") or "").strip() or None
+    expires = str(data.get("expires") or "").strip() or None
+    user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    email = str((user or {}).get("email") or "").strip() or None
+    if not access_token:
+        raise RuntimeError("读取 session 失败：响应缺少 accessToken（请确认窗口已登录 Sora）")
+    return {"access_token": access_token, "expires": expires, "email": email}
+
 
 async def _pw_get_user_agent(page) -> Optional[str]:
     try:
@@ -655,10 +687,28 @@ class SoraSession:
 
     # 鉴权信息（从指纹浏览器网络抓取）
     bearer_token: Optional[str] = None
+    # 由管理台转换并写入 DB 的 access_token（优先使用）
+    access_token: Optional[str] = None
+    access_expires: Optional[str] = None
     user_agent: Optional[str] = None
     oai_device_id: Optional[str] = None
     sentinel_token: Optional[str] = None
     invite_code: Optional[str] = None
+
+    def set_access_token(self, access_token: Optional[str], expires: Optional[str] = None) -> None:
+        tok = str(access_token or "").strip() or None
+        exp = str(expires or "").strip() or None
+        self.access_token = tok
+        self.access_expires = exp
+        # 兼容旧代码路径：依旧使用 bearer_token 字段生成 Authorization 头
+        if tok:
+            self.bearer_token = tok
+
+    def _get_bearer_token_required(self) -> str:
+        tok = str(self.access_token or "").strip() or (str(self.bearer_token or "").strip() or "")
+        if not tok:
+            raise RuntimeError("缺少 access_token（请在任务类型管理页为该窗口转换并保存 access_token）")
+        return tok
 
     async def _is_cloudflare_page(self, page, *, deep: bool = False) -> bool:
         """判断当前页面是否为 Cloudflare 拦截/挑战页。"""
@@ -1230,7 +1280,7 @@ class SoraSession:
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-            token = await self._ensure_bearer_token(target_url=target_url, log_file=log_file)
+            token = self._get_bearer_token_required()
             url = _sora_backend_url_from_target(target_url, "/backend/nf/check")
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
             tx = await page_fetch_json(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
@@ -1261,7 +1311,7 @@ class SoraSession:
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-            token = await self._ensure_bearer_token(target_url=target_url, log_file=log_file)
+            token = self._get_bearer_token_required()
             url = _sora_backend_url_from_target(target_url, "/backend/project_y/invite/mine")
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
             tx = await page_fetch_tx(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
@@ -1296,6 +1346,9 @@ class SoraSession:
     async def _ensure_bearer_token(self, *, target_url: str, log_file: Path) -> str:
         if self.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
+        if self.access_token:
+            self.bearer_token = self.access_token
+            return str(self.access_token)
         if self.bearer_token:
             return str(self.bearer_token)
         try:
@@ -1493,13 +1546,14 @@ class SoraSession:
                     return
 
                 log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-                if not self.bearer_token:
+                if not (self.access_token or self.bearer_token):
                     for tid, w in list(self.watchers.items()):
                         if not w.future.done():
-                            w.future.set_exception(RuntimeError("缺少 bearer_token，无法轮询 pending（create 未成功抓取鉴权信息）"))
+                            w.future.set_exception(RuntimeError("缺少 access_token，无法轮询 pending（请在管理台为该窗口转换并保存 access_token）"))
                         self.watchers.pop(tid, None)
                     return
 
+                token = self._get_bearer_token_required()
                 try:
                     pending_url = _sora_backend_url_from_target(
                         getattr(self.pw_ctx.page, "url", "") or "https://sora.chatgpt.com", "/backend/nf/pending/v2"
@@ -1508,7 +1562,7 @@ class SoraSession:
                     pending_url = "https://sora.chatgpt.com/backend/nf/pending/v2"
 
                 headers: Dict[str, str] = {
-                    "Authorization": f"Bearer {self.bearer_token}",
+                    "Authorization": f"Bearer {token}",
                     "OAI-Language": "en-US",
                     "OAI-Device-Id": str(self.oai_device_id or ""),
                 }
@@ -1569,7 +1623,7 @@ class SoraSession:
                             drafts = await _sora_api_get_video_drafts_pw(
                                 self.pw_ctx.page,
                                 target_url=str(getattr(self.pw_ctx.page, "url", "") or "https://sora.chatgpt.com/drafts"),
-                                bearer_token=str(self.bearer_token or ""),
+                                bearer_token=str(token),
                                 limit=15,
                                 log_file=log_file,
                             )
@@ -1621,8 +1675,7 @@ class SoraSession:
         await self._bring_sora_drafts_to_front()
         
         log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-        if not self.bearer_token:
-            raise RuntimeError("缺少 bearer_token，无法查询 drafts/发布")
+        token = self._get_bearer_token_required()
 
 
         def _get_item_task_id(it: Dict[str, Any]) -> str:
@@ -1660,7 +1713,7 @@ class SoraSession:
                     drafts = await _sora_api_get_video_drafts_pw(
                         self.pw_ctx.page,
                         target_url=target_url,
-                        bearer_token=str(self.bearer_token),
+                        bearer_token=str(token),
                         limit=int(drafts_limit),
                         log_file=log_file,
                     )
@@ -1805,6 +1858,8 @@ async def sora_gen_video(
     space_id: str,
     window_key: str,
     timeout_seconds: float,
+    access_token: Optional[str] = None,
+    access_expires: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Sora 生视频：复用同一指纹浏览器窗口 + Playwright(CDP) 轻量连接，拆分“创建任务”和“进度轮询”。"""
     payload = payload or {}
@@ -1833,6 +1888,12 @@ async def sora_gen_video(
         space_id=space_id,
         window_key=window_key,
     )
+    # 由管理台预先转换并写入 DB 的 access_token：直接写入会话，避免抓包/ensure
+    try:
+        if access_token:
+            sess.set_access_token(access_token, access_expires)
+    except Exception:
+        pass
 
     await progress_cb(0, {"stage": "create_task"})
     task_id, _create_tx = await sess.create_task(

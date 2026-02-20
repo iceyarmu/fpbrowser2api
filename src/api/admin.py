@@ -127,6 +127,11 @@ class UpdateTaskTypeWindowRequest(BaseModel):
     consecutive_errors: Optional[int] = Field(default=None, ge=0, le=1000000)
 
 
+class UpsertSoraAccessTokenRequest(BaseModel):
+    access_token: Optional[str] = None
+    expires: Optional[str] = None
+
+
 class UpdateWindowProxyRequest(BaseModel):
     """在指纹浏览器侧修改某个窗口的代理配置（通过本地已保存的 proxy_id 选择）。"""
 
@@ -855,6 +860,10 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
 
     sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
     try:
+        sora_ctx.set_access_token(ctx_row.get("sora_access_token"), ctx_row.get("sora_access_expires"))
+    except Exception:
+        pass
+    try:
         info = await sora_ctx.api_invite_mine(target_url="https://sora.chatgpt.com/drafts")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"刷新邀请码失败：{e}")
@@ -868,6 +877,61 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
         "redeemed_count": info.get("redeemed_count"),
         "total_count": info.get("total_count"),
     }
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/convert-access-token")
+async def convert_sora_session_token_to_access_token(
+    mapping_id: int,
+    req: UpsertSoraAccessTokenRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """写入/自动获取并写入 access_token + expires 到 mapping。
+
+    规则：
+    - 若请求携带 access_token（非空）：直接写入 DB（不发起自动获取）。
+    - 若 access_token 为空：使用指纹浏览器对应窗口，在页面上下文内请求 `/api/auth/session` 获取并写入。
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    input_token = str(req.access_token or "").strip() or None
+    input_expires = str(req.expires or "").strip() or None
+
+    if input_token:
+        await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=input_token, sora_access_expires=input_expires)
+        return {"success": True, "mapping_id": mapping_id, "access_token": input_token, "expires": input_expires, "source": "manual"}
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    try:
+        from ..services.sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window  # type: ignore
+
+        sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        info = await sora_fetch_access_token_in_window(sess=sora_ctx, target_url="https://sora.chatgpt.com/drafts")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
+
+    access_token = str((info or {}).get("access_token") or "").strip() or None
+    expires = str((info or {}).get("expires") or "").strip() or None
+    if not access_token:
+        raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 access_token")
+
+    await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
+    try:
+        sora_ctx.set_access_token(access_token, expires)
+    except Exception:
+        pass
+    return {"success": True, "mapping_id": mapping_id, "access_token": access_token, "expires": expires, "source": "window"}
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
