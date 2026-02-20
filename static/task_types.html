@@ -470,6 +470,35 @@
         return s.slice(0, 10) + "...(masked)..." + s.slice(-6);
       }
 
+      function formatDateTimeShanghai(v) {
+        const s = String(v || "").trim();
+        if (!s) return "-";
+        const d = new Date(s);
+        if (Number.isNaN(d.getTime())) return s;
+        try {
+          const dtf = new Intl.DateTimeFormat("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          });
+          const parts = dtf.formatToParts(d).reduce((acc, p) => {
+            acc[p.type] = p.value;
+            return acc;
+          }, {});
+          return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+        } catch {
+          const ms = d.getTime() + 8 * 60 * 60 * 1000;
+          const c = new Date(ms);
+          const pad2 = (n) => String(n).padStart(2, "0");
+          return `${c.getUTCFullYear()}-${pad2(c.getUTCMonth() + 1)}-${pad2(c.getUTCDate())} ${pad2(c.getUTCHours())}:${pad2(c.getUTCMinutes())}:${pad2(c.getUTCSeconds())}`;
+        }
+      }
+
       const LS_KEYS_UI = {
         typeConfigCollapsed: `${LS_PREFIX}task_types.type_config_collapsed`,
         mappingSortKey: `${LS_PREFIX}task_types.mapping_sort_key`,
@@ -991,7 +1020,7 @@
                 >access_token: <span class="fw-semibold">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="获取/更新 access_token" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
               </div>
-              <div>expires: <span class="fw-semibold">${escapeHtml(m.sora_access_expires || "-")}</span></div>
+              <div>expires: <span class="fw-semibold">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
