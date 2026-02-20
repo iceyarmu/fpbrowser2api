@@ -1927,6 +1927,8 @@ async def sora_gen_video(
         drafts_limit=int(payload.get("sora_drafts_limit") or 100),
     )
 
+    await sess._bring_sora_drafts_to_front();
+
     nf_check = None
     nf_check_err: Optional[Exception] = None
     try:
