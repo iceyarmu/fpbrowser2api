@@ -140,7 +140,7 @@ async def sora_fetch_access_token_in_window(
         raise RuntimeError("page 未初始化")
 
     await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-    await sess._bring_sora_drafts_to_front()
+    await sess._bring_sora_drafts_to_front(refresh_target=False)
 
     log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
     url = "https://sora.chatgpt.com/api/auth/session"
@@ -1275,7 +1275,7 @@ class SoraSession:
         """读取 Sora 余额：GET /backend/nf/check。"""
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front()
+        await self._bring_sora_drafts_to_front(refresh_target=False)
         # 余额查询属于“仍在使用窗口”的行为：不要触发倒计时关窗
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
@@ -1306,7 +1306,7 @@ class SoraSession:
         """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
         self.last_used_at = time.time()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front()
+        await self._bring_sora_drafts_to_front(refresh_target=False)
         # 查询邀请码属于“仍在使用窗口”的行为：不要触发倒计时关窗
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
@@ -1750,7 +1750,7 @@ class SoraSession:
             if draft_item is not None:
                 break
             await asyncio.sleep(float(drafts_poll_interval))
-            await self._bring_sora_drafts_to_front()
+            await self._bring_sora_drafts_to_front(refresh_target=False)
 
         if not draft_item:
             raise RuntimeError(
