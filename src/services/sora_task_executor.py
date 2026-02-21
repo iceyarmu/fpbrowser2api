@@ -62,13 +62,13 @@ def _mask_secret(s: Optional[str], *, head: int = 8, tail: int = 6) -> str:
 
 
 def _pick_orientation_from_ratio(ratio: Optional[str]) -> Optional[str]:
-    """将尺寸比例（如 19:6 / 6:19）转换为 sora 的 orientation（landscape/portrait）。"""
+    """将尺寸比例（如 16:9 / 9:16）转换为 sora 的 orientation（landscape/portrait）。"""
     if not ratio:
         return None
     s = str(ratio).strip().lower().replace("：", ":")
-    if "19:6" in s:
+    if "16:9" in s:
         return "landscape"
-    if "6:19" in s:
+    if "9:16" in s:
         return "portrait"
     return None
 
