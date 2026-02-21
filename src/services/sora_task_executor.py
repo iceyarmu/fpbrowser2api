@@ -2260,7 +2260,7 @@ class SoraSession:
                 pass
             return ""
 
-        drafts_wait_seconds = 150.0
+        drafts_wait_seconds = 300.0
         drafts_poll_interval = 15.0
         deadline = time.time() + drafts_wait_seconds
         draft_item: Optional[Dict[str, Any]] = None
@@ -2433,7 +2433,9 @@ async def sora_gen_video(
 
     first_image_url = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip() or None
     ratio = str(payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or "").strip() or None
+    print(f"ratio: {ratio}")
     orientation = _pick_orientation_from_ratio(ratio) or str(payload.get("orientation") or "").strip() or None
+    print(f"orientation: {orientation}")
     duration_v = payload.get("n_frames") or payload.get("duration_frames") or payload.get("duration") or payload.get("时长")
     n_frames = _pick_n_frames(duration_v)
 
