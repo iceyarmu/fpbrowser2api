@@ -2173,11 +2173,6 @@ class SoraSession:
                             except Exception:
                                 pass
 
-                    if progress_pct is not None and float(progress_pct) >= 1.0:
-                        if not w.future.done():
-                            w.future.set_result({"task_id": tid, "status": status, "progress_pct": progress_pct, "done": True})
-                        self.watchers.pop(tid, None)
-
                 if missing_tids:
                     async with self._bring_drafts_lock:
                         try:
@@ -2222,6 +2217,7 @@ class SoraSession:
         self,
         *,
         task_id: str,
+        max_wait_seconds: float,
         prompt: str,
         target_url: str,
         drafts_limit: int = 100,
@@ -2260,7 +2256,7 @@ class SoraSession:
                 pass
             return ""
 
-        drafts_wait_seconds = 300.0
+        drafts_wait_seconds = max_wait_seconds
         drafts_poll_interval = 15.0
         deadline = time.time() + drafts_wait_seconds
         draft_item: Optional[Dict[str, Any]] = None
@@ -2433,9 +2429,7 @@ async def sora_gen_video(
 
     first_image_url = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip() or None
     ratio = str(payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or "").strip() or None
-    print(f"ratio: {ratio}")
     orientation = _pick_orientation_from_ratio(ratio) or str(payload.get("orientation") or "").strip() or None
-    print(f"orientation: {orientation}")
     duration_v = payload.get("n_frames") or payload.get("duration_frames") or payload.get("duration") or payload.get("时长")
     n_frames = _pick_n_frames(duration_v)
 
@@ -2640,6 +2634,7 @@ async def sora_gen_video(
     await progress_cb(95, {"stage": "drafts_and_publish", "task_id": task_id})
     publish_result = await sess.finalize_video_and_publish(
         task_id=task_id,
+        max_wait_seconds=max_wait_seconds,
         prompt=prompt,
         target_url=target_url,
         drafts_limit=int(payload.get("sora_drafts_limit") or 15),
