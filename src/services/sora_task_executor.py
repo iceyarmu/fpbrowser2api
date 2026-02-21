@@ -721,27 +721,41 @@ async def _sora_api_upload_character_video_pw(
     log_file: Path,
 ) -> str:
     """POST /characters/upload（multipart）：上传视频创建 cameo，返回 cameo_id。"""
-    upload_url = _sora_backend_url_from_target(target_url, "/characters/upload")
-    status, text = await _sora_api_upload_file_via_input_fetch_pw(
-        page,
-        upload_url=upload_url,
-        bearer_token=bearer_token,
-        file_path=Path(video_path),
-        file_field_name="file",
-        extra_fields={"timestamps": str(timestamps or "0,3")},
-        log_file=log_file,
-        timeout_ms=180_000,
-    )
-    if status not in (200, 201):
-        raise RuntimeError(f"上传角色视频失败：status={status} body={safe_trim(text, 400)}")
-    try:
-        obj = json.loads(text) if text else {}
-    except Exception:
-        obj = {}
-    cameo_id = str((obj or {}).get("id") or "").strip()
-    if not cameo_id:
-        raise RuntimeError(f"上传角色视频未返回 id：body={safe_trim(text, 400)}")
-    return cameo_id
+    # sora2api 配置 base_url 默认为 /backend，因此这里优先尝试 /backend/characters/upload
+    candidates = [
+        _sora_backend_url_from_target(target_url, "/backend/characters/upload"),
+        _sora_backend_url_from_target(target_url, "/characters/upload"),
+    ]
+
+    last_err: Optional[str] = None
+    for upload_url in candidates:
+        try:
+            status, text = await _sora_api_upload_file_via_input_fetch_pw(
+                page,
+                upload_url=upload_url,
+                bearer_token=bearer_token,
+                file_path=Path(video_path),
+                file_field_name="file",
+                extra_fields={"timestamps": str(timestamps or "0,3")},
+                log_file=log_file,
+                timeout_ms=180_000,
+            )
+            if status not in (200, 201):
+                last_err = f"url={upload_url!r} status={status} body={safe_trim(text, 300)}"
+                continue
+            try:
+                obj = json.loads(text) if text else {}
+            except Exception:
+                obj = {}
+            cameo_id = str((obj or {}).get("id") or "").strip()
+            if cameo_id:
+                return cameo_id
+            last_err = f"url={upload_url!r} missing id body={safe_trim(text, 300)}"
+        except Exception as e:
+            last_err = f"url={upload_url!r} err={e}"
+            continue
+
+    raise RuntimeError(f"上传角色视频失败：{last_err}")
 
 
 async def _sora_api_upload_character_image_pw(
@@ -753,27 +767,40 @@ async def _sora_api_upload_character_image_pw(
     log_file: Path,
 ) -> str:
     """POST /project_y/file/upload：上传头像，返回 asset_pointer。"""
-    upload_url = _sora_backend_url_from_target(target_url, "/project_y/file/upload")
-    status, text = await _sora_api_upload_file_via_input_fetch_pw(
-        page,
-        upload_url=upload_url,
-        bearer_token=bearer_token,
-        file_path=Path(image_path),
-        file_field_name="file",
-        extra_fields={"use_case": "profile"},
-        log_file=log_file,
-        timeout_ms=120_000,
-    )
-    if status not in (200, 201):
-        raise RuntimeError(f"上传角色头像失败：status={status} body={safe_trim(text, 400)}")
-    try:
-        obj = json.loads(text) if text else {}
-    except Exception:
-        obj = {}
-    asset_pointer = str((obj or {}).get("asset_pointer") or "").strip()
-    if not asset_pointer:
-        raise RuntimeError(f"上传角色头像未返回 asset_pointer：body={safe_trim(text, 400)}")
-    return asset_pointer
+    candidates = [
+        _sora_backend_url_from_target(target_url, "/backend/project_y/file/upload"),
+        _sora_backend_url_from_target(target_url, "/project_y/file/upload"),
+    ]
+
+    last_err: Optional[str] = None
+    for upload_url in candidates:
+        try:
+            status, text = await _sora_api_upload_file_via_input_fetch_pw(
+                page,
+                upload_url=upload_url,
+                bearer_token=bearer_token,
+                file_path=Path(image_path),
+                file_field_name="file",
+                extra_fields={"use_case": "profile"},
+                log_file=log_file,
+                timeout_ms=120_000,
+            )
+            if status not in (200, 201):
+                last_err = f"url={upload_url!r} status={status} body={safe_trim(text, 300)}"
+                continue
+            try:
+                obj = json.loads(text) if text else {}
+            except Exception:
+                obj = {}
+            asset_pointer = str((obj or {}).get("asset_pointer") or "").strip()
+            if asset_pointer:
+                return asset_pointer
+            last_err = f"url={upload_url!r} missing asset_pointer body={safe_trim(text, 300)}"
+        except Exception as e:
+            last_err = f"url={upload_url!r} err={e}"
+            continue
+
+    raise RuntimeError(f"上传角色头像失败：{last_err}")
 
 
 async def _sora_api_get_video_drafts_pw(page, *, target_url: str, bearer_token: str, limit: int, log_file: Path) -> Dict[str, Any]:
@@ -1736,16 +1763,34 @@ class SoraSession:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
-            url = _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}")
             headers: Dict[str, str] = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
             try:
                 if self.oai_device_id:
                     headers["OAI-Device-Id"] = str(self.oai_device_id)
             except Exception:
                 pass
-            tx = await page_fetch_json(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
-            obj = tx.get("_json")
-            return obj if isinstance(obj, dict) else {}
+
+            # 优先 /backend 前缀（与 sora2api base_url 一致），失败再降级
+            urls = [
+                _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/in_progress/{str(cameo_id)}"),
+                _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_json(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+                    obj = tx.get("_json")
+                    data = obj if isinstance(obj, dict) else {}
+                    # 若接口不存在，有时会返回 HTML 字符串（_json 解析失败 -> None/{}），这里用 status 兜底
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    if status == 404 and not data:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    return data
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"获取 cameo 状态失败：{last_err}")
 
     async def api_character_upload_image(self, *, target_url: str, image_path: Path) -> str:
         """POST /project_y/file/upload，返回 asset_pointer。"""
@@ -1786,7 +1831,6 @@ class SoraSession:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
-            url = _sora_backend_url_from_target(target_url, "/characters/finalize")
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
             payload = {
                 "cameo_id": str(cameo_id),
@@ -1796,18 +1840,34 @@ class SoraSession:
                 "instruction_set": None,
                 "safety_instruction_set": None,
             }
-            tx = await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
-            obj = tx.get("_json")
-            data = obj if isinstance(obj, dict) else {}
-            character_id = None
-            try:
-                character_id = (data or {}).get("character", {}).get("character_id")
-            except Exception:
-                character_id = None
-            cid = str(character_id or "").strip()
-            if not cid:
-                raise RuntimeError(f"finalize 未返回 character_id：body={safe_trim(json.dumps(data, ensure_ascii=False), 600)}")
-            return cid
+
+            urls = [
+                _sora_backend_url_from_target(target_url, "/backend/characters/finalize"),
+                _sora_backend_url_from_target(target_url, "/characters/finalize"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+                    obj = tx.get("_json")
+                    data = obj if isinstance(obj, dict) else {}
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    if status == 404 and not data:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    character_id = None
+                    try:
+                        character_id = (data or {}).get("character", {}).get("character_id")
+                    except Exception:
+                        character_id = None
+                    cid = str(character_id or "").strip()
+                    if cid:
+                        return cid
+                    last_err = f"url={url!r} missing character_id body={safe_trim(json.dumps(data, ensure_ascii=False), 600)}"
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"finalize 失败：{last_err}")
 
     async def api_character_set_public(self, *, target_url: str, cameo_id: str) -> bool:
         """POST /project_y/cameos/by_id/{cameo_id}/update_v2（visibility=public）。"""
@@ -1820,11 +1880,29 @@ class SoraSession:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
-            url = _sora_backend_url_from_target(target_url, f"/project_y/cameos/by_id/{str(cameo_id)}/update_v2")
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
             payload = {"visibility": "public"}
-            await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
-            return True
+
+            urls = [
+                _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
+                _sora_backend_url_from_target(target_url, f"/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_tx(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    body = str(tx.get("response_body") or "")
+                    if status in (200, 201):
+                        return True
+                    if status == 404 and body and "<!DOCTYPE html" in body:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    last_err = f"url={url!r} status={status} body={safe_trim(body, 300)}"
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"设置角色公开失败：{last_err}")
 
     async def _ensure_bearer_token(self, *, target_url: str, log_file: Path) -> str:
         if self.pw_ctx.page is None:
