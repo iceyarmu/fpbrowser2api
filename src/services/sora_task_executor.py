@@ -14,6 +14,9 @@ import asyncio
 import base64
 import contextvars
 import json
+import os
+import random
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -353,6 +356,247 @@ def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent
         return bytes(data or b""), hdrs
 
 
+def _download_to_tempfile_local(
+    url: str,
+    *,
+    suffix: str,
+    timeout_seconds: float = 60.0,
+    user_agent: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+) -> Tuple[Path, Dict[str, str]]:
+    """本地下载资源到临时文件（用于在浏览器上下文以 File 上传）。"""
+    u = str(url or "").strip()
+    if not u:
+        raise ValueError("url 不能为空")
+
+    headers = {"Accept": "*/*"}
+    if user_agent:
+        headers["User-Agent"] = str(user_agent)
+    req = Request(u, headers=headers, method="GET")
+
+    fd = tempfile.NamedTemporaryFile(delete=False, suffix=str(suffix or ""))
+    tmp_path = Path(fd.name)
+    try:
+        fd.close()
+        with urlopen(req, timeout=max(1.0, float(timeout_seconds))) as resp:
+            try:
+                hdrs = dict(getattr(resp, "headers", {}) or {})
+            except Exception:
+                hdrs = {}
+            with open(tmp_path, "wb") as f:
+                total = 0
+                try:
+                    if max_bytes is not None:
+                        cl = hdrs.get("Content-Length") or hdrs.get("content-length")
+                        if cl is not None:
+                            try:
+                                if int(cl) > int(max_bytes):
+                                    raise RuntimeError(f"下载资源大小超过限制：Content-Length={cl} max_bytes={max_bytes}")
+                            except Exception:
+                                pass
+                except Exception:
+                    # 忽略 content-length 解析问题
+                    pass
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    if max_bytes is not None:
+                        total += len(chunk)
+                        if total > int(max_bytes):
+                            raise RuntimeError(f"下载资源大小超过限制：max_bytes={max_bytes}")
+                    f.write(chunk)
+        return tmp_path, hdrs
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)  # type: ignore[call-arg]
+        except Exception:
+            try:
+                os.unlink(str(tmp_path))
+            except Exception:
+                pass
+        raise
+
+
+def _mp4_duration_seconds(path: Path) -> float:
+    """解析 MP4 容器时长（秒）。
+
+    仅用于“角色视频”校验（≤5秒），不引入第三方依赖。
+    """
+    p = Path(path)
+    if not p.exists():
+        raise RuntimeError(f"视频文件不存在：{p}")
+    size = p.stat().st_size
+    if size <= 0:
+        raise RuntimeError("视频文件为空")
+
+    CONTAINERS = {
+        b"moov",
+        b"trak",
+        b"mdia",
+        b"minf",
+        b"stbl",
+        b"edts",
+        b"udta",
+        b"meta",
+        b"ilst",
+        b"moof",
+    }
+
+    def _read(n: int) -> bytes:
+        b = f.read(n)
+        if len(b) != n:
+            raise EOFError("unexpected eof")
+        return b
+
+    def _u32(b: bytes) -> int:
+        return int.from_bytes(b, "big", signed=False)
+
+    def _u64(b: bytes) -> int:
+        return int.from_bytes(b, "big", signed=False)
+
+    with open(p, "rb") as f:
+        # 用栈模拟递归进入 container box
+        stack = [int(size)]
+        while stack and f.tell() < stack[-1]:
+            start = f.tell()
+            try:
+                hdr = f.read(8)
+            except Exception:
+                break
+            if len(hdr) < 8:
+                break
+
+            box_size = _u32(hdr[0:4])
+            box_type = hdr[4:8]
+            header_size = 8
+            if box_size == 1:
+                try:
+                    box_size = _u64(_read(8))
+                except Exception:
+                    break
+                header_size = 16
+            elif box_size == 0:
+                # extends to end of container
+                box_size = int(stack[-1] - start)
+
+            if box_size < header_size:
+                # 无效 box，避免死循环
+                break
+
+            box_end = int(start + box_size)
+
+            if box_type == b"mvhd":
+                try:
+                    version_flags = _read(4)
+                    version = version_flags[0]
+                    if version == 1:
+                        _read(8)  # creation_time
+                        _read(8)  # modification_time
+                        timescale = _u32(_read(4))
+                        duration = _u64(_read(8))
+                    else:
+                        _read(4)  # creation_time
+                        _read(4)  # modification_time
+                        timescale = _u32(_read(4))
+                        duration = _u32(_read(4))
+                    if timescale <= 0:
+                        raise RuntimeError("timescale 无效")
+                    return float(duration) / float(timescale)
+                except Exception as e:
+                    raise RuntimeError(f"解析 mvhd 失败：{e}")
+
+            if box_type in CONTAINERS:
+                # 进入 container：meta 需要跳过 4 bytes version/flags
+                if box_type == b"meta":
+                    try:
+                        _read(4)
+                    except Exception:
+                        break
+                stack.append(box_end)
+                continue
+
+            # 跳过 box 内容
+            try:
+                f.seek(box_end)
+            except Exception:
+                break
+
+            # 弹出已结束的 container
+            while stack and f.tell() >= stack[-1]:
+                stack.pop()
+
+    raise RuntimeError("无法解析 MP4 时长（未找到 mvhd）")
+
+
+async def _sora_api_upload_file_via_input_fetch_pw(
+    page,
+    *,
+    upload_url: str,
+    bearer_token: str,
+    file_path: Path,
+    file_field_name: str = "file",
+    extra_fields: Optional[Dict[str, str]] = None,
+    log_file: Path,
+    timeout_ms: int = 120_000,
+) -> Tuple[int, str]:
+    """在页面内用 `<input type=file>` + `fetch(FormData)` 上传本地文件（可带 Authorization 头）。
+
+    说明：
+    - 避免把大文件 bytes/base64 传入 page.evaluate（视频可能很大）。
+    - 通过指纹浏览器窗口网络栈发起请求（credentials: include）。
+    """
+    p = Path(file_path)
+    if not p.exists():
+        raise RuntimeError(f"本地文件不存在：{p}")
+
+    html = """<!doctype html><html><body>
+    <input id="f" type="file" />
+    </body></html>"""
+
+    try:
+        await page.set_content(html, wait_until="domcontentloaded")
+    except Exception:
+        # set_content 失败也可继续尝试（某些站点 CSP/页面状态异常）
+        pass
+
+    try:
+        loc = page.locator("#f")
+        await loc.wait_for(state="attached", timeout=5_000)
+        await loc.set_input_files(str(p), timeout=timeout_ms)
+    except Exception as e:
+        raise RuntimeError(f"set_input_files 失败：{e}")
+
+    ef = extra_fields or {}
+    res = await page.evaluate(
+        """async (args) => {
+          const { uploadUrl, bearer, fieldName, extraFields } = args;
+          const input = document.querySelector('#f');
+          const file = input && input.files && input.files[0];
+          if (!file) return { status: 0, text: 'missing file' };
+          const fd = new FormData();
+          fd.append(fieldName || 'file', file, file.name || 'file.bin');
+          const extras = extraFields || {};
+          for (const k of Object.keys(extras)) {
+            try { fd.append(k, String(extras[k])); } catch (e) {}
+          }
+          const resp = await fetch(uploadUrl, {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + bearer },
+            body: fd,
+            credentials: 'include',
+          });
+          const text = await resp.text();
+          return { status: resp.status, text };
+        }""",
+        {"uploadUrl": str(upload_url), "bearer": str(bearer_token), "fieldName": str(file_field_name), "extraFields": dict(ef)},
+    )
+    status = int((res or {}).get("status") or 0)
+    text = str((res or {}).get("text") or "")
+    append_log(log_file, f"[sora][upload] url={str(upload_url)!r} status={status} body={safe_trim(text, 600)!r}")
+    return status, text
+
+
 async def _sora_api_upload_image_bytes_pw(
     page,
     *,
@@ -419,6 +663,71 @@ async def _sora_api_upload_image_bytes_pw(
             continue
 
     raise RuntimeError(f"上传首帧失败：{last_err}")
+
+
+async def _sora_api_upload_character_video_pw(
+    page,
+    *,
+    target_url: str,
+    bearer_token: str,
+    video_path: Path,
+    timestamps: str,
+    log_file: Path,
+) -> str:
+    """POST /characters/upload（multipart）：上传视频创建 cameo，返回 cameo_id。"""
+    upload_url = _sora_backend_url_from_target(target_url, "/characters/upload")
+    status, text = await _sora_api_upload_file_via_input_fetch_pw(
+        page,
+        upload_url=upload_url,
+        bearer_token=bearer_token,
+        file_path=Path(video_path),
+        file_field_name="file",
+        extra_fields={"timestamps": str(timestamps or "0,3")},
+        log_file=log_file,
+        timeout_ms=180_000,
+    )
+    if status not in (200, 201):
+        raise RuntimeError(f"上传角色视频失败：status={status} body={safe_trim(text, 400)}")
+    try:
+        obj = json.loads(text) if text else {}
+    except Exception:
+        obj = {}
+    cameo_id = str((obj or {}).get("id") or "").strip()
+    if not cameo_id:
+        raise RuntimeError(f"上传角色视频未返回 id：body={safe_trim(text, 400)}")
+    return cameo_id
+
+
+async def _sora_api_upload_character_image_pw(
+    page,
+    *,
+    target_url: str,
+    bearer_token: str,
+    image_path: Path,
+    log_file: Path,
+) -> str:
+    """POST /project_y/file/upload：上传头像，返回 asset_pointer。"""
+    upload_url = _sora_backend_url_from_target(target_url, "/project_y/file/upload")
+    status, text = await _sora_api_upload_file_via_input_fetch_pw(
+        page,
+        upload_url=upload_url,
+        bearer_token=bearer_token,
+        file_path=Path(image_path),
+        file_field_name="file",
+        extra_fields={"use_case": "profile"},
+        log_file=log_file,
+        timeout_ms=120_000,
+    )
+    if status not in (200, 201):
+        raise RuntimeError(f"上传角色头像失败：status={status} body={safe_trim(text, 400)}")
+    try:
+        obj = json.loads(text) if text else {}
+    except Exception:
+        obj = {}
+    asset_pointer = str((obj or {}).get("asset_pointer") or "").strip()
+    if not asset_pointer:
+        raise RuntimeError(f"上传角色头像未返回 asset_pointer：body={safe_trim(text, 400)}")
+    return asset_pointer
 
 
 async def _sora_api_get_video_drafts_pw(page, *, target_url: str, bearer_token: str, limit: int, log_file: Path) -> Dict[str, Any]:
@@ -1343,6 +1652,156 @@ class SoraSession:
                 "raw": data,
             }
 
+    async def api_characters_upload_video(
+        self,
+        *,
+        target_url: str,
+        video_path: Path,
+        timestamps: str = "0,3",
+    ) -> str:
+        """创建角色：POST /characters/upload，返回 cameo_id。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            ctx = getattr(self.pw_ctx, "context", None)
+            if ctx is None:
+                raise RuntimeError("context 不可用，无法上传角色视频")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            p2 = None
+            try:
+                p2 = await ctx.new_page()
+                return await _sora_api_upload_character_video_pw(
+                    p2,
+                    target_url=target_url,
+                    bearer_token=str(token),
+                    video_path=Path(video_path),
+                    timestamps=str(timestamps or "0,3"),
+                    log_file=log_file,
+                )
+            finally:
+                if p2 is not None:
+                    try:
+                        await p2.close()
+                    except Exception:
+                        pass
+
+    async def api_cameo_status(self, *, target_url: str, cameo_id: str) -> Dict[str, Any]:
+        """GET /project_y/cameos/in_progress/{cameo_id}。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            url = _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}")
+            headers: Dict[str, str] = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
+            try:
+                if self.oai_device_id:
+                    headers["OAI-Device-Id"] = str(self.oai_device_id)
+            except Exception:
+                pass
+            tx = await page_fetch_json(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+            obj = tx.get("_json")
+            return obj if isinstance(obj, dict) else {}
+
+    async def api_character_upload_image(self, *, target_url: str, image_path: Path) -> str:
+        """POST /project_y/file/upload，返回 asset_pointer。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            ctx = getattr(self.pw_ctx, "context", None)
+            if ctx is None:
+                raise RuntimeError("context 不可用，无法上传角色头像")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            p2 = None
+            try:
+                p2 = await ctx.new_page()
+                return await _sora_api_upload_character_image_pw(
+                    p2,
+                    target_url=target_url,
+                    bearer_token=str(token),
+                    image_path=Path(image_path),
+                    log_file=log_file,
+                )
+            finally:
+                if p2 is not None:
+                    try:
+                        await p2.close()
+                    except Exception:
+                        pass
+
+    async def api_character_finalize(
+        self,
+        *,
+        target_url: str,
+        cameo_id: str,
+        username: str,
+        display_name: str,
+        profile_asset_pointer: str,
+    ) -> str:
+        """POST /characters/finalize，返回 character_id。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            url = _sora_backend_url_from_target(target_url, "/characters/finalize")
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
+            payload = {
+                "cameo_id": str(cameo_id),
+                "username": str(username),
+                "display_name": str(display_name),
+                "profile_asset_pointer": str(profile_asset_pointer),
+                "instruction_set": None,
+                "safety_instruction_set": None,
+            }
+            tx = await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+            obj = tx.get("_json")
+            data = obj if isinstance(obj, dict) else {}
+            character_id = None
+            try:
+                character_id = (data or {}).get("character", {}).get("character_id")
+            except Exception:
+                character_id = None
+            cid = str(character_id or "").strip()
+            if not cid:
+                raise RuntimeError(f"finalize 未返回 character_id：body={safe_trim(json.dumps(data, ensure_ascii=False), 600)}")
+            return cid
+
+    async def api_character_set_public(self, *, target_url: str, cameo_id: str) -> bool:
+        """POST /project_y/cameos/by_id/{cameo_id}/update_v2（visibility=public）。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            url = _sora_backend_url_from_target(target_url, f"/project_y/cameos/by_id/{str(cameo_id)}/update_v2")
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
+            payload = {"visibility": "public"}
+            await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+            return True
+
     async def _ensure_bearer_token(self, *, target_url: str, log_file: Path) -> str:
         if self.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
@@ -1865,9 +2324,10 @@ async def sora_gen_video(
 ) -> Dict[str, Any]:
     """Sora 生视频：复用同一指纹浏览器窗口 + Playwright(CDP) 轻量连接，拆分“创建任务”和“进度轮询”。"""
     payload = payload or {}
+    video_url = str(payload.get("video_url") or payload.get("videoUrl") or payload.get("videoURL") or "").strip() or None
     prompt = str(payload.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("payload.prompt 不能为空")
+    if not video_url and not prompt:
+        raise ValueError("payload.prompt 不能为空（或提供 payload.video_url 用于创建角色）")
 
     first_image_url = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip() or None
     ratio = str(payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or "").strip() or None
@@ -1896,6 +2356,158 @@ async def sora_gen_video(
             sess.set_access_token(access_token, access_expires)
     except Exception:
         pass
+
+    # 新分支：若提供 video_url，则先创建角色（Character Creation Only）
+    if video_url:
+        target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
+        monitor_log_path = (str(payload.get("sora_monitor_log_path") or "").strip() or None)
+        max_wait_seconds = float(payload.get("character_pending_max_wait_seconds") or payload.get("sora_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 60.0 * 15)))
+        poll_interval_seconds = float(payload.get("character_pending_poll_interval_seconds") or 5.0)
+        idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
+        sess.monitor_log_path = monitor_log_path
+        sess.idle_close_seconds = max(0.0, float(idle_close_seconds))
+
+        tmp_video: Optional[Path] = None
+        tmp_img: Optional[Path] = None
+        cameo_status: Dict[str, Any] = {}
+        try:
+            await progress_cb(0, {"stage": "character_download_video", "video_url": video_url})
+            # 下载到本地临时文件（用于浏览器上下文上传）
+            tmp_video, _hdrs = _download_to_tempfile_local(
+                video_url,
+                suffix=".mp4",
+                timeout_seconds=float(payload.get("video_download_timeout_seconds") or 120.0),
+                user_agent=sess.user_agent,
+                max_bytes=10 * 1024 * 1024,  # 10MB
+            )
+
+            # 校验大小（<=10MB）与时长（<=5秒）
+            try:
+                sz = int(tmp_video.stat().st_size)
+            except Exception:
+                sz = -1
+            if sz < 0:
+                raise NonPenalizedTaskError("无法读取视频文件大小", status_code=400)
+            if sz > 10 * 1024 * 1024:
+                raise NonPenalizedTaskError(f"视频文件过大：{sz} bytes（限制 10MB）", status_code=400)
+
+            try:
+                dur = _mp4_duration_seconds(tmp_video)
+            except Exception as e:
+                raise NonPenalizedTaskError(f"无法解析视频时长（仅支持 MP4）：{e}", status_code=400)
+            if float(dur) > 5.0 + 1e-6:
+                raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤5s）", status_code=400)
+
+            await progress_cb(5, {"stage": "character_upload_video"})
+
+            cameo_id = await sess.api_characters_upload_video(
+                target_url=target_url,
+                video_path=tmp_video,
+                timestamps=str(payload.get("character_video_timestamps") or "0,3"),
+            )
+            await progress_cb(10, {"stage": "character_processing", "cameo_id": cameo_id})
+
+            # 轮询 cameo 状态
+            start = time.time()
+            consecutive_errors = 0
+            last_status = None
+            while True:
+                if time.time() - start > max(1.0, float(max_wait_seconds)):
+                    raise RuntimeError(f"角色处理超时：cameo_id={cameo_id} waited={int(time.time() - start)}s")
+                try:
+                    await asyncio.sleep(max(0.8, float(poll_interval_seconds)))
+                except Exception:
+                    pass
+
+                try:
+                    cameo_status = await sess.api_cameo_status(target_url=target_url, cameo_id=cameo_id)
+                    consecutive_errors = 0
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        raise RuntimeError(f"轮询 cameo 状态失败次数过多：{e}")
+                    continue
+
+                cur = cameo_status.get("status")
+                msg = str(cameo_status.get("status_message") or "")
+                if cur != last_status:
+                    last_status = cur
+                    try:
+                        pct = 10 + int(min(55.0, (time.time() - start) / max(1.0, float(max_wait_seconds)) * 55.0))
+                    except Exception:
+                        pct = 20
+                    await progress_cb(int(max(10, min(65, pct))), {"stage": "character_processing", "cameo_id": cameo_id, "status": cur, "status_message": msg})
+
+                if str(cur) == "failed":
+                    raise RuntimeError(f"角色创建失败：{msg or 'failed'}")
+                if msg == "Completed" or str(cur) == "finalized":
+                    break
+
+            username_hint = str(cameo_status.get("username_hint") or "character")
+            display_name = str(cameo_status.get("display_name_hint") or "Character")
+            base_username = username_hint.split(".")[-1] if "." in username_hint else username_hint
+            base_username = str(base_username or "").strip().lstrip("@").strip() or "character"
+            # Sora 对 username 约束更严格：尽量只保留 [a-z0-9_]
+            safe_base = "".join([ch for ch in base_username.lower() if (ch.isalnum() or ch == "_")])
+            if not safe_base:
+                safe_base = "character"
+            username = f"{safe_base}{random.randint(100, 999)}"
+            await progress_cb(70, {"stage": "character_identified", "cameo_id": cameo_id, "display_name": display_name, "username": username})
+
+            profile_asset_url = str(cameo_status.get("profile_asset_url") or "").strip() or None
+            if not profile_asset_url:
+                raise RuntimeError("cameo_status 缺少 profile_asset_url，无法完成角色创建")
+
+            await progress_cb(75, {"stage": "character_download_avatar"})
+            tmp_img, _hdrs2 = _download_to_tempfile_local(
+                profile_asset_url,
+                suffix=".webp",
+                timeout_seconds=float(payload.get("avatar_download_timeout_seconds") or 60.0),
+                user_agent=sess.user_agent,
+            )
+
+            await progress_cb(80, {"stage": "character_upload_avatar"})
+            asset_pointer = await sess.api_character_upload_image(target_url=target_url, image_path=tmp_img)
+
+            await progress_cb(90, {"stage": "character_finalize"})
+            character_id = await sess.api_character_finalize(
+                target_url=target_url,
+                cameo_id=cameo_id,
+                username=username,
+                display_name=display_name,
+                profile_asset_pointer=asset_pointer,
+            )
+
+            await progress_cb(95, {"stage": "character_set_public"})
+            await sess.api_character_set_public(target_url=target_url, cameo_id=cameo_id)
+
+            try:
+                await sess._bring_sora_drafts_to_front(refresh_target=False)
+            except Exception:
+                pass
+
+            await progress_cb(100, {"stage": "done", "cameo_id": cameo_id, "character_id": character_id})
+            return {
+                "type": "character",
+                "message": "Sora角色创建完成",
+                "cameo_id": cameo_id,
+                "character_id": character_id,
+                "display_name": display_name,
+                "username": username,
+                "profile_asset_url": profile_asset_url,
+                "raw_cameo_status": cameo_status,
+            }
+        finally:
+            for p in [tmp_video, tmp_img]:
+                if p is None:
+                    continue
+                try:
+                    p.unlink(missing_ok=True)  # type: ignore[call-arg]
+                except Exception:
+                    try:
+                        os.unlink(str(p))
+                    except Exception:
+                        pass
 
     await progress_cb(0, {"stage": "create_task"})
     task_id, _create_tx = await sess.create_task(

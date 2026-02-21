@@ -42,6 +42,11 @@
                 <textarea class="form-control" id="prompt" rows="5" placeholder="输入文本提示词"></textarea>
               </div>
               <div class="mb-3">
+                <label class="form-label">角色视频链接 video_url（可选，用于创建角色）</label>
+                <input class="form-control mono" id="videoUrl" placeholder="https://... (mp4)" />
+                <div class="text-muted small">当填写 video_url 时，后端将优先走“创建角色”流程（prompt 可留空）。限制：视频 ≤5 秒、≤10MB。</div>
+              </div>
+              <div class="mb-3">
                 <label class="form-label">首帧图片链接 first_image_url（可选）</label>
                 <input class="form-control mono" id="firstImageUrl" placeholder="https://..." />
                 <div class="text-muted small">后端不再接收图片二进制，只接收网络链接（由 handler 自行处理）。</div>
@@ -98,6 +103,7 @@
       const LS_KEYS = {
         testTaskType: `${LS_PREFIX}test.task_type_code`,
         testPrompt: `${LS_PREFIX}test.prompt`,
+        testVideoUrl: `${LS_PREFIX}test.video_url`,
         testLastTaskId: `${LS_PREFIX}test.last_task_id`,
       };
       function lsGet(key) {
@@ -173,12 +179,15 @@
           if (!apiKey) throw new Error("API Key 未加载");
           const type = document.getElementById("taskType").value;
           const prompt = document.getElementById("prompt").value.trim();
+          const videoUrl = document.getElementById("videoUrl").value.trim();
           const firstImageUrl = document.getElementById("firstImageUrl").value.trim();
           const durationRaw = document.getElementById("duration").value.trim();
           const duration = durationRaw ? Number(durationRaw) : undefined;
           if (!type) throw new Error("请选择任务类型");
+          if (!prompt && !videoUrl) throw new Error("请输入文本内容，或填写 video_url 以测试创建角色");
           // 注意：不同 task handler 可能需要不同字段，这里仅示例常用字段
           const payload = { prompt };
+          if (videoUrl) payload.video_url = videoUrl;
           if (firstImageUrl) payload.first_image_url = firstImageUrl;
           if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
 
@@ -251,6 +260,12 @@
         const savedPrompt = lsGet(LS_KEYS.testPrompt);
         if (savedPrompt !== null) promptEl.value = savedPrompt;
         promptEl.addEventListener("input", (e) => lsSet(LS_KEYS.testPrompt, e.target.value));
+
+        // video_url 回填
+        const videoUrlEl = document.getElementById("videoUrl");
+        const savedVideoUrl = lsGet(LS_KEYS.testVideoUrl);
+        if (savedVideoUrl !== null && videoUrlEl) videoUrlEl.value = savedVideoUrl;
+        if (videoUrlEl) videoUrlEl.addEventListener("input", (e) => lsSet(LS_KEYS.testVideoUrl, e.target.value));
 
         // 任务类型缓存（回填发生在 loadTaskTypes 之后）
         const typeEl = document.getElementById("taskType");
