@@ -295,8 +295,8 @@ async def _sora_generate_sentinel_token_in_fp_context_pw(page, *, device_id: Opt
         except Exception:
             pass
         append_log(log_file, f"[sora][sentinel] loading sdk under did={did!r}")
-        await p2.goto("https://sora.chatgpt.com/__sentinel__", wait_until="load", timeout=30_000)
-        await p2.wait_for_function("typeof SentinelSDK !== 'undefined' && typeof SentinelSDK.token === 'function'", timeout=15_000)
+        await p2.goto("https://sora.chatgpt.com/__sentinel__", wait_until="load", timeout=60_000)
+        await p2.wait_for_function("typeof SentinelSDK !== 'undefined' && typeof SentinelSDK.token === 'function'", timeout=60_000)
         token = await p2.evaluate(
             """async (did) => {
               try {
