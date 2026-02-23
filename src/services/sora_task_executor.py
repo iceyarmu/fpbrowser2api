@@ -998,6 +998,7 @@ async def _sora_create_task_pw(
 
     status = create_tx.get("status")
     body_text = create_tx.get("response_body") or ""
+    payload_obj: Any = {}
     task_id = None
     try:
         payload_obj = json.loads(body_text) if body_text else {}
@@ -1011,6 +1012,28 @@ async def _sora_create_task_pw(
         status_i = None
 
     if status_i != 200 or not task_id:
+        # 400 invalid_request 里有些属于“请求本身不合法/用户输入问题”，不应计入窗口连续错误，也不需要打堆栈日志
+        try:
+            err = (payload_obj or {}).get("error") if isinstance(payload_obj, dict) else None
+            err_code = (err or {}).get("code") if isinstance(err, dict) else None
+            err_msg = (err or {}).get("message") if isinstance(err, dict) else None
+        except Exception:
+            err_code = None
+            err_msg = None
+
+        bt_lower = str(body_text or "").lower()
+        msg_lower = str(err_msg or "").lower()
+        if status_i == 400 and (
+            str(err_code or "").strip() == "cameo_not_found"
+            or "cameo_not_found" in bt_lower
+            or "does not have a cameo" in bt_lower
+            or "does not have a cameo" in msg_lower
+        ):
+            raise NonPenalizedTaskError(
+                f"create 失败（cameo_not_found）：{safe_trim(str(err_msg or body_text), 400)}",
+                status_code=status_i,
+            )
+
         raise RuntimeError(f"create 未成功或未解析到任务ID：status={status_i} body={safe_trim(body_text, 400)}")
 
     auth_state: Dict[str, Any] = {
