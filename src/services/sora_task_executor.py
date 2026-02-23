@@ -2562,7 +2562,7 @@ async def sora_gen_video(
                     await progress_cb(int(max(10, min(65, pct))), {"stage": "character_processing", "cameo_id": cameo_id, "status": cur, "status_message": msg})
 
                 if str(cur) == "failed":
-                    raise RuntimeError(f"角色创建失败：{msg or 'failed'}")
+                    raise NonPenalizedTaskError(f"角色创建失败：{msg or 'failed'}", status_code=400)
                 if msg == "Completed" or str(cur) == "finalized":
                     break
 
