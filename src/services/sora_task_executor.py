@@ -2382,7 +2382,10 @@ class SoraSession:
             raise RuntimeError(f"发布草稿失败,生成视频包含违规内容")
 
         if not downloadable_url:
-            raise NonPenalizedTaskError("create 失败，内容中包含违禁画面，请重新生成", status_code=400)
+            err_kind = str(draft_item.get("kind") or "").strip()
+            reason_str = str(draft_item.get("reason_str") or "").strip()
+            markdown_reason_str = str(draft_item.get("markdown_reason_str") or "").strip()
+            raise NonPenalizedTaskError(f"create 失败，内容中包含违禁画面{err_kind}-{reason_str}-{markdown_reason_str}", status_code=400)
         share_url = downloadable_url or f"https://sora.chatgpt.com/p/{post_id}"
         # https://oscdn2.dyysy.com/MP4/{post_id}.mp4
         watermark_free_url = ""
