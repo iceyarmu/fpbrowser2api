@@ -1935,6 +1935,7 @@ class Database:
                   t.status,
                   t.window_pk,
                   w.platform_account AS window_account,
+                  w.window_sort_num AS window_sort_num,
                   t.error_message,
                   t.result_json,
                   t.created_at
