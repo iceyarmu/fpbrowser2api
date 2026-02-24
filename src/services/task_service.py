@@ -13,6 +13,7 @@ from ..core.models import Task
 from .image_task_executor import simulate_image_task
 from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_gen_video
+from .sora_wm_remove_executor import sora_wm_remove
 
 
 @dataclass
@@ -140,6 +141,20 @@ class TaskService:
                             timeout_seconds=float(picked.timeout_seconds),
                             access_token=picked.sora_access_token,
                             access_expires=picked.sora_access_expires,
+                        ),
+                        timeout=float(picked.timeout_seconds),
+                    )
+                elif picked.create_task_handler == "sora_wm_remove":
+                    result = await asyncio.wait_for(
+                        sora_wm_remove(
+                            payload,
+                            progress_cb,
+                            browser_vendor=picked.browser_vendor,
+                            browser_base_url=picked.browser_base_url,
+                            browser_access_key=picked.browser_access_key,
+                            space_id=picked.space_id,
+                            window_key=picked.window_key,
+                            timeout_seconds=float(picked.timeout_seconds),
                         ),
                         timeout=float(picked.timeout_seconds),
                     )
