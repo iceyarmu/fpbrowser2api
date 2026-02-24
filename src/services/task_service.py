@@ -182,7 +182,7 @@ class TaskService:
                 # 清空一下result中的nf_check，避免敏感信息泄露
                 result["nf_check"] = None
                 await self.db.update_task(task_id, status="completed", progress=100, result=result, set_completed=True)
-                await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
+                #await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
                 await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
             except Exception as e:
