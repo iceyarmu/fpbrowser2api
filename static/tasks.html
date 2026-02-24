@@ -90,7 +90,7 @@
                   <th style="min-width: 120px;">task_id</th>
                   <th style="min-width: 120px;">任务类型</th>
                   <th style="min-width: 120px;">状态</th>
-                  <th style="min-width: 160px;">窗口账号</th>
+                  <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 160px;">错误信息</th>
                   <th style="min-width: 160px;">result_json</th>
                   <th style="min-width: 160px;">创建时间</th>
@@ -307,9 +307,11 @@
           const code = x.task_type_code || "-";
           const typeName = state.typeMap.get(String(code)) || String(code);
           const err = x.error_message || "";
-          const acc = x.window_account || "-";
+          const accRaw = String(x.window_account ?? "").trim();
+          const acc = accRaw || "-";
           const sortNum = (x && (x.windowSortNum ?? x.window_sort_num ?? x.window_sortNum)) ?? "";
           const sortNumText = String(sortNum ?? "").trim();
+          const windowInfo = sortNumText ? (accRaw ? `${sortNumText}-${accRaw}` : sortNumText) : acc;
           const errCell = (String(err || "").trim())
             ? `<button class="btn btn-link p-0 text-danger mono truncate-1 truncate-err text-start" style="max-width: 520px;" data-action="view-errors" data-task-id="${escapeHtml(x.task_id || "")}" title="点击查看该窗口全部错误">${escapeHtml(err)}</button>`
             : `<span class="text-muted">-</span>`;
@@ -320,8 +322,7 @@
               <td>${badgeForStatus(x.status)}</td>
               <td class="mono">
                 <div class="d-flex align-items-center gap-2">
-                  <div class="mono truncate-1 window-acc flex-grow-1" title="${escapeHtml(acc)}">${escapeHtml(acc)}</div>
-                  ${sortNumText ? `<span class="badge text-bg-light text-dark mono" title="windowSortNum">#${escapeHtml(sortNumText)}</span>` : ``}
+                  <div class="mono truncate-1 window-acc flex-grow-1" title="${escapeHtml(windowInfo)}">${escapeHtml(windowInfo)}</div>
                 </div>
               </td>
               <td class="mono truncate-1 truncate-err" title="${escapeHtml(err)}">${errCell}</td>
