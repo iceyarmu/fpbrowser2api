@@ -2061,6 +2061,46 @@ class Database:
                 raise
 
     # ---------- tasks ----------
+    async def fail_running_and_queued_tasks_on_startup(self) -> Dict[str, int]:
+        """启动时清理遗留任务状态。
+
+        目的：
+        - 进程异常退出/重启后，DB 里可能残留 status=running/queued 的任务
+        - 这些任务在当前实例不可能再继续执行，需要统一置为 failed，避免 UI/调度误判
+
+        同时：
+        - 重置 `task_type_windows.inflight_slots`，避免预占并发槽位在异常退出后“泄漏”
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE tasks
+                SET status = 'failed',
+                    error_message = CASE
+                      WHEN error_message IS NULL OR TRIM(error_message) = '' THEN 'server restarted'
+                      ELSE error_message
+                    END,
+                    completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+                WHERE status IN ('running', 'queued')
+                """
+            )
+            cur = await db.execute("SELECT changes()")
+            tasks_failed = int(((await cur.fetchone()) or [0])[0] or 0)
+
+            await db.execute(
+                """
+                UPDATE task_type_windows
+                SET inflight_slots = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE COALESCE(inflight_slots, 0) != 0
+                """
+            )
+            cur = await db.execute("SELECT changes()")
+            mapping_slots_reset = int(((await cur.fetchone()) or [0])[0] or 0)
+
+            await db.commit()
+            return {"tasks_failed": tasks_failed, "mapping_slots_reset": mapping_slots_reset}
+
     async def create_task(self, task: Task) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(

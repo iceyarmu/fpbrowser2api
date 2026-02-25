@@ -41,6 +41,20 @@ async def lifespan(app: FastAPI):
         logger.info("🔄 检测到已有数据库：检查缺失表/字段并补齐...")
     await db.check_and_migrate_db(config_dict)
 
+    # 2.5) 启动清理：把上次异常退出遗留的 queued/running 任务统一置为 failed
+    #      同时重置窗口映射的 inflight_slots，避免并发槽位“泄漏”导致无法继续派单
+    try:
+        r = await db.fail_running_and_queued_tasks_on_startup()
+        if (r.get("tasks_failed") or 0) > 0 or (r.get("mapping_slots_reset") or 0) > 0:
+            logger.warning(
+                "启动清理完成：tasks_failed=%s mapping_slots_reset=%s",
+                r.get("tasks_failed"),
+                r.get("mapping_slots_reset"),
+            )
+    except Exception as e:
+        # 不阻断启动：即便清理失败，也让服务起来方便排查
+        logger.exception("启动清理失败（忽略）：%s", e)
+
     # 3) DB 配置回写到内存 config（API key / proxy / debug / log_to_file）
     syscfg = await db.reload_config_to_memory()
     # 4) 按 DB 配置重置日志（特别是 log_to_file）
