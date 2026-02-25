@@ -2453,7 +2453,7 @@ async def sora_gen_video(
     video_url = str(payload.get("video_url") or payload.get("videoUrl") or payload.get("videoURL") or "").strip() or None
     prompt = str(payload.get("prompt") or "").strip()
     if not video_url and not prompt:
-        raise ValueError("payload.prompt 不能为空（或提供 payload.video_url 用于创建角色）")
+        raise NonPenalizedTaskError("payload.prompt 不能为空（或提供 payload.video_url 用于创建角色）", status_code=400)
 
     first_image_url = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip() or None
     ratio = str(payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or "").strip() or None
