@@ -1673,7 +1673,7 @@ class Database:
                           AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
                           AND (m.consecutive_errors < t.continuous_error_threshold)
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                        ORDER BY m.consecutive_errors ASC, m.remaining_quota ASC, m.updated_at DESC
+                        ORDER BY m.consecutive_errors ASC, m.remaining_quota DESC, m.updated_at DESC
                         LIMIT 1
                         """,
                         (code,),

@@ -282,7 +282,11 @@
             const sp = parseInt(card.dataset.spacePk || "", 10);
             if (!sp) return;
             ensureProxiesLoaded(sp)
-              .then(() => fillProxySelects(sp))
+              .then(() => {
+                fillProxySelects(sp);
+                recomputeProxyBindingsFromUi(sp);
+                fillProxySelects(sp);
+              })
               .catch(() => fillProxySelects(sp));
           });
         }, 0);
@@ -448,7 +452,7 @@
                         <option value="">(加载代理中...)</option>
                       </select>
                       <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
-                      <div class="text-muted small">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
+                      <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
                     </td>
                     <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
                     <td>${enabledBadge(!!w.enabled)}</td>
@@ -774,7 +778,7 @@
                 data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                 <option value="">(加载代理中...)</option>
               </select>
-              <div class="text-muted small">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
+              <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
             </td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
             <td>${enabledBadge(!!w.enabled)}</td>
@@ -1106,6 +1110,29 @@
         });
       }
 
+      function recomputeProxyBindingsFromUi(spacePk) {
+        const arr = proxiesCache.get(spacePk) || [];
+        if (!Array.isArray(arr) || !arr.length) return;
+        const counts = new Map(); // proxy_id -> count
+        const selects = document.querySelectorAll(`select[data-role="proxySelect"][data-space_pk="${spacePk}"]`);
+        selects.forEach(sel => {
+          const pidFromValue = parseInt(String(sel?.value || "0"), 10) || 0;
+          const pidFromDs = parseInt(String(sel?.dataset?.current_proxy_id || "0"), 10) || 0;
+          const pid = pidFromValue > 0 ? pidFromValue : pidFromDs;
+          if (pid > 0) counts.set(pid, (counts.get(pid) || 0) + 1);
+        });
+        arr.forEach(p => {
+          const pid = parseInt(String(p?.proxy_id ?? p?.id ?? 0), 10) || 0;
+          if (pid <= 0) return;
+          p.binding_count = counts.get(pid) || 0;
+        });
+        proxiesCache.set(spacePk, arr);
+        if (proxiesState?.spacePk === spacePk) {
+          proxiesState.proxies = arr;
+          renderProxies();
+        }
+      }
+
       async function openProxiesModal(spacePk) {
         proxiesState.spacePk = spacePk;
         document.getElementById("proxiesModalTitle").textContent = `代理列表（space_pk=${spacePk}）`;
@@ -1220,6 +1247,35 @@
           toast("已提交窗口代理修改", "success");
           el.dataset.current_proxy_id = String(proxyId);
 
+          // 更新该行“同步到的代理信息”为当前选择的代理
+          try {
+            const td = el.closest("td");
+            const infoEl = td ? td.querySelector(`[data-role="proxySyncedInfo"]`) : null;
+            const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
+            const picked = proxyId > 0 ? arr.find(x => String(x.proxy_id) === String(proxyId)) : null;
+            const ipOrHost = picked
+              ? (String(picked.last_ip || "").trim() || `${picked.host || "-"}:${picked.port || "-"}`)
+              : "";
+            const ctry = picked ? (String(picked.last_country || "-").trim() || "-") : "-";
+            if (picked) {
+              el.dataset.proxy_method = "choose";
+              el.dataset.proxy_category = String(picked.protocol || "").trim() || el.dataset.proxy_category || "";
+              el.dataset.proxy_host = String(picked.host || "").trim();
+              el.dataset.proxy_port = String(picked.port || "").trim();
+              el.dataset.proxy_addr = String(ipOrHost || "").trim();
+              el.dataset.proxy_country = String(ctry || "").trim();
+            } else {
+              el.dataset.proxy_method = "custom";
+              el.dataset.proxy_addr = "";
+              el.dataset.proxy_country = "";
+            }
+            if (infoEl) {
+              infoEl.textContent = `同步到的代理信息：${proxyId > 0 ? `${ipOrHost || "-"} / ${ctry}` : "- / -"}`;
+            }
+          } catch (_e) {
+            // ignore
+          }
+
           // 尽量在前端即时更新缓存中的“绑定数”，让下拉标签也能立刻反映变化
           try {
             if (oldProxyId !== proxyId && proxiesCache.has(spacePk)) {
@@ -1235,6 +1291,14 @@
               proxiesCache.set(spacePk, arr);
               fillProxySelects(spacePk);
             }
+          } catch (_e) {
+            // ignore
+          }
+
+          // 再做一次“按 UI 实时统计”的兜底（同步窗口后的自动匹配也能更新绑定数）
+          try {
+            recomputeProxyBindingsFromUi(spacePk);
+            fillProxySelects(spacePk);
           } catch (_e) {
             // ignore
           }
@@ -1433,6 +1497,16 @@
           if (!r2.ok) throw new Error(d2.detail || "加载窗口列表失败");
 
           await renderWindowsIncrementally(spacePk, d2.windows || []);
+
+          // 同步窗口后：强制刷新本地代理列表（含绑定统计），并按 UI 当前窗口列表重算一次绑定数
+          try {
+            await loadLocalProxies(spacePk, { force: true });
+          } catch (_e) {
+            // ignore
+          }
+          fillProxySelects(spacePk);
+          recomputeProxyBindingsFromUi(spacePk);
+          fillProxySelects(spacePk);
 
           toast(d.message || "同步完成", "success");
           setSpaceProgress(spacePk, { current: 2, total: 2, text: `完成：${(d2.windows || []).length} 条窗口` });
