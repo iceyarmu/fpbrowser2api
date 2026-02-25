@@ -7,10 +7,15 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
     <style>
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-      .small2 { font-size: 12px; }
-      .cell-stack > div { line-height: 1.25; }
+      .small2 { font-size: 11px; }
+      .cell-stack > div { line-height: 1.15; }
       .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .btn-w-72 { min-width: 72px; }
+      .btn-w-72 { min-width: 54px; padding-left: .4rem; padding-right: .4rem; }
+
+      /* 更紧凑的表格（让一屏显示更多行） */
+      .win-table-wrap .table > :not(caption) > * > * { padding-top: .18rem; padding-bottom: .18rem; }
+      .win-table-wrap .btn.btn-sm { padding-top: .12rem; padding-bottom: .12rem; padding-left: .4rem; padding-right: .4rem; }
+      .win-table-wrap .form-select.form-select-sm { padding-top: .15rem; padding-bottom: .15rem; padding-left: .5rem; }
 
       /* 更紧凑的配置区，让窗口绑定成为主视觉 */
       .card-body-compact { padding: 0.85rem 1rem; }
@@ -177,6 +182,7 @@
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口名称排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>空间</th>
+                      <th>代理</th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th>邀请码</th>
@@ -430,6 +436,9 @@
         handlers: { create: [], quota: [] },
       };
 
+      // ---- proxies cache（space_pk -> proxies[]）----
+      const proxiesCache = new Map();
+
       // ---- 仅用于本页交互（不入 state 持久化）----
       const ui = {
         idleCloseSecondsDefault: 30, // 从后端 ui-defaults 动态读取
@@ -471,7 +480,7 @@
         const s = String(tok || "").trim();
         if (!s) return "";
         if (s.length <= 16) return s.slice(0, 6) + "...";
-        return s.slice(0, 10) + "...(masked)..." + s.slice(-6);
+        return s.slice(0, 5) + "..." + s.slice(-5);
       }
 
       function formatDateTimeShanghai(v) {
@@ -501,6 +510,203 @@
           const pad2 = (n) => String(n).padStart(2, "0");
           return `${c.getUTCFullYear()}-${pad2(c.getUTCMonth() + 1)}-${pad2(c.getUTCDate())} ${pad2(c.getUTCHours())}:${pad2(c.getUTCMinutes())}:${pad2(c.getUTCSeconds())}`;
         }
+      }
+
+      // -------------------- proxy helpers（参考 projects.html） --------------------
+      function normalizeProxies(arr) {
+        const xs = Array.isArray(arr) ? arr : [];
+        return xs.filter(x => x && typeof x === "object").map(x => ({
+          proxy_id: x.proxy_id ?? x.id ?? 0,
+          expire_at: x.expire_at ?? x.expireAt ?? x.expire_time ?? x.expireTime ?? x.endTime ?? x.end_time ?? "",
+          host: x.host ?? "",
+          port: x.port ?? "",
+          protocol: x.protocol ?? "",
+          ip_type: x.ip_type ?? "",
+          last_ip: x.last_ip ?? "",
+          last_country: x.last_country ?? "",
+          binding_count: x.binding_count ?? x.bindingCount ?? 0,
+          remark: x.remark ?? "",
+        }));
+      }
+
+      function parseTimeMs(v) {
+        if (v === null || v === undefined) return null;
+        if (typeof v === "number" && Number.isFinite(v)) {
+          if (v > 1e12) return v;
+          if (v > 1e9) return v * 1000;
+          return null;
+        }
+        const s = String(v || "").trim();
+        if (!s) return null;
+        if (/^\d+$/.test(s)) {
+          const n = Number(s);
+          if (!Number.isFinite(n)) return null;
+          if (s.length >= 13) return n;
+          if (s.length >= 10) return n * 1000;
+          return null;
+        }
+        const t = Date.parse(s);
+        if (Number.isNaN(t)) return null;
+        return t;
+      }
+
+      function isProxyExpired(p) {
+        const ms = parseTimeMs(p?.expire_at);
+        return ms !== null && ms > 0 && ms < Date.now();
+      }
+
+      function proxyLabel(p) {
+        const ip = String(p.last_ip || p.host || "-").trim() || "-";
+        const country = String(p.last_country || "-").trim() || "-";
+        const bind = Number(p.binding_count || 0) || 0;
+        return `${ip} / ${country} / 绑:${bind}`;
+      }
+
+      async function loadProxyBindings(spacePk) {
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxy-bindings`);
+        if (!r) return {};
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取代理绑定数失败");
+        return d.counts || {};
+      }
+
+      const proxyBindingsRefreshInflight = new Map(); // space_pk -> Promise<void>
+      async function refreshProxyBindingCounts(spacePk) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        if (spk <= 0) return;
+        if (proxyBindingsRefreshInflight.has(spk)) return proxyBindingsRefreshInflight.get(spk);
+        const p = (async () => {
+          try {
+            const counts = await loadProxyBindings(spk);
+            const arr = proxiesCache.get(spk) || [];
+            if (!Array.isArray(arr) || !arr.length) return;
+            arr.forEach(it => {
+              const pid = it?.proxy_id ?? it?.id ?? 0;
+              const c = counts && typeof counts === "object" ? (counts[String(pid)] ?? counts[pid] ?? 0) : 0;
+              it.binding_count = c;
+            });
+            proxiesCache.set(spk, arr);
+          } finally {
+            proxyBindingsRefreshInflight.delete(spk);
+          }
+        })();
+        proxyBindingsRefreshInflight.set(spk, p);
+        return p;
+      }
+
+      async function loadLocalProxies(spacePk, { force } = { force: false }) {
+        if (!force && proxiesCache.has(spacePk)) return proxiesCache.get(spacePk) || [];
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies`);
+        if (!r) return [];
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取本地代理失败");
+        const items = d.proxies || [];
+        let counts = {};
+        try {
+          counts = await loadProxyBindings(spacePk);
+        } catch {
+          counts = {};
+        }
+        const merged = (Array.isArray(items) ? items : []).map(p => {
+          const pid = p?.proxy_id ?? p?.id ?? 0;
+          const c = counts && typeof counts === "object" ? (counts[String(pid)] ?? counts[pid] ?? 0) : 0;
+          return { ...p, binding_count: c };
+        });
+        proxiesCache.set(spacePk, merged);
+        return merged;
+      }
+
+      async function ensureProxiesLoaded(spacePk) {
+        try {
+          await loadLocalProxies(spacePk, { force: false });
+        } catch {
+          // ignore
+        }
+      }
+
+      function fillProxySelects(spacePk) {
+        const items = normalizeProxies(proxiesCache.get(spacePk) || []);
+        const available = items.filter(p => !isProxyExpired(p)).slice().sort((a, b) => {
+          const ac = Number(a.binding_count || 0) || 0;
+          const bc = Number(b.binding_count || 0) || 0;
+          if (ac !== bc) return ac - bc;
+          return (parseInt(String(a.proxy_id || 0), 10) || 0) - (parseInt(String(b.proxy_id || 0), 10) || 0);
+        });
+        const selects = document.querySelectorAll(`select[data-role="proxySelect"][data-space_pk="${spacePk}"]`);
+        selects.forEach(sel => {
+          const cur = String(sel.value ?? "").trim();
+          const dsCur = String(sel.dataset.current_proxy_id ?? "").trim();
+          const effectiveCur = cur !== "" ? cur : (dsCur !== "" ? dsCur : "0");
+          let curIdNum = parseInt(String(effectiveCur || "0"), 10) || 0;
+
+          const dsAddr = String(sel.dataset.proxy_addr || "").trim();
+          const dsCountry = String(sel.dataset.proxy_country || "").trim();
+
+          const isIpv4 = (s) => /^\d{1,3}(\.\d{1,3}){3}$/.test(String(s || "").trim());
+          const inferProxyIdByAddr = () => {
+            if (!dsAddr) return 0;
+            // 1) addr=host:port
+            if (dsAddr.includes(":")) {
+              const parts = dsAddr.split(":");
+              const h = String(parts[0] || "").trim();
+              const p = String(parts.slice(1).join(":") || "").trim();
+              if (h && p) {
+                const hits = items.filter(x => String(x.host || "").trim() === h && String(x.port || "").trim() === p);
+                if (hits.length === 1) return parseInt(String(hits[0].proxy_id || "0"), 10) || 0;
+                if (hits.length > 1) {
+                  hits.sort((a, b) => (parseInt(String(a.proxy_id || 0), 10) || 0) - (parseInt(String(b.proxy_id || 0), 10) || 0));
+                  return parseInt(String(hits[0].proxy_id || "0"), 10) || 0;
+                }
+              }
+            }
+            // 2) addr=IPv4：优先 last_ip，其次 host
+            if (isIpv4(dsAddr)) {
+              const hitsIp = items.filter(x => String(x.last_ip || "").trim() === dsAddr);
+              if (hitsIp.length === 1) return parseInt(String(hitsIp[0].proxy_id || "0"), 10) || 0;
+              if (hitsIp.length > 1) {
+                hitsIp.sort((a, b) => (parseInt(String(a.proxy_id || 0), 10) || 0) - (parseInt(String(b.proxy_id || 0), 10) || 0));
+                return parseInt(String(hitsIp[0].proxy_id || "0"), 10) || 0;
+              }
+              const hitsHost = items.filter(x => String(x.host || "").trim() === dsAddr);
+              if (hitsHost.length === 1) return parseInt(String(hitsHost[0].proxy_id || "0"), 10) || 0;
+              if (hitsHost.length > 1) {
+                hitsHost.sort((a, b) => (parseInt(String(a.proxy_id || 0), 10) || 0) - (parseInt(String(b.proxy_id || 0), 10) || 0));
+                return parseInt(String(hitsHost[0].proxy_id || "0"), 10) || 0;
+              }
+            }
+            return 0;
+          };
+
+          // 当 proxy_id=0（自定义代理）但 proxy_addr 命中本地代理列表时：直接推断并选中对应 proxy_id
+          let inferredProxyId = 0;
+          if (curIdNum <= 0 && dsAddr) inferredProxyId = inferProxyIdByAddr();
+          if (inferredProxyId > 0) {
+            curIdNum = inferredProxyId;
+            sel.dataset.current_proxy_id = String(inferredProxyId);
+          }
+
+          const looksCustom = curIdNum <= 0 && !!dsAddr && inferredProxyId <= 0;
+          const customLabel = [dsAddr, dsCountry].filter(Boolean).join(" / ");
+
+          const curItem = curIdNum > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum)) : null;
+          const curIsExpired = !!(curItem && isProxyExpired(curItem));
+          const curOption = (curIdNum > 0 && curItem && curIsExpired)
+            ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem))}</option>`
+            : (curIdNum > 0 && !curItem)
+              ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum))}</option>`
+              : "";
+          const customOption = looksCustom
+            ? `<option value="__custom__" selected disabled>(自定义代理) ${escapeHtml(customLabel || "-")}</option>`
+            : "";
+
+          sel.innerHTML = `
+            ${customOption}
+            <option value="0">(不使用代理)</option>
+            ${curOption}
+            ${available.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p))}</option>`).join("")}
+          `;
+          sel.value = looksCustom ? "__custom__" : String(curIdNum || 0);
+        });
       }
 
       const LS_KEYS_UI = {
@@ -933,7 +1139,7 @@
       async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -1032,7 +1238,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="11" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -1053,12 +1259,28 @@
                   <button class="btn btn-outline-secondary btn-sm btn-w-72" data-act="manualClose" data-mid="${m.id}">关闭</button>
                 </div>
               </div>
-              <div class="mono text-muted">账号：${escapeHtml(m.platform_account || "-")}</div>
-              <div class="text-muted truncate-1">${escapeHtml(m.browser_name || "-")}</div>
+              <div class="text-muted truncate-1" title="${escapeHtml(String(m.platform_account || "-") + " · " + String(m.browser_name || "-"))}">
+                <span class="mono">账号：${escapeHtml(m.platform_account || "-")}</span>
+                <span class="text-muted"> · </span>
+                <span>${escapeHtml(m.browser_name || "-")}</span>
+              </div>
             </td>
             <td>
-              <div class="mono">${escapeHtml(m.space_id || "-")}</div>
-              <div class="text-muted">${escapeHtml(m.space_name || "-")}</div>
+              <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")} · ${escapeHtml(m.space_name || "-")}</div>
+            </td>
+            <td style="width: 210px; max-width: 210px;">
+              <select
+                class="form-select form-select-sm mono"
+                data-role="proxySelect"
+                data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
+                data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
+                data-mid="${escapeHtml(String(m.id ?? ""))}"
+                data-current_proxy_id="${escapeHtml(String(m.proxy_id ?? 0))}"
+                data-proxy_addr="${escapeHtml(String(m.proxy_addr || ""))}"
+                data-proxy_country="${escapeHtml(String(m.proxy_country || ""))}"
+              >
+                <option value="">(加载代理中...)</option>
+              </select>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1066,10 +1288,10 @@
                   额度: <span class="fw-semibold" data-role="remainingQuotaValue" data-mid="${m.id}">${m.remaining_quota}</span>
                 </div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
+      
+                <div class="text-muted">限流:${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">是</span>` : `<span class="badge text-bg-success">否</span>`}</div>
               </div>
-              <div>remaining: <span class="fw-semibold">${m.sora_remaining_count ?? "-"}</span></div>
-              <div>rate_limit: ${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">YES</span>` : `<span class="badge text-bg-success">NO</span>`}</div>
-              <div>重置时间: <span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
+              <div class="text-muted">重置: <span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1080,10 +1302,10 @@
                   data-role="accessToken"
                   data-mid="${m.id}"
                   data-token="${escapeHtml(m.sora_access_token || "")}"
-                >access_token: <span class="fw-semibold" data-role="accessTokenMasked" data-mid="${m.id}">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
+                ><span class="fw-semibold" data-role="accessTokenMasked" data-mid="${m.id}">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="获取/更新 access_token" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
               </div>
-              <div>expires: <span class="fw-semibold" data-role="accessTokenExpires" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
+              <div><span class="fw-semibold" data-role="accessTokenExpires" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1187,6 +1409,18 @@
           const mid = parseInt(btn.dataset.mid, 10);
           btn.addEventListener("click", (e) => openMappingEditor(mid, act, e.currentTarget));
         });
+
+        // 代理下拉：异步加载每个 space_pk 的代理列表，并填充下拉框
+        try {
+          const spacePks = Array.from(new Set((items || [])
+            .map(x => parseInt(x?.space_pk, 10))
+            .filter(x => Number.isFinite(x) && x > 0)));
+          spacePks.forEach(spk => {
+            ensureProxiesLoaded(spk)
+              .then(() => fillProxySelects(spk))
+              .catch(() => fillProxySelects(spk));
+          });
+        } catch {}
 
         updateMapSelectedCountUI();
       }
@@ -1611,7 +1845,7 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -1626,10 +1860,99 @@
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="10" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
+      });
+
+      // 代理下拉改动：立即调用后端 set-proxy（复用 projects.html 的接口）
+      document.getElementById("mappingBody")?.addEventListener("change", async (ev) => {
+        const el = ev.target;
+        if (!el || !(el instanceof HTMLSelectElement)) return;
+        if (el.dataset.role !== "proxySelect") return;
+        const spacePk = parseInt(el.dataset.space_pk || "", 10);
+        const wk = String(el.dataset.window_key || "").trim();
+        const mid = parseInt(el.dataset.mid || "", 10);
+        const proxyId = parseInt(String(el.value || "0"), 10) || 0;
+        const oldProxyId = parseInt(String(el.dataset.current_proxy_id || "0"), 10) || 0;
+        if (!spacePk || !wk) return toast("缺少 space_pk/window_key，无法切换代理（请刷新列表）", "error");
+        if (el.value === "__custom__") return; // 禁止选择“自定义代理”占位项
+
+        try {
+          el.disabled = true;
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-proxy`, {
+            method: "POST",
+            body: JSON.stringify({ proxy_id: proxyId }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "修改代理失败");
+          toast("已提交窗口代理修改", "success");
+          el.dataset.current_proxy_id = String(proxyId);
+
+          // 同步 data-proxy_*（避免从“自定义代理”切到 0 时又被误判为自定义）
+          try {
+            if (proxyId <= 0) {
+              el.dataset.proxy_addr = "";
+              el.dataset.proxy_country = "";
+            } else {
+              const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
+              const picked = arr.find(x => String(x.proxy_id) === String(proxyId));
+              if (picked) {
+                const ipOrHost = String(picked.last_ip || "").trim() || `${picked.host || "-"}:${picked.port || "-"}`;
+                el.dataset.proxy_addr = String(ipOrHost || "").trim();
+                el.dataset.proxy_country = String(picked.last_country || "").trim();
+              }
+            }
+          } catch {}
+
+          // 尽量在前端即时更新缓存中的“绑定数”，让下拉标签立刻反映变化
+          try {
+            if (oldProxyId !== proxyId && proxiesCache.has(spacePk)) {
+              const arr = proxiesCache.get(spacePk) || [];
+              const bump = (pid, delta) => {
+                const it = arr.find(x => String(x?.proxy_id ?? x?.id ?? "") === String(pid));
+                if (!it) return;
+                const cur = Number(it.binding_count ?? it.bindingCount ?? 0) || 0;
+                it.binding_count = Math.max(0, cur + delta);
+              };
+              bump(oldProxyId, -1);
+              bump(proxyId, +1);
+              proxiesCache.set(spacePk, arr);
+              fillProxySelects(spacePk);
+            }
+          } catch {}
+
+          // 同步 state（用于后续刷新/渲染时更准确地显示当前代理）
+          try {
+            const m = (state.mappings || []).find(x => String(x?.id || "") === String(mid));
+            if (m) {
+              m.proxy_id = proxyId;
+              if (proxyId <= 0) {
+                m.proxy_addr = "";
+                m.proxy_country = "";
+              } else {
+                m.proxy_addr = el.dataset.proxy_addr || m.proxy_addr || "";
+                m.proxy_country = el.dataset.proxy_country || m.proxy_country || "";
+              }
+            }
+          } catch {}
+
+          // 重新拉取该 space_pk 的“真实绑定数”，再刷新下拉（保证数字实时）
+          try {
+            await refreshProxyBindingCounts(spacePk);
+            fillProxySelects(spacePk);
+          } catch {}
+        } catch (e) {
+          toast(e.message || "修改代理失败", "error");
+          // 回滚 UI 选中值
+          try {
+            el.value = String(oldProxyId || 0);
+          } catch {}
+        } finally {
+          el.disabled = false;
+        }
       });
       document.getElementById("winFilter").addEventListener("input", () => renderWinList());
       document.getElementById("chkAll").addEventListener("change", (e) => {

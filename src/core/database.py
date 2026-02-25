@@ -947,15 +947,52 @@ class Database:
             return affected
 
     async def count_proxy_bindings(self, space_pk: int) -> Dict[int, int]:
-        """统计某个空间下：每个 proxy_id 被多少个“本地未删除窗口”绑定。"""
+        """统计某个空间下：每个 proxy_id 被多少个“本地未删除窗口”绑定。
+
+        说明：
+        - 优先使用 windows.proxy_id 统计（选择代理 moduleId 的场景）。
+        - 若 windows.proxy_id 为空/0（常见于“自定义代理”），则尝试用 windows.proxy_addr 匹配本地 proxies：
+          - proxies.last_ip == windows.proxy_addr
+          - 或 proxies.host:port == windows.proxy_addr
+          - 或 proxies.host == windows.proxy_addr
+        - 只要能匹配到 1 个本地 proxy_id，就按该 proxy_id 计数；否则归到 0（不计入任何代理）。
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
-                SELECT COALESCE(proxy_id, 0) AS proxy_id, COUNT(*) AS cnt
-                FROM windows
-                WHERE deleted = 0 AND space_pk = ?
-                GROUP BY COALESCE(proxy_id, 0)
+                WITH win AS (
+                  SELECT
+                    id,
+                    space_pk,
+                    COALESCE(proxy_id, 0) AS pid,
+                    TRIM(COALESCE(proxy_addr, '')) AS proxy_addr
+                  FROM windows
+                  WHERE deleted = 0 AND space_pk = ?
+                ),
+                matched AS (
+                  SELECT
+                    w.id AS window_id,
+                    MIN(p.proxy_id) AS matched_proxy_id
+                  FROM win w
+                  JOIN proxies p
+                    ON p.space_pk = w.space_pk
+                   AND p.deleted = 0
+                   AND w.pid = 0
+                   AND w.proxy_addr <> ''
+                   AND (
+                     (p.last_ip IS NOT NULL AND TRIM(p.last_ip) <> '' AND TRIM(p.last_ip) = w.proxy_addr)
+                     OR ((p.host || ':' || p.port) IS NOT NULL AND TRIM(p.host || ':' || p.port) = w.proxy_addr)
+                     OR (p.host IS NOT NULL AND TRIM(p.host) <> '' AND TRIM(p.host) = w.proxy_addr)
+                   )
+                  GROUP BY w.id
+                )
+                SELECT
+                  COALESCE(NULLIF(win.pid, 0), matched.matched_proxy_id, 0) AS proxy_id,
+                  COUNT(*) AS cnt
+                FROM win
+                LEFT JOIN matched ON matched.window_id = win.id
+                GROUP BY COALESCE(NULLIF(win.pid, 0), matched.matched_proxy_id, 0)
                 """,
                 (int(space_pk),),
             )
@@ -1494,9 +1531,12 @@ class Database:
                 SELECT
                   m.*,
                   w.window_name,
+                  w.window_key,
                   w.window_sort_num,
                   w.platform_account,
                   w.platform_url,
+                  w.space_pk,
+                  w.proxy_id,
                   w.proxy_addr,
                   w.proxy_country,
                   w.proxy_expire_at,
