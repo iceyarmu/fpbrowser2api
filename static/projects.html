@@ -361,6 +361,31 @@
         return enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`;
       }
 
+      function getWindowProxyId(w) {
+        if (!w || typeof w !== "object") return 0;
+        // 常见字段
+        const direct = (w.proxy_id ?? w.proxyId ?? w.proxyModuleId ?? null);
+        if (direct !== null && direct !== undefined && String(direct).trim() !== "") {
+          const n = parseInt(String(direct), 10);
+          return Number.isFinite(n) ? n : 0;
+        }
+        // 兜底：从 raw 里取（list_windows 会包含 raw；tree 里通常不带）
+        const raw = w.raw;
+        if (raw && typeof raw === "object") {
+          const rawDirect = (raw.proxyModuleId ?? raw.proxy_module_id ?? raw.moduleId ?? null);
+          if (rawDirect !== null && rawDirect !== undefined && String(rawDirect).trim() !== "") {
+            const n = parseInt(String(rawDirect), 10);
+            return Number.isFinite(n) ? n : 0;
+          }
+          const pi = raw.proxyInfo;
+          if (pi && typeof pi === "object" && pi.moduleId !== undefined && pi.moduleId !== null) {
+            const n = parseInt(String(pi.moduleId), 10);
+            return Number.isFinite(n) ? n : 0;
+          }
+        }
+        return 0;
+      }
+
       function renderWindowsTable(windows, spacePk) {
         if (!windows.length) return `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
         return `
@@ -393,7 +418,7 @@
                       <select class="form-select form-select-sm mono" data-role="proxySelect"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
                         data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
-                        data-current_proxy_id="${escapeHtml(String((w.proxy_id ?? 0) || 0))}">
+                        data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                         <option value="">(加载代理中...)</option>
                       </select>
                       <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
@@ -713,7 +738,7 @@
               <select class="form-select form-select-sm mono" data-role="proxySelect"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
                 data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
-                data-current_proxy_id="${escapeHtml(String((w.proxy_id ?? 0) || 0))}">
+                data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                 <option value="">(加载代理中...)</option>
               </select>
             </td>
@@ -1274,14 +1299,34 @@
         if (!btn) btn = document.querySelector(`button[data-action="sync_space"][data-space_pk="${spacePk}"]`);
         try {
           setBtnBusy(btn, true, { loadingText: "同步中" });
-          setSpaceProgress(spacePk, { current: 0, total: 1, text: "正在同步窗口（可能较慢）..." });
+          setSpaceProgress(spacePk, { current: 0, total: 2, text: "正在同步代理列表..." });
+
+          // 先同步代理列表：避免指纹浏览器新增代理/修改绑定后，这里还拿旧的本地代理列表
+          try {
+            const rp = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, { method: "POST", body: JSON.stringify({}) });
+            if (rp) {
+              const dp = await rp.json();
+              if (!rp.ok) throw new Error(dp.detail || "同步代理失败");
+            }
+          } catch (e) {
+            // 同步代理失败不阻塞同步窗口，但给出提示
+            toast(`同步代理失败（将继续同步窗口）：${e.message || "未知错误"}`, "warn");
+          }
+          // 刷新代理缓存（用于后续填充下拉框）
+          try {
+            await loadLocalProxies(spacePk, { force: true });
+          } catch (_e) {
+            // ignore
+          }
+
+          setSpaceProgress(spacePk, { current: 1, total: 2, text: "正在同步窗口（可能较慢）..." });
 
           const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-windows`, { method: "POST" });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "同步失败");
 
-          setSpaceProgress(spacePk, { current: 0, total: 1, text: "同步完成，正在加载窗口列表..." });
+          setSpaceProgress(spacePk, { current: 1, total: 2, text: "同步完成，正在加载窗口列表..." });
 
           const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
           if (!r2) return;
@@ -1291,10 +1336,10 @@
           await renderWindowsIncrementally(spacePk, d2.windows || []);
 
           toast(d.message || "同步完成", "success");
-          setSpaceProgress(spacePk, { current: 1, total: 1, text: `完成：${(d2.windows || []).length} 条窗口` });
+          setSpaceProgress(spacePk, { current: 2, total: 2, text: `完成：${(d2.windows || []).length} 条窗口` });
           window.setTimeout(() => setSpaceProgress(spacePk, { text: "" }), 1500);
         } catch (e) {
-          setSpaceProgress(spacePk, { current: 0, total: 1, text: `同步失败：${e.message || "未知错误"}` });
+          setSpaceProgress(spacePk, { current: 0, total: 2, text: `同步失败：${e.message || "未知错误"}` });
           toast(e.message, "error");
         } finally {
           setBtnBusy(btn, false);

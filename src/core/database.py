@@ -874,7 +874,7 @@ class Database:
                 window_name = str(w.get("window_name") or w.get("name") or window_key).strip()
                 platform_account = (w.get("platform_account") or w.get("account") or w.get("username"))
                 platform_url = (w.get("platform_url") or w.get("url"))
-                # proxy_id: 优先从 raw.proxyModuleId 获取（Roxy: proxyInfo.moduleId）
+                # proxy_id: 优先从 raw 中提取（Roxy: proxyInfo.moduleId -> minimal_raw.proxyModuleId）
                 proxy_id_raw = None
                 raw_obj = w.get("raw")
                 if isinstance(raw_obj, dict):
@@ -883,6 +883,10 @@ class Database:
                         if raw_obj.get("proxyModuleId") is not None
                         else (raw_obj.get("proxy_module_id") if raw_obj.get("proxy_module_id") is not None else raw_obj.get("moduleId"))
                     )
+                    if proxy_id_raw is None:
+                        proxy_info = raw_obj.get("proxyInfo")
+                        if isinstance(proxy_info, dict):
+                            proxy_id_raw = proxy_info.get("moduleId")
                 if proxy_id_raw is None:
                     proxy_id_raw = w.get("proxy_id") if w.get("proxy_id") is not None else w.get("proxyModuleId")
                 try:
@@ -910,7 +914,8 @@ class Database:
                         window_name=excluded.window_name,
                         platform_account=excluded.platform_account,
                         platform_url=excluded.platform_url,
-                        proxy_id=excluded.proxy_id,
+                        -- 约定：同步窗口时，若新数据未解析到 proxy_id，则保留已有 proxy_id
+                        proxy_id=COALESCE(excluded.proxy_id, windows.proxy_id),
                         proxy_addr=excluded.proxy_addr,
                         proxy_country=excluded.proxy_country,
                         proxy_expire_at=excluded.proxy_expire_at,
