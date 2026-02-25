@@ -826,6 +826,13 @@ class FPBrowserClient:
             proxy_module_id = proxy_info.get("moduleId")
             proxy_method = proxy_info.get("proxyMethod")
             proxy_category = proxy_info.get("proxyCategory")
+            proxy_ip_type = proxy_info.get("ipType")
+            proxy_protocol = proxy_info.get("protocol")
+            proxy_host = proxy_info.get("host")
+            proxy_port = proxy_info.get("port")
+            proxy_username = proxy_info.get("proxyUserName")
+            proxy_password = proxy_info.get("proxyPassword")
+            proxy_refresh_url = proxy_info.get("refreshUrl")
 
             # RoxyBrowser: windowSortNum（窗口序号，优先用于 UI 展示）
             window_sort_num_raw = detail.get("windowSortNum")
@@ -847,7 +854,21 @@ class FPBrowserClient:
                 "proxyModuleId": int(proxy_module_id) if str(proxy_module_id or "").strip().isdigit() else proxy_module_id,
                 "proxyMethod": str(proxy_method).strip() if proxy_method is not None else None,
                 "proxyCategory": str(proxy_category).strip() if proxy_category is not None else None,
+                "proxyIpType": str(proxy_ip_type).strip() if proxy_ip_type is not None else None,
+                "proxyProtocol": str(proxy_protocol).strip() if proxy_protocol is not None else None,
+                "proxyHost": str(proxy_host).strip() if proxy_host is not None else None,
+                "proxyPort": str(proxy_port).strip() if proxy_port is not None else None,
+                "proxyUserName": str(proxy_username).strip() if proxy_username is not None else None,
+                "proxyPassword": str(proxy_password).strip() if proxy_password is not None else None,
+                "proxyRefreshUrl": str(proxy_refresh_url).strip() if proxy_refresh_url is not None else None,
             }
+
+            proxy_addr = str(last_ip).strip() if last_ip is not None else None
+            if not proxy_addr:
+                h = str(proxy_host).strip() if proxy_host is not None else ""
+                p = str(proxy_port).strip() if proxy_port is not None else ""
+                if h and p:
+                    proxy_addr = f"{h}:{p}"
 
             result.append(
                 {
@@ -856,7 +877,7 @@ class FPBrowserClient:
                     "window_name": window_name,
                     "platform_account": platform_user,
                     "platform_url": platform_url,
-                    "proxy_addr": str(last_ip).strip() if last_ip is not None else None,
+                    "proxy_addr": proxy_addr,
                     "proxy_country": str(last_country).strip() if last_country is not None else None,
                     "enabled": True,
                     "deleted": False,

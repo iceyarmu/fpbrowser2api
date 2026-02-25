@@ -422,6 +422,7 @@
                         <option value="">(加载代理中...)</option>
                       </select>
                       <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
+                      <div class="text-muted small">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
                     </td>
                     <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
                     <td>${enabledBadge(!!w.enabled)}</td>
@@ -741,6 +742,7 @@
                 data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                 <option value="">(加载代理中...)</option>
               </select>
+              <div class="text-muted small">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
             </td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
             <td>${enabledBadge(!!w.enabled)}</td>
@@ -995,7 +997,9 @@
           const curIsExpired = !!(curItem && isProxyExpired(curItem));
           const curOption = (curIdNum > 0 && curItem && curIsExpired)
             ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem))}</option>`
-            : "";
+            : (curIdNum > 0 && !curItem)
+              ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum))}</option>`
+              : "";
 
           sel.innerHTML = `
             <option value="0">(不使用代理)</option>
