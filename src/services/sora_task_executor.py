@@ -1491,59 +1491,125 @@ class SoraSession:
             return False
 
     async def _bring_sora_drafts_to_front(self, refresh_target=True) -> None:
-        """将 Sora drafts 页面置前，并确保同一站点只保留一个 drafts tab。
+        """将 Sora drafts 页面置前，并尽量确保整个指纹浏览器实例只保留一个 drafts 页面。
 
-        需求背景：指纹浏览器可能开了多个标签页；即使 ensure_open 选中了可用 page，也不一定是 drafts。
+        需求背景：指纹浏览器可能开了多个标签页/窗口；即使 ensure_open 选中了可用 page，也不一定是 drafts。
         这里确保 `https://sora.chatgpt.com/drafts` 在每次 ensure_open 后都会被 bring_to_front，
-        且会关闭其它 `https://sora.chatgpt.com/*` 的页面（包括重复的 drafts），只保留一个 drafts。
+        且会关闭同一个指纹浏览器（同一 CDP 连接）内除 drafts_url 外的其它页面（包括其它站点、about:blank、新窗口、重复 drafts 等），
+        尽量只保留一个 drafts 页面以节省内存。
         """
         drafts_url = "https://sora.chatgpt.com/drafts"
         sora_host = "sora.chatgpt.com"
 
         async with self._bring_drafts_lock:
-            ctx = getattr(self.pw_ctx, "context", None)
-            if ctx is None:
+            def _is_page_closed(p: Any) -> bool:
+                try:
+                    return bool(getattr(p, "is_closed", lambda: False)())
+                except Exception:
+                    return False
+
+            def _safe_page_url(p: Any) -> str:
+                try:
+                    return str(getattr(p, "url", "") or "").strip()
+                except Exception:
+                    return ""
+
+            def _safe_page_host(u: str) -> str:
+                try:
+                    return (urlparse(u).netloc or "").strip().lower()
+                except Exception:
+                    return ""
+
+            async def _snapshot_contexts_pages() -> tuple[list[Any], list[tuple[Any, Any, str]]]:
+                """返回 (contexts, open_pages[(ctx,page,url)])。"""
+                ctx0 = getattr(self.pw_ctx, "context", None)
+                br0 = getattr(self.pw_ctx, "browser", None)
+                try:
+                    ctxs0 = list(getattr(br0, "contexts", []) or [])
+                except Exception:
+                    ctxs0 = []
+                if ctx0 is not None and ctx0 not in ctxs0:
+                    ctxs0.insert(0, ctx0)
+                open_pages0: list[tuple[Any, Any, str]] = []
+                for c0 in (ctxs0 or []):
+                    try:
+                        pages0 = list(getattr(c0, "pages", []) or [])
+                    except Exception:
+                        pages0 = []
+                    for p0 in pages0:
+                        if _is_page_closed(p0):
+                            continue
+                        u0 = _safe_page_url(p0)
+                        open_pages0.append((c0, p0, u0))
+                return ctxs0, open_pages0
+
+            async def _keep_only_one_drafts_page(keep_page: Any) -> Any:
+                """关闭其它所有页面/多余 contexts，仅保留 keep_page。返回 keep_page。"""
+                ctxs1, open_pages1 = await _snapshot_contexts_pages()
+                keep_ctx = None
+                for c1, p1, _u1 in open_pages1:
+                    if p1 is keep_page:
+                        keep_ctx = c1
+                        break
+                if keep_ctx is None:
+                    try:
+                        maybe_ctx = getattr(keep_page, "context", None)
+                        keep_ctx = maybe_ctx() if callable(maybe_ctx) else maybe_ctx
+                    except Exception:
+                        keep_ctx = None
+
+                # 先关页面：跨所有 contexts 关闭除 drafts 外的所有 page（最大化节省内存）
+                for _c1, p1, _u1 in open_pages1:
+                    if p1 is keep_page:
+                        continue
+                    try:
+                        await p1.close()
+                    except Exception:
+                        pass
+
+                # 再尽量关多余 context（有些 CDP 场景可能不允许 close，忽略即可）
+                if keep_ctx is not None:
+                    for c1 in ctxs1:
+                        if c1 is keep_ctx:
+                            continue
+                        try:
+                            await c1.close()
+                        except Exception:
+                            pass
+
+                # 将 pw_ctx.context 指向保留页所在 context（若可用）
+                try:
+                    if keep_ctx is not None:
+                        self.pw_ctx.context = keep_ctx
+                except Exception:
+                    pass
+                return keep_page
+
+            # 选定 drafts_page：优先复用 self.pw_ctx.page（若已是 drafts），否则从任意 context 中找 drafts；再不行则新开
+            ctxs, open_pages = await _snapshot_contexts_pages()
+            if not ctxs:
                 return
 
-            try:
-                pages = list(getattr(ctx, "pages", []) or [])
-            except Exception:
-                pages = []
+            drafts_page = None
+            cur_page = getattr(self.pw_ctx, "page", None)
+            if cur_page is not None and not _is_page_closed(cur_page):
+                cur_u0 = _safe_page_url(cur_page)
+                if cur_u0.startswith(drafts_url):
+                    drafts_page = cur_page
 
-            open_pages = []
-            for p in pages:
-                try:
-                    is_closed = bool(getattr(p, "is_closed", lambda: False)())
-                except Exception:
-                    is_closed = False
-                if not is_closed:
-                    open_pages.append(p)
-
-            # 找出同站点(sora.chatgpt.com)的页面，并挑一个 drafts 作为保留页
-            sora_pages: list[tuple[Any, str]] = []
-            drafts_pages: list[Any] = []
-            for p in open_pages:
-                try:
-                    u = str(getattr(p, "url", "") or "").strip()
-                except Exception:
-                    u = ""
-                if not u:
-                    continue
-                try:
-                    host = (urlparse(u).netloc or "").strip().lower()
-                except Exception:
-                    host = ""
-                if host != sora_host:
-                    continue
-                sora_pages.append((p, u))
-                if u.startswith(drafts_url):
-                    drafts_pages.append(p)
-
-            drafts_page = drafts_pages[0] if drafts_pages else None
             if drafts_page is None:
-                # 没有 drafts：新开一个
+                for _c, p, u in open_pages:
+                    if u.startswith(drafts_url):
+                        drafts_page = p
+                        break
+
+            if drafts_page is None:
+                # 没有 drafts：在当前 context（若存在）或第一个 context 里新开一个
+                ctx_pref = getattr(self.pw_ctx, "context", None) or (ctxs[0] if ctxs else None)
+                if ctx_pref is None:
+                    return
                 try:
-                    drafts_page = await ctx.new_page()
+                    drafts_page = await ctx_pref.new_page()
                 except Exception:
                     return
                 try:
@@ -1552,14 +1618,8 @@ class SoraSession:
                     # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
                     pass
 
-            # 关闭其它 sora.chatgpt.com 的页面（包括重复 drafts），只保留 drafts_page
-            for p, u in sora_pages:
-                if p is drafts_page:
-                    continue
-                try:
-                    await p.close()
-                except Exception:
-                    pass
+            # 关键需求：确保整个指纹浏览器实例只保留 drafts_page
+            drafts_page = await _keep_only_one_drafts_page(drafts_page)
 
             # 强制将 drafts_page 置前并作为后续操作的统一 page
             try:
@@ -1610,6 +1670,21 @@ class SoraSession:
                         )
                         if new_page is not None:
                             drafts_page = new_page
+                            # 重启窗口后再做一次“全浏览器只保留 drafts”清理，避免残留其它窗口/页面
+                            try:
+                                u3 = _safe_page_url(drafts_page)
+                                if not u3.startswith(drafts_url):
+                                    try:
+                                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                                    except Exception:
+                                        pass
+                                drafts_page = await _keep_only_one_drafts_page(drafts_page)
+                                try:
+                                    self.pw_ctx.page = drafts_page
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
@@ -2684,7 +2759,7 @@ async def sora_gen_video(
             sess._schedule_idle_close()
         else:
             remaining = int((nf_check or {}).get("remaining_count") or 0)
-            if remaining <= 3:
+            if remaining <= 2:
                 sess._schedule_idle_close()
             else:
                 sess._cancel_idle_close()

@@ -1707,13 +1707,13 @@ class Database:
                           AND m.deleted=0 AND m.enabled=1
                           AND w.deleted=0 AND w.enabled=1
                           AND (
-                            (m.remaining_quota > 3)
+                            (m.remaining_quota > 2)
                             OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
                           )
                           AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
                           AND (m.consecutive_errors < t.continuous_error_threshold)
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                        ORDER BY m.consecutive_errors ASC, m.remaining_quota DESC, m.updated_at DESC
+                        ORDER BY m.consecutive_errors ASC, m.remaining_quota DESC, m.updated_at ASC
                         LIMIT 1
                         """,
                         (code,),
@@ -1738,7 +1738,7 @@ class Database:
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
-                            (remaining_quota > 3)
+                            (remaining_quota > 2)
                             OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
                           )
                           AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
