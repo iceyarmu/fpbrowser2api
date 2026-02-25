@@ -1000,6 +1000,59 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
     return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": False}
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/manual-start")
+async def manual_start_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """启用窗口 + 立刻关闭指纹浏览器窗口，然后重新打开并进入 Sora drafts。
+
+    说明：用于管理台“启动”按钮，效果等价于“强制重启窗口并确保 drafts tab 置前”。
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    
+
+    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
+
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    # 禁止自动关闭：避免 ensure_open / bring_to_front 后被 schedule 关掉
+    sora_ctx.idle_close_disabled = True
+    try:
+        sora_ctx._cancel_idle_close()
+    except Exception:
+        pass
+
+    # 立刻关窗（不走 idle_close 倒计时）
+    try:
+        await sora_ctx.close_and_drop()
+    except Exception:
+        pass
+
+    try:
+        await sora_ctx.ensure_open(args=[], force_open=True, headless=False)
+        await sora_ctx._bring_sora_drafts_to_front(refresh_target=False)
+        # 先启用：避免刚启动又被调度层跳过
+        try:
+            await db.update_task_type_window(mapping_id=mapping_id, enabled=True)
+        except Exception:
+            pass
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
+
+    return {"success": True, "mapping_id": mapping_id, "enabled": True, "idle_close_disabled": True}
+
+
 @router.delete("/api/admin/task-types/{task_type_id}")
 async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_token)):
     if not db:

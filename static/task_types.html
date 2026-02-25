@@ -644,14 +644,72 @@
 
       function getRowActionButtons(mappingId, fromEl) {
         const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
-        if (!tr) return { tr: null, openBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null };
+        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null };
         return {
           tr,
           openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
+          startBtn: tr.querySelector(`button[data-act="manualStart"][data-mid="${mappingId}"]`),
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
           refreshQuotaBtn: tr.querySelector(`button[data-act="refreshQuota"][data-mid="${mappingId}"]`),
           refreshInviteBtn: tr.querySelector(`button[data-act="refreshInvite"][data-mid="${mappingId}"]`),
         };
+      }
+
+      function patchMappingInState(mappingId, patch) {
+        const m = (state.mappings || []).find(x => String(x?.id || "") === String(mappingId));
+        if (m && patch && typeof patch === "object") Object.assign(m, patch);
+        return m || null;
+      }
+
+      function updateMappingRowUI(mappingId, patch, { fromEl } = {}) {
+        const { tr } = getRowActionButtons(mappingId, fromEl);
+        const m = patchMappingInState(mappingId, patch);
+        if (!tr || !m) return;
+
+        const has = (k) => patch && Object.prototype.hasOwnProperty.call(patch, k);
+
+        if (has("remaining_quota")) {
+          const el = tr.querySelector(`[data-role="remainingQuotaValue"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = String(m.remaining_quota ?? 0);
+        }
+        if (has("cooldown_until")) {
+          const el = tr.querySelector(`[data-role="cooldownUntil"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = String(m.cooldown_until || "-");
+        }
+        if (has("error_cooldown_until")) {
+          const el = tr.querySelector(`[data-role="errorCooldownUntil"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = String(m.error_cooldown_until || "-");
+        }
+        if (has("enabled")) {
+          const el = tr.querySelector(`[data-role="enabledBadge"][data-mid="${mappingId}"]`);
+          if (el) {
+            const on = !!m.enabled;
+            el.textContent = on ? "是" : "否";
+            el.className = `badge ${on ? "text-bg-success" : "text-bg-secondary"} enabled-click`;
+          }
+        }
+        if (has("consecutive_errors") || has("total_errors")) {
+          const ceEl = tr.querySelector(`[data-role="consecutiveErrors"][data-mid="${mappingId}"]`);
+          const teEl = tr.querySelector(`[data-role="totalErrors"][data-mid="${mappingId}"]`);
+          if (ceEl) ceEl.textContent = String(m.consecutive_errors ?? 0);
+          if (teEl) teEl.textContent = String(m.total_errors ?? 0);
+          const btn = tr.querySelector(`button[data-act="viewErrors"][data-mid="${mappingId}"]`);
+          if (btn) {
+            const bad = ((m.total_errors || 0) > 0) || ((m.consecutive_errors || 0) > 0);
+            btn.classList.remove("text-danger", "text-muted");
+            btn.classList.add(bad ? "text-danger" : "text-muted");
+          }
+        }
+        if (has("sora_access_token")) {
+          const el = tr.querySelector(`[data-role="accessToken"][data-mid="${mappingId}"]`);
+          const masked = tr.querySelector(`[data-role="accessTokenMasked"][data-mid="${mappingId}"]`);
+          if (el) el.dataset.token = String(m.sora_access_token || "");
+          if (masked) masked.textContent = String(maskToken(m.sora_access_token) || "-");
+        }
+        if (has("sora_access_expires")) {
+          const expEl = tr.querySelector(`[data-role="accessTokenExpires"][data-mid="${mappingId}"]`);
+          if (expEl) expEl.textContent = String(formatDateTimeShanghai(m.sora_access_expires) || "-");
+        }
       }
 
       function setBtnBusy(btn, busy, { loadingText = "处理中", keepWidth = true } = {}) {
@@ -977,7 +1035,7 @@
         updateQuotaSortHint();
         const items = getSortedMappings();
         body.innerHTML = items.map(m => `
-          <tr class="small2">
+          <tr class="small2" data-mid="${m.id}">
             <td>
               <input type="checkbox" class="form-check-input chkMap" value="${m.id}" ${state.mapSelected.has(m.id) ? "checked" : ""} />
             </td>
@@ -987,6 +1045,7 @@
                 <div class="fw-semibold quota-click" title="点击按窗口名称排序" data-role="winName">${escapeHtml(m.window_name || "-")}</div>
                 <div class="btn-group btn-group-sm" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-w-72" data-act="manualOpen" data-mid="${m.id}">打开</button>
+                  <button class="btn btn-outline-primary btn-sm btn-w-72" title="启用 + 立刻重启窗口并进入 Sora drafts" data-act="manualStart" data-mid="${m.id}">启动</button>
                   <button class="btn btn-outline-secondary btn-sm btn-w-72" data-act="manualClose" data-mid="${m.id}">关闭</button>
                 </div>
               </div>
@@ -1000,13 +1059,13 @@
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="fw-semibold quota-click" title="点击按额度排序" data-role="remainingQuota" data-mid="${m.id}">
-                  额度: <span class="fw-semibold">${m.remaining_quota}</span>
+                  额度: <span class="fw-semibold" data-role="remainingQuotaValue" data-mid="${m.id}">${m.remaining_quota}</span>
                 </div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
               </div>
               <div>remaining: <span class="fw-semibold">${m.sora_remaining_count ?? "-"}</span></div>
               <div>rate_limit: ${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">YES</span>` : `<span class="badge text-bg-success">NO</span>`}</div>
-              <div>重置时间: <span class="fw-semibold">${escapeHtml(m.cooldown_until || "-")}</span></div>
+              <div>重置时间: <span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1017,10 +1076,10 @@
                   data-role="accessToken"
                   data-mid="${m.id}"
                   data-token="${escapeHtml(m.sora_access_token || "")}"
-                >access_token: <span class="fw-semibold">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
+                >access_token: <span class="fw-semibold" data-role="accessTokenMasked" data-mid="${m.id}">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="获取/更新 access_token" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
               </div>
-              <div>expires: <span class="fw-semibold">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
+              <div>expires: <span class="fw-semibold" data-role="accessTokenExpires" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
             </td>
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1037,7 +1096,7 @@
                     title="点击查看该窗口错误列表"
                     data-act="viewErrors"
                     data-mid="${m.id}"
-                  >错误：<span class="fw-semibold">${m.consecutive_errors}</span>/${m.total_errors}</button>
+                >错误：<span class="fw-semibold" data-role="consecutiveErrors" data-mid="${m.id}">${m.consecutive_errors}</span>/<span class="fw-semibold" data-role="totalErrors" data-mid="${m.id}">${m.total_errors}</span></button>
                 </div>
                 <button
                   class="btn btn-outline-secondary btn-sm py-0 px-1"
@@ -1046,7 +1105,7 @@
                   data-mid="${m.id}"
                 >⟲</button>
               </div>
-              <div>冷却：${escapeHtml(m.error_cooldown_until || "-")}</div>
+              <div>冷却：<span class="fw-semibold" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></div>
             </td>
             <td class="mono">
               <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
@@ -1151,6 +1210,9 @@
         if (act === "manualOpen") {
           return manualOpenWindow(mappingId, el);
         }
+        if (act === "manualStart") {
+          return manualStartWindow(mappingId, el);
+        }
         if (act === "manualClose") {
           return manualCloseWindow(mappingId, el);
         }
@@ -1244,7 +1306,7 @@
             m.sora_access_token = tok || null;
             m.sora_access_expires = exp || null;
           }
-          renderMappings();
+          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
           toast((access_token ? "已保存" : "已自动获取并保存"), "success");
           tokenModal.hide();
         } catch (e) {
@@ -1258,9 +1320,10 @@
         try {
           // 如果刚刚触发了“关闭窗口倒计时提示”，这里顺手清掉提示，避免界面残留
           cancelCloseHintCountdown({ hideModal: true });
-          const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
           // 防止重复点击：打开/关闭同时锁住
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
+          if (startBtn) startBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
@@ -1269,20 +1332,48 @@
         } catch (e) {
           toast(e.message, "error");
         } finally {
-          const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
           setBtnBusy(openBtn, false);
+          if (startBtn) startBtn.disabled = false;
+          if (closeBtn) closeBtn.disabled = false;
+        }
+      }
+
+      async function manualStartWindow(mappingId, fromEl) {
+        try {
+          cancelCloseHintCountdown({ hideModal: true });
+          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          setBtnBusy(startBtn, true, { loadingText: "启动中" });
+          if (openBtn) openBtn.disabled = true;
+          if (closeBtn) closeBtn.disabled = true;
+
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
+          updateMappingRowUI(mappingId, { enabled: true }, { fromEl });
+          toast("已启动：启用窗口 + 重启并进入 drafts", "success");
+          flashBtnText(startBtn, "已启动");
+        } catch (e) {
+          toast(e.message, "error");
+        } finally {
+          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          setBtnBusy(startBtn, false);
+          if (openBtn) openBtn.disabled = false;
           if (closeBtn) closeBtn.disabled = false;
         }
       }
 
       async function manualCloseWindow(mappingId, fromEl) {
         const m = state.mappings.find(x => x.id === mappingId);
-        const { openBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+        const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
         try {
           // 立即调用接口：后端自己倒计时关闭；前端只做提示更友好
           cancelCloseHintCountdown({ hideModal: true });
           setBtnBusy(closeBtn, true, { loadingText: "提交中" });
           if (openBtn) openBtn.disabled = true;
+          if (startBtn) startBtn.disabled = true;
+
+          // 关闭前：先禁用本窗口（避免继续被调度/自动刷新）
+          await postJson(`/api/admin/task-type-windows/${mappingId}`, { method: "PATCH", body: { enabled: false } });
+          updateMappingRowUI(mappingId, { enabled: false }, { fromEl });
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
 
@@ -1298,6 +1389,7 @@
         } finally {
           setBtnBusy(closeBtn, false);
           if (openBtn) openBtn.disabled = false;
+          if (startBtn) startBtn.disabled = false;
           if (closeBtn) closeBtn.disabled = false;
         }
       }
@@ -1331,7 +1423,7 @@
           if (!r.ok) throw new Error(d.detail || "保存失败");
           toast("已保存", "success");
           mappingEditModal.hide();
-          await loadMappings();
+          updateMappingRowUI(id, payload);
         } catch (e) {
           toast(e.message, "error");
         }
@@ -1355,7 +1447,7 @@
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "清空失败");
           toast("已清空连续错误", "success");
-          await loadMappings();
+          updateMappingRowUI(mappingId, { consecutive_errors: 0 });
         } catch (e) {
           toast(e.message, "error");
         }
@@ -1511,19 +1603,14 @@
           setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
           const v = (d?.remaining_quota ?? 0);
-          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-          if (m) m.remaining_quota = v;
-          // 余额信息列包含富文本结构：为避免局部更新破坏 DOM，统一重渲染
-          renderMappings();
+          updateMappingRowUI(mappingId, { remaining_quota: v });
           toast(`已刷新：remaining_quota=${v}`, "success");
         } catch (e) {
           // 如果后端提示“已禁用”，这里同步 UI（兼容定时/手动场景）
           try {
             const msg = String(e?.message || "");
             if (msg.includes("已记录并禁用该窗口") || msg.includes("已禁用")) {
-              const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-              if (m) m.enabled = false;
-              renderMappings();
+              updateMappingRowUI(mappingId, { enabled: false });
             }
           } catch {}
           toast(e.message, "error");
@@ -1599,15 +1686,13 @@
             const qs = source ? `?source=${encodeURIComponent(String(source))}` : "";
             const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota${qs}`, { method: "POST" });
             const v = (d?.remaining_quota ?? 0);
-            const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
-            if (m) m.remaining_quota = v;
+            updateMappingRowUI(ids[i], { remaining_quota: v });
             ok += 1;
           } catch (e) {
-            const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
             try {
               const msg = String(e?.message || "");
               const autoDisabled = (String(source || "").toLowerCase() === "auto") || msg.includes("已记录并禁用该窗口") || msg.includes("已禁用");
-              if (m && autoDisabled) m.enabled = false; // 后端已自动禁用，这里做本地即时反馈
+              if (autoDisabled) updateMappingRowUI(ids[i], { enabled: false }); // 后端已自动禁用，这里做本地即时反馈
             } catch {}
             fail += 1;
           } finally {
@@ -1615,7 +1700,6 @@
             setBtnBusy(btn2, false);
           }
         }
-        renderMappings();
         if (!silent) toast(`批量刷新额度完成：成功 ${ok}，失败 ${fail}`, fail ? "warning" : "success");
         return { ok, fail };
       }
