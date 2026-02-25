@@ -41,14 +41,30 @@ class TaskService:
         # 仅内存保存 payload（不落库，节省 DB）
         self._task_payloads: dict[str, Dict[str, Any]] = {}
 
-    async def submit_task(self, task_type_code: str, payload: Dict[str, Any]) -> str:
+    async def submit_task(
+        self,
+        task_type_code: str,
+        payload: Dict[str, Any],
+        *,
+        mapping_id: Optional[int] = None,
+        window_pk: Optional[int] = None,
+    ) -> str:
         task_type_code = (task_type_code or "").strip()
         if not task_type_code:
             raise ValueError("task_type_code 不能为空")
         payload = payload or {}
 
-        picked = await self._pick_window(task_type_code)
+        picked: Optional[PickedWindow] = None
+        # 指定窗口优先级：mapping_id > window_pk > 默认自动挑选
+        if mapping_id is not None:
+            picked = await self._pick_window_by_mapping(task_type_code, mapping_id=int(mapping_id))
+        elif window_pk is not None:
+            picked = await self._pick_window_by_window_pk(task_type_code, window_pk=int(window_pk))
+        else:
+            picked = await self._pick_window(task_type_code)
         if not picked:
+            if mapping_id is not None or window_pk is not None:
+                raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型且额度>0、未冷却、已启用、未超并发")
             raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用")
 
         task_id = uuid.uuid4().hex
@@ -87,6 +103,67 @@ class TaskService:
         if not r:
             return None
 
+        mid = int(r["id"])
+        picked = PickedWindow(
+            mapping_id=mid,
+            window_pk=int(r["window_pk"]),
+            window_key=str(r.get("window_key") or "").strip(),
+            task_code=str(r["task_code"]),
+            task_concurrency=int(r.get("task_concurrency") or 1),
+            threshold=int(r.get("continuous_error_threshold") or 3),
+            timeout_seconds=int(r.get("timeout_seconds") or 600),
+            create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
+            browser_vendor=str(r.get("vendor") or "generic"),
+            browser_base_url=str(r.get("lan_addr") or ""),
+            browser_access_key=r.get("access_key"),
+            space_id=str(r.get("space_id") or ""),
+            sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
+            sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+        )
+        if not picked.window_key:
+            try:
+                await self.db.release_mapping_slot(mid)
+            except Exception:
+                pass
+            return None
+        return picked
+
+    async def _pick_window_by_mapping(self, task_type_code: str, mapping_id: int) -> Optional[PickedWindow]:
+        """指定 mapping_id（task_type_windows.id）预占并发槽位并返回窗口上下文。"""
+        r = await self.db.reserve_mapping_for_task(task_type_code=task_type_code, mapping_id=int(mapping_id))
+        if not r:
+            return None
+        # 复用字段解析逻辑：与 _pick_window 保持一致
+        mid = int(r["id"])
+        picked = PickedWindow(
+            mapping_id=mid,
+            window_pk=int(r["window_pk"]),
+            window_key=str(r.get("window_key") or "").strip(),
+            task_code=str(r["task_code"]),
+            task_concurrency=int(r.get("task_concurrency") or 1),
+            threshold=int(r.get("continuous_error_threshold") or 3),
+            timeout_seconds=int(r.get("timeout_seconds") or 600),
+            create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
+            browser_vendor=str(r.get("vendor") or "generic"),
+            browser_base_url=str(r.get("lan_addr") or ""),
+            browser_access_key=r.get("access_key"),
+            space_id=str(r.get("space_id") or ""),
+            sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
+            sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+        )
+        if not picked.window_key:
+            try:
+                await self.db.release_mapping_slot(mid)
+            except Exception:
+                pass
+            return None
+        return picked
+
+    async def _pick_window_by_window_pk(self, task_type_code: str, window_pk: int) -> Optional[PickedWindow]:
+        """指定 window_pk 预占并发槽位并返回窗口上下文。"""
+        r = await self.db.reserve_window_for_task(task_type_code=task_type_code, window_pk=int(window_pk))
+        if not r:
+            return None
         mid = int(r["id"])
         picked = PickedWindow(
             mapping_id=mid,

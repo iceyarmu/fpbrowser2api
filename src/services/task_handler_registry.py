@@ -25,6 +25,10 @@ class CreateTaskContext:
     db: Any
     task_service: Any
 
+    # 可选：指定执行窗口（仅用于调试/测试；不指定则走默认调度）
+    mapping_id: Optional[int] = None
+    window_pk: Optional[int] = None
+
 
 @dataclass(frozen=True)
 class RefreshQuotaContext:
@@ -55,19 +59,34 @@ def _label(key: str, text: str) -> Dict[str, str]:
 async def create_task__default_submit(ctx: CreateTaskContext) -> str:
     """默认：走 TaskService.submit_task（原有行为）。"""
 
-    return await ctx.task_service.submit_task(ctx.task_type.code, ctx.payload or {})
+    return await ctx.task_service.submit_task(
+        ctx.task_type.code,
+        ctx.payload or {},
+        mapping_id=ctx.mapping_id,
+        window_pk=ctx.window_pk,
+    )
 
 
 async def create_task__force_gen_image(ctx: CreateTaskContext) -> str:
     """示例：无论选择什么任务类型，都强制按 gen_image 创建（便于演示/调试）。"""
 
-    return await ctx.task_service.submit_task("gen_image", ctx.payload or {})
+    return await ctx.task_service.submit_task(
+        "gen_image",
+        ctx.payload or {},
+        mapping_id=ctx.mapping_id,
+        window_pk=ctx.window_pk,
+    )
 
 
 async def create_task__sora_gen_video(ctx: CreateTaskContext) -> str:
     """Sora 生视频：同样走 submit_task，执行阶段在 _run_task 中分发到 sora_task_executor.py。"""
 
-    return await ctx.task_service.submit_task(ctx.task_type.code, ctx.payload or {})
+    return await ctx.task_service.submit_task(
+        ctx.task_type.code,
+        ctx.payload or {},
+        mapping_id=ctx.mapping_id,
+        window_pk=ctx.window_pk,
+    )
 
 
 CREATE_TASK_HANDLERS: Dict[str, Tuple[str, CreateTaskHandler]] = {

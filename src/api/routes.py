@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import JSONResponse
@@ -30,6 +30,9 @@ def set_dependencies(database: Database) -> None:
 class CreateTaskRequest(BaseModel):
     task_type_code: str = Field(min_length=2, max_length=64)
     json: Dict[str, Any] = Field(default_factory=dict)
+    # 可选：指定执行窗口（仅用于调试/测试；不指定则走默认调度）
+    mapping_id: Optional[int] = Field(default=None, ge=1)
+    window_pk: Optional[int] = Field(default=None, ge=1)
 
 
 @router.get("/v1/task-types")
@@ -77,7 +80,16 @@ async def create_task(
             handler = get_create_task_handler(task_type.create_task_handler)
         except KeyError as e:
             raise ValueError(str(e))
-        tid = await handler(CreateTaskContext(task_type=task_type, payload=payload, db=db, task_service=task_service))
+        tid = await handler(
+            CreateTaskContext(
+                task_type=task_type,
+                payload=payload,
+                mapping_id=body.mapping_id,
+                window_pk=body.window_pk,
+                db=db,
+                task_service=task_service,
+            )
+        )
         return {"success": True, "task_id": tid}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
