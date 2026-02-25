@@ -1034,7 +1034,7 @@ async def _sora_create_task_pw(
                 status_code=status_i,
             )
 
-        raise RuntimeError(f"create 未成功或未解析到任务ID：status={status_i} body={safe_trim(body_text, 400)}")
+        raise RuntimeError(f"create failed：status={status_i} body={safe_trim(body_text, 400)}")
 
     auth_state: Dict[str, Any] = {
         "bearer_token": bearer_token,
