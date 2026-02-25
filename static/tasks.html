@@ -121,12 +121,12 @@
       </div>
     </div>
 
-    <!-- Error List Modal -->
+    <!-- Error Message Modal -->
     <div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title mono" id="errorModalTitle">错误列表</h5>
+            <h5 class="modal-title mono" id="errorModalTitle">错误信息</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body" id="errorModalBody"></div>
@@ -202,63 +202,23 @@
       async function openErrorModalByTaskId(taskId) {
         if (!errorModal) return;
         const item = state.items.find(x => String(x.task_id || "") === String(taskId || ""));
+        const err = String(item?.error_message || "").trim();
         const windowPk = item?.window_pk;
-        const windowAccount = item?.window_account || "-";
-        if (windowPk === null || windowPk === undefined || windowPk === "") {
-          toast("该任务未绑定窗口，无法查询错误列表", "error");
+        const windowAccount = String(item?.window_account || "").trim();
+
+        if (!err) {
+          toast("该任务没有错误信息", "info");
           return;
         }
-        await openErrorModal(Number(windowPk), String(windowAccount));
-      }
 
-      async function openErrorModal(windowPk, windowAccount) {
-        if (!errorModal) return;
-        errorModalTitle.textContent = `错误列表 · ${windowAccount || "-"} · window_pk=${String(windowPk)}`;
-        errorModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        const parts = [`错误信息`, `task_id=${String(taskId || "")}`];
+        if (windowAccount) parts.push(windowAccount);
+        if (windowPk !== null && windowPk !== undefined && windowPk !== "") parts.push(`window_pk=${String(windowPk)}`);
+        errorModalTitle.textContent = parts.join(" · ");
+        errorModalBody.innerHTML = `
+          <pre class="mono small2 mb-0" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(err)}</pre>
+        `;
         errorModal.show();
-
-        try {
-          const params = new URLSearchParams();
-          params.set("limit", "200");
-          params.set("offset", "0");
-          params.set("window_pk", String(windowPk));
-
-          const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "加载错误列表失败");
-
-          const items = (d.items || []).filter(x => String(x.error_message || "").trim());
-          if (!items.length) {
-            errorModalBody.innerHTML = `<div class="text-muted small">暂无错误</div>`;
-            return;
-          }
-
-          errorModalBody.innerHTML = `
-            <div class="list-group">
-              ${items.map(x => {
-                const code = x.task_type_code || "-";
-                const typeName = state.typeMap.get(String(code)) || String(code);
-                const err = String(x.error_message || "").trim();
-                return `
-                  <div class="list-group-item">
-                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-                      <span class="mono">${escapeHtml(x.created_at || "")}</span>
-                      <span class="text-muted">·</span>
-                      <span class="mono">${escapeHtml(x.task_id || "")}</span>
-                      <span class="text-muted">·</span>
-                      <span>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></span>
-                      <span class="ms-auto">${badgeForStatus(x.status)}</span>
-                    </div>
-                    <pre class="mono small2 mb-0" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(err)}</pre>
-                  </div>
-                `;
-              }).join("")}
-            </div>
-          `;
-        } catch (e) {
-          errorModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载错误列表失败")}</div>`;
-        }
       }
 
       function currentFilters() {
@@ -313,7 +273,7 @@
           const sortNumText = String(sortNum ?? "").trim();
           const windowInfo = sortNumText ? (accRaw ? `${sortNumText}-${accRaw}` : sortNumText) : acc;
           const errCell = (String(err || "").trim())
-            ? `<button class="btn btn-link p-0 text-danger mono truncate-1 truncate-err text-start" style="max-width: 520px;" data-action="view-errors" data-task-id="${escapeHtml(x.task_id || "")}" title="点击查看该窗口全部错误">${escapeHtml(err)}</button>`
+            ? `<button class="btn btn-link p-0 text-danger mono truncate-1 truncate-err text-start" style="max-width: 520px;" data-action="view-errors" data-task-id="${escapeHtml(x.task_id || "")}" title="点击查看该条错误信息">${escapeHtml(err)}</button>`
             : `<span class="text-muted">-</span>`;
           return `
             <tr class="small2">
