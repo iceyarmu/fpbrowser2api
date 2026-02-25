@@ -345,13 +345,17 @@
               <div class="col-12">
                 <label class="form-label mono">过期时间（expires）</label>
                 <input class="form-control mono" id="tokenExpires" placeholder="可选：例如 2026-02-20T12:34:56.000Z" />
-                <div class="form-text">留空 access_token 时，将在对应指纹浏览器窗口内自动请求 <span class="mono">/api/auth/session</span> 获取并保存（走该窗口代理）。</div>
+                <div class="form-text">
+                  点击“更新”将在对应指纹浏览器窗口内自动请求 <span class="mono">/api/auth/session</span> 获取并保存（走该窗口代理）。
+                  “保存”仅用于手工填写 <span class="mono">access_token</span> 的场景。
+                </div>
               </div>
             </div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-            <button type="button" class="btn btn-primary" id="btnConvertToken">保存（留空则自动获取）</button>
+            <button type="button" class="btn btn-primary" id="btnUpdateToken">更新</button>
+            <button type="button" class="btn btn-outline-primary" id="btnConvertToken">保存</button>
           </div>
         </div>
       </div>
@@ -1289,15 +1293,18 @@
 
       async function convertAndSaveToken() {
         const btn = document.getElementById("btnConvertToken");
+        const btnUpdate = document.getElementById("btnUpdateToken");
         try {
           const mappingId = parseInt(document.getElementById("tokenEditMappingId").value, 10);
           if (Number.isNaN(mappingId)) throw new Error("mapping_id 无效");
           const access_token = (document.getElementById("tokenAccessToken").value || "").trim();
           const expires = (document.getElementById("tokenExpires").value || "").trim();
+          if (!access_token) throw new Error("请填写 access_token 后再点“保存”；如需自动获取请点“更新”");
           setBtnBusy(btn, true, { loadingText: "保存中" });
+          if (btnUpdate) btnUpdate.disabled = true;
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
             method: "POST",
-            body: { access_token: access_token || null, expires: expires || null },
+            body: { access_token, expires: expires || null },
           });
           const tok = String(d?.access_token || "").trim();
           const exp = String(d?.expires || "").trim();
@@ -1307,12 +1314,51 @@
             m.sora_access_expires = exp || null;
           }
           updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
-          toast((access_token ? "已保存" : "已自动获取并保存"), "success");
+          toast("已保存", "success");
           tokenModal.hide();
         } catch (e) {
           toast(e.message || "保存失败", "error");
         } finally {
           setBtnBusy(btn, false);
+          if (btnUpdate) btnUpdate.disabled = false;
+        }
+      }
+
+      async function updateTokenByAutoFetch() {
+        const btn = document.getElementById("btnUpdateToken");
+        const btnSave = document.getElementById("btnConvertToken");
+        try {
+          const mappingId = parseInt(document.getElementById("tokenEditMappingId").value, 10);
+          if (Number.isNaN(mappingId)) throw new Error("mapping_id 无效");
+
+          // 明确走“自动获取”分支：前端统一提交空字符串，避免和“保存”混淆
+          const tokEl = document.getElementById("tokenAccessToken");
+          const expEl = document.getElementById("tokenExpires");
+          if (tokEl) tokEl.value = "";
+          if (expEl) expEl.value = "";
+
+          setBtnBusy(btn, true, { loadingText: "更新中" });
+          if (btnSave) btnSave.disabled = true;
+
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+            method: "POST",
+            body: { access_token: "", expires: "" },
+          });
+          const tok = String(d?.access_token || "").trim();
+          const exp = String(d?.expires || "").trim();
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (m) {
+            m.sora_access_token = tok || null;
+            m.sora_access_expires = exp || null;
+          }
+          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
+          toast("已自动获取并保存", "success");
+          tokenModal.hide();
+        } catch (e) {
+          toast(e.message || "更新失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+          if (btnSave) btnSave.disabled = false;
         }
       }
 
@@ -1572,6 +1618,7 @@
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
       document.getElementById("btnSaveMapping").addEventListener("click", saveMappingFromModal);
+      document.getElementById("btnUpdateToken").addEventListener("click", updateTokenByAutoFetch);
       document.getElementById("btnConvertToken").addEventListener("click", convertAndSaveToken);
       document.getElementById("typeSelect").addEventListener("change", (e) => {
         const v = e.target.value;
