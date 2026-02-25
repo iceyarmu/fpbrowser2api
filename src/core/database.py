@@ -1614,69 +1614,13 @@ class Database:
             )
             await db.commit()
 
-    async def list_available_windows_for_pick(self, task_type_code: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """返回可用于调度挑选的窗口候选列表（按健康度/额度排序）。
-
-        说明：
-        - 并发控制在 DB 层完成：通过 inflight_slots 原子增减，支持多进程/多实例。
-        - 这里会过滤掉已满载（inflight_slots >= task_types.concurrency）的 mapping。
-        """
-        lim = max(1, min(500, int(limit or 50)))
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                """
-                SELECT
-                  m.*,
-                  CASE
-                    WHEN (m.remaining_quota > 1) THEN 1
-                    ELSE 0
-                  END AS has_quota_now,
-                  t.code AS task_code,
-                  t.concurrency AS task_concurrency,
-                  t.continuous_error_threshold,
-                  t.timeout_seconds,
-                  t.create_task_handler,
-                  w.window_key,
-                  w.window_name,
-                  w.platform_account,
-                  w.platform_url,
-                  s.id AS space_pk,
-                  s.space_id AS space_id,
-                  b.id AS browser_pk,
-                  b.lan_addr,
-                  b.vendor,
-                  b.access_key
-                FROM task_types t
-                JOIN task_type_windows m ON m.task_type_id = t.id
-                JOIN windows w ON m.window_pk = w.id
-                JOIN spaces s ON w.space_pk = s.id
-                JOIN browsers b ON s.browser_id = b.id
-                WHERE t.deleted=0 AND t.enabled=1
-                  AND t.code=?
-                  AND m.deleted=0 AND m.enabled=1
-                  AND w.deleted=0 AND w.enabled=1
-                  AND (
-                    (m.remaining_quota > 1)
-                    OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
-                  )
-                  AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
-                  AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                ORDER BY has_quota_now DESC, m.consecutive_errors ASC, m.remaining_quota ASC, m.updated_at DESC
-                LIMIT ?
-                """,
-                (task_type_code.strip(), lim),
-            )
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
-
     async def pick_and_reserve_window_for_task(self, task_type_code: str) -> Optional[Dict[str, Any]]:
         """挑选 1 个窗口并原子预占 1 个并发槽位（一步完成）。
 
         目标：
         - 避免 TaskService “先查一批候选 -> 再循环 try_reserve” 的高并发抖动
         - 把“排序挑选 + 并发预占”压缩为单次 DB 写入（单条 SQL）
-        - remaining_quota 只代表额度：remaining_quota == 1 表示不可用；并发限制以 task_types.concurrency 为准
+        - remaining_quota 只代表额度：remaining_quota == 3 表示不可用；并发限制以 task_types.concurrency 为准
 
         返回：
         - 成功：返回 join 后的窗口信息 dict（与 list_available_windows_for_pick 字段一致）
@@ -1718,7 +1662,7 @@ class Database:
                           AND m.deleted=0 AND m.enabled=1
                           AND w.deleted=0 AND w.enabled=1
                           AND (
-                            (m.remaining_quota > 1)
+                            (m.remaining_quota > 3)
                             OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
                           )
                           AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
@@ -1749,7 +1693,7 @@ class Database:
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
-                            (remaining_quota > 1)
+                            (remaining_quota > 3)
                             OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
                           )
                           AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)

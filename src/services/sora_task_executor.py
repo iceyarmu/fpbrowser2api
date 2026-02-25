@@ -2684,7 +2684,7 @@ async def sora_gen_video(
             sess._schedule_idle_close()
         else:
             remaining = int((nf_check or {}).get("remaining_count") or 0)
-            if remaining <= 1:
+            if remaining <= 3:
                 sess._schedule_idle_close()
             else:
                 sess._cancel_idle_close()
