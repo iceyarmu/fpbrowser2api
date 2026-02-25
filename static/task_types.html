@@ -1734,21 +1734,25 @@
         try {
           const m = state.mappings.find(x => x.id === mappingId);
           if (!m) return;
-          if ((m.consecutive_errors || 0) <= 0) {
+          const ce = (m.consecutive_errors || 0);
+          const hasCooldown = !!String(m.error_cooldown_until || "").trim();
+          if (ce <= 0 && !hasCooldown) {
             toast("连续错误已为 0", "success");
             return;
           }
-          const ok = confirm(`确定清空该绑定的连续错误吗？\n窗口：${m.window_name || "-"}\n连续错误：${m.consecutive_errors} → 0`);
+          const ok = confirm(
+            `确定重置该绑定的错误状态吗？\n窗口：${m.window_name || "-"}\n连续错误：${ce} → 0\n冷却到：${m.error_cooldown_until || "-"} → -`
+          );
           if (!ok) return;
           const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
             method: "PATCH",
-            body: JSON.stringify({ consecutive_errors: 0 }),
+            body: JSON.stringify({ consecutive_errors: 0, error_cooldown_until: "" }),
           });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "清空失败");
-          toast("已清空连续错误", "success");
-          updateMappingRowUI(mappingId, { consecutive_errors: 0 });
+          toast("已重置错误状态", "success");
+          updateMappingRowUI(mappingId, { consecutive_errors: 0, error_cooldown_until: "" });
         } catch (e) {
           toast(e.message, "error");
         }
