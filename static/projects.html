@@ -1040,12 +1040,47 @@
             || (dsCategory && dsCategory !== "noproxy")
           );
 
-          const curItem = curIdNum > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum)) : null;
+          const isIpv4 = (s) => /^\d{1,3}(\.\d{1,3}){3}$/.test(String(s || "").trim());
+          const matchProxyIdBySyncedInfo = () => {
+            // 1) host:port 精确匹配
+            if (dsHost && dsPort) {
+              const hits = items.filter(p => String(p.host || "").trim() === dsHost && String(p.port || "").trim() === dsPort);
+              if (hits.length === 1) return parseInt(String(hits[0].proxy_id || "0"), 10) || 0;
+            }
+            // 2) addr 若是 host:port，也做一次解析匹配
+            if (dsAddr && dsAddr.includes(":")) {
+              const parts = dsAddr.split(":");
+              const h = String(parts[0] || "").trim();
+              const p = String(parts.slice(1).join(":") || "").trim();
+              if (h && p) {
+                const hits = items.filter(x => String(x.host || "").trim() === h && String(x.port || "").trim() === p);
+                if (hits.length === 1) return parseInt(String(hits[0].proxy_id || "0"), 10) || 0;
+              }
+            }
+            // 3) addr 若是 IPv4：优先匹配 last_ip，其次匹配 host
+            if (dsAddr && isIpv4(dsAddr)) {
+              const hitsLastIp = items.filter(p => String(p.last_ip || "").trim() === dsAddr);
+              if (hitsLastIp.length === 1) return parseInt(String(hitsLastIp[0].proxy_id || "0"), 10) || 0;
+              const hitsHost = items.filter(p => String(p.host || "").trim() === dsAddr);
+              if (hitsHost.length === 1) return parseInt(String(hitsHost[0].proxy_id || "0"), 10) || 0;
+            }
+            return 0;
+          };
+
+          // 兜底：当 moduleId=0(自定义代理) 但同步到了 lastIp/host:port 时，自动在本地代理列表中匹配并选中
+          let inferredProxyId = 0;
+          if (curIdNum <= 0 && hasProxyHint) {
+            inferredProxyId = matchProxyIdBySyncedInfo();
+          }
+          const effectiveCur2 = inferredProxyId > 0 ? String(inferredProxyId) : String(effectiveCur || "0");
+          const curIdNum2 = parseInt(String(effectiveCur2 || "0"), 10) || 0;
+
+          const curItem = curIdNum2 > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum2)) : null;
           const curIsExpired = !!(curItem && isProxyExpired(curItem));
-          const curOption = (curIdNum > 0 && curItem && curIsExpired)
-            ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem))}</option>`
-            : (curIdNum > 0 && !curItem)
-              ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum))}</option>`
+          const curOption = (curIdNum2 > 0 && curItem && curIsExpired)
+            ? `<option value="${escapeHtml(String(curIdNum2))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem))}</option>`
+            : (curIdNum2 > 0 && !curItem)
+              ? `<option value="${escapeHtml(String(curIdNum2))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum2))}</option>`
               : "";
 
           const customLabelParts = [];
@@ -1053,7 +1088,7 @@
           if (dsAddr) customLabelParts.push(dsAddr);
           if (dsCountry) customLabelParts.push(dsCountry);
           const customLabel = customLabelParts.join(" / ");
-          const customOption = (curIdNum <= 0 && looksCustomProxy)
+          const customOption = (curIdNum2 <= 0 && looksCustomProxy && inferredProxyId <= 0)
             ? `<option value="__custom__" selected disabled>(自定义代理) ${escapeHtml(customLabel || "-")}</option>`
             : "";
 
@@ -1063,7 +1098,10 @@
             ${curOption}
             ${available.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p))}</option>`).join("")}
           `;
-          sel.value = (curIdNum <= 0 && looksCustomProxy) ? "__custom__" : String(effectiveCur || "0");
+          if (inferredProxyId > 0) {
+            sel.dataset.current_proxy_id = String(inferredProxyId);
+          }
+          sel.value = (curIdNum2 <= 0 && looksCustomProxy && inferredProxyId <= 0) ? "__custom__" : String(effectiveCur2 || "0");
           if (!sel.value) sel.value = "0";
         });
       }
