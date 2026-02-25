@@ -386,6 +386,26 @@
         return 0;
       }
 
+      function getWindowProxyMeta(w) {
+        if (!w || typeof w !== "object") return {
+          method: "",
+          category: "",
+          host: "",
+          port: "",
+          addr: "",
+          country: "",
+        };
+        const raw = (w.raw && typeof w.raw === "object") ? w.raw : {};
+        const rawProxyInfo = (raw.proxyInfo && typeof raw.proxyInfo === "object") ? raw.proxyInfo : {};
+        const method = String(raw.proxyMethod ?? rawProxyInfo.proxyMethod ?? "").trim();
+        const category = String(raw.proxyCategory ?? rawProxyInfo.proxyCategory ?? "").trim();
+        const host = String(raw.proxyHost ?? rawProxyInfo.host ?? "").trim();
+        const port = String(raw.proxyPort ?? rawProxyInfo.port ?? "").trim();
+        const addr = String(w.proxy_addr ?? raw.lastIp ?? rawProxyInfo.lastIp ?? "").trim();
+        const country = String(w.proxy_country ?? raw.lastCountry ?? rawProxyInfo.lastCountry ?? "").trim();
+        return { method, category, host, port, addr, country };
+      }
+
       function renderWindowsTable(windows, spacePk) {
         if (!windows.length) return `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
         return `
@@ -418,6 +438,12 @@
                       <select class="form-select form-select-sm mono" data-role="proxySelect"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
                         data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                        data-proxy_method="${escapeHtml(getWindowProxyMeta(w).method)}"
+                        data-proxy_category="${escapeHtml(getWindowProxyMeta(w).category)}"
+                        data-proxy_host="${escapeHtml(getWindowProxyMeta(w).host)}"
+                        data-proxy_port="${escapeHtml(getWindowProxyMeta(w).port)}"
+                        data-proxy_addr="${escapeHtml(getWindowProxyMeta(w).addr)}"
+                        data-proxy_country="${escapeHtml(getWindowProxyMeta(w).country)}"
                         data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                         <option value="">(加载代理中...)</option>
                       </select>
@@ -739,6 +765,12 @@
               <select class="form-select form-select-sm mono" data-role="proxySelect"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
                 data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                data-proxy_method="${escapeHtml(getWindowProxyMeta(w).method)}"
+                data-proxy_category="${escapeHtml(getWindowProxyMeta(w).category)}"
+                data-proxy_host="${escapeHtml(getWindowProxyMeta(w).host)}"
+                data-proxy_port="${escapeHtml(getWindowProxyMeta(w).port)}"
+                data-proxy_addr="${escapeHtml(getWindowProxyMeta(w).addr)}"
+                data-proxy_country="${escapeHtml(getWindowProxyMeta(w).country)}"
                 data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                 <option value="">(加载代理中...)</option>
               </select>
@@ -993,6 +1025,21 @@
           const dsCur = String(sel.dataset.current_proxy_id || "").trim();
           const effectiveCur = curTrim !== "" ? curTrim : (dsCur !== "" ? dsCur : "0");
           const curIdNum = parseInt(String(effectiveCur || "0"), 10) || 0;
+
+          const dsMethod = String(sel.dataset.proxy_method || "").trim().toLowerCase();
+          const dsCategory = String(sel.dataset.proxy_category || "").trim().toLowerCase();
+          const dsHost = String(sel.dataset.proxy_host || "").trim();
+          const dsPort = String(sel.dataset.proxy_port || "").trim();
+          const dsAddr = String(sel.dataset.proxy_addr || "").trim();
+          const dsCountry = String(sel.dataset.proxy_country || "").trim();
+
+          const hasProxyHint = !!(dsAddr || (dsHost && dsPort) || (dsCategory && dsCategory !== "noproxy"));
+          const looksCustomProxy = hasProxyHint && (
+            (dsMethod === "custom" && dsCategory !== "noproxy")
+            || (dsHost && dsPort)
+            || (dsCategory && dsCategory !== "noproxy")
+          );
+
           const curItem = curIdNum > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum)) : null;
           const curIsExpired = !!(curItem && isProxyExpired(curItem));
           const curOption = (curIdNum > 0 && curItem && curIsExpired)
@@ -1001,12 +1048,22 @@
               ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum))}</option>`
               : "";
 
+          const customLabelParts = [];
+          if (dsHost || dsPort) customLabelParts.push(`${dsHost || "-"}:${dsPort || "-"}`);
+          if (dsAddr) customLabelParts.push(dsAddr);
+          if (dsCountry) customLabelParts.push(dsCountry);
+          const customLabel = customLabelParts.join(" / ");
+          const customOption = (curIdNum <= 0 && looksCustomProxy)
+            ? `<option value="__custom__" selected disabled>(自定义代理) ${escapeHtml(customLabel || "-")}</option>`
+            : "";
+
           sel.innerHTML = `
+            ${customOption}
             <option value="0">(不使用代理)</option>
             ${curOption}
             ${available.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p))}</option>`).join("")}
           `;
-          sel.value = String(effectiveCur || "0");
+          sel.value = (curIdNum <= 0 && looksCustomProxy) ? "__custom__" : String(effectiveCur || "0");
           if (!sel.value) sel.value = "0";
         });
       }
