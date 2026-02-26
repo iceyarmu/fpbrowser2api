@@ -1939,6 +1939,212 @@ class Database:
                 raise
         return None
 
+    async def force_reserve_mapping_for_task(self, task_type_code: str, mapping_id: int) -> Optional[Dict[str, Any]]:
+        """强制按指定 mapping_id 预占 1 个并发槽位，并返回窗口上下文。
+
+        与 reserve_mapping_for_task 的差异：
+        - 不再基于“额度/冷却/错误熔断/并发上限”等资源约束判断可用性
+        - 仅要求：task_type 关联正确 + mapping/window 未删除且启用
+        - 仍会在 task_type_windows.inflight_slots 上做 +1，保证 TaskService 的 release_mapping_slot 语义一致
+        """
+        code = (task_type_code or "").strip()
+        mid = int(mapping_id)
+        if not code or mid <= 0:
+            return None
+
+        for _ in range(3):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    db.row_factory = aiosqlite.Row
+                    await db.execute("PRAGMA foreign_keys=ON")
+                    try:
+                        await db.execute("PRAGMA busy_timeout=3000")
+                    except Exception:
+                        pass
+                    await db.execute("BEGIN IMMEDIATE")
+
+                    # Step 1: 仅校验绑定关系 + 启用/未删除
+                    cur = await db.execute(
+                        """
+                        SELECT m.id AS mapping_id
+                        FROM task_types t
+                        JOIN task_type_windows m ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        WHERE t.deleted=0 AND t.enabled=1
+                          AND t.code=?
+                          AND m.id=?
+                          AND m.deleted=0 AND m.enabled=1
+                          AND w.deleted=0 AND w.enabled=1
+                        LIMIT 1
+                        """,
+                        (code, mid),
+                    )
+                    picked = await cur.fetchone()
+                    if not picked:
+                        await db.execute("ROLLBACK")
+                        return None
+
+                    # Step 2: 强制预占并发槽位（不做资源约束判断）
+                    cur2 = await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                          AND deleted = 0 AND enabled = 1
+                        """,
+                        (mid,),
+                    )
+                    if int(cur2.rowcount or 0) <= 0:
+                        await db.execute("ROLLBACK")
+                        continue
+
+                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致）
+                    cur3 = await db.execute(
+                        """
+                        SELECT
+                          m.*,
+                          t.code AS task_code,
+                          t.concurrency AS task_concurrency,
+                          t.continuous_error_threshold,
+                          t.timeout_seconds,
+                          t.create_task_handler,
+                          w.window_key,
+                          w.window_name,
+                          w.platform_account,
+                          w.platform_url,
+                          s.id AS space_pk,
+                          s.space_id AS space_id,
+                          b.id AS browser_pk,
+                          b.lan_addr,
+                          b.vendor,
+                          b.access_key
+                        FROM task_type_windows m
+                        JOIN task_types t ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        JOIN spaces s ON w.space_pk = s.id
+                        JOIN browsers b ON s.browser_id = b.id
+                        WHERE m.id = ?
+                        LIMIT 1
+                        """,
+                        (mid,),
+                    )
+                    row = await cur3.fetchone()
+                    await db.commit()
+                    return dict(row) if row else None
+            except Exception as e:
+                if "database is locked" in str(e).lower():
+                    import asyncio
+
+                    await asyncio.sleep(0.01)
+                    continue
+                raise
+        return None
+
+    async def force_reserve_window_for_task(self, task_type_code: str, window_pk: int) -> Optional[Dict[str, Any]]:
+        """强制按指定 window_pk 预占 1 个并发槽位，并返回窗口上下文。
+
+        与 reserve_window_for_task 的差异：
+        - 不再基于“额度/冷却/错误熔断/并发上限”等资源约束判断可用性
+        - 仅要求：task_type 关联正确 + mapping/window 未删除且启用
+        - 仍会在 task_type_windows.inflight_slots 上做 +1，保证 TaskService 的 release_mapping_slot 语义一致
+        """
+        code = (task_type_code or "").strip()
+        wid = int(window_pk)
+        if not code or wid <= 0:
+            return None
+
+        for _ in range(3):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    db.row_factory = aiosqlite.Row
+                    await db.execute("PRAGMA foreign_keys=ON")
+                    try:
+                        await db.execute("PRAGMA busy_timeout=3000")
+                    except Exception:
+                        pass
+                    await db.execute("BEGIN IMMEDIATE")
+
+                    # Step 1: 仅找到该 task_type+window 的 mapping（绑定关系 + 启用/未删除）
+                    cur = await db.execute(
+                        """
+                        SELECT m.id AS mapping_id
+                        FROM task_types t
+                        JOIN task_type_windows m ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        WHERE t.deleted=0 AND t.enabled=1
+                          AND t.code=?
+                          AND m.window_pk=?
+                          AND m.deleted=0 AND m.enabled=1
+                          AND w.deleted=0 AND w.enabled=1
+                        LIMIT 1
+                        """,
+                        (code, wid),
+                    )
+                    picked = await cur.fetchone()
+                    if not picked:
+                        await db.execute("ROLLBACK")
+                        return None
+
+                    mid = int(picked["mapping_id"])
+
+                    # Step 2: 强制预占并发槽位（不做资源约束判断）
+                    cur2 = await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                          AND deleted = 0 AND enabled = 1
+                        """,
+                        (mid,),
+                    )
+                    if int(cur2.rowcount or 0) <= 0:
+                        await db.execute("ROLLBACK")
+                        continue
+
+                    # Step 3: 返回上下文
+                    cur3 = await db.execute(
+                        """
+                        SELECT
+                          m.*,
+                          t.code AS task_code,
+                          t.concurrency AS task_concurrency,
+                          t.continuous_error_threshold,
+                          t.timeout_seconds,
+                          t.create_task_handler,
+                          w.window_key,
+                          w.window_name,
+                          w.platform_account,
+                          w.platform_url,
+                          s.id AS space_pk,
+                          s.space_id AS space_id,
+                          b.id AS browser_pk,
+                          b.lan_addr,
+                          b.vendor,
+                          b.access_key
+                        FROM task_type_windows m
+                        JOIN task_types t ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        JOIN spaces s ON w.space_pk = s.id
+                        JOIN browsers b ON s.browser_id = b.id
+                        WHERE m.id = ?
+                        LIMIT 1
+                        """,
+                        (mid,),
+                    )
+                    row = await cur3.fetchone()
+                    await db.commit()
+                    return dict(row) if row else None
+            except Exception as e:
+                if "database is locked" in str(e).lower():
+                    import asyncio
+
+                    await asyncio.sleep(0.01)
+                    continue
+                raise
+        return None
+
     async def reserve_window_for_task(self, task_type_code: str, window_pk: int) -> Optional[Dict[str, Any]]:
         """按指定 window_pk 预占 1 个并发槽位，并返回窗口上下文。"""
         code = (task_type_code or "").strip()

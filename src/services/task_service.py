@@ -157,7 +157,7 @@ class TaskService:
                 picked = await self._pick_window(task_type_code)
         if not picked:
             if mapping_id is not None or window_pk is not None:
-                raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型且额度>0、未冷却、已启用、未超并发")
+                raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型、未删除、已启用")
             raise RuntimeError("没有可用窗口：请确认该任务类型已绑定窗口且额度>0、未冷却、已启用")
 
         task_id = uuid.uuid4().hex
@@ -225,7 +225,8 @@ class TaskService:
 
     async def _pick_window_by_mapping(self, task_type_code: str, mapping_id: int) -> Optional[PickedWindow]:
         """指定 mapping_id（task_type_windows.id）预占并发槽位并返回窗口上下文。"""
-        r = await self.db.reserve_mapping_for_task(task_type_code=task_type_code, mapping_id=int(mapping_id))
+        # 显式指定窗口：不按“额度/冷却/熔断/并发上限”等资源约束拒绝，直接选中该窗口
+        r = await self.db.force_reserve_mapping_for_task(task_type_code=task_type_code, mapping_id=int(mapping_id))
         if not r:
             return None
         # 复用字段解析逻辑：与 _pick_window 保持一致
@@ -256,7 +257,8 @@ class TaskService:
 
     async def _pick_window_by_window_pk(self, task_type_code: str, window_pk: int) -> Optional[PickedWindow]:
         """指定 window_pk 预占并发槽位并返回窗口上下文。"""
-        r = await self.db.reserve_window_for_task(task_type_code=task_type_code, window_pk=int(window_pk))
+        # 显式指定窗口：不按“额度/冷却/熔断/并发上限”等资源约束拒绝，直接选中该窗口
+        r = await self.db.force_reserve_window_for_task(task_type_code=task_type_code, window_pk=int(window_pk))
         if not r:
             return None
         mid = int(r["id"])
