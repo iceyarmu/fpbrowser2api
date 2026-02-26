@@ -41,27 +41,82 @@ class TaskService:
         self.db = db
         # 任务 payload 仍保留一份内存副本供执行器使用；DB 侧仅保存一个“可查看/可检索”的 prompt 字符串
         self._task_payloads: dict[str, Dict[str, Any]] = {}
-        # prompt 字段长度上限：避免某些历史/自定义 schema 使用较短 VARCHAR 导致插入失败
-        self._prompt_max_chars: int = 1000
+        # 1) payload["prompt"] 本身的长度上限（便于查看，也避免超长文本撑爆 DB）
+        self._payload_prompt_max_chars: int = 1000
+        # 2) 最终落库到 tasks.prompt 的总长度上限（兼容某些历史/自定义 schema 的较短字段）
+        self._prompt_max_chars: int = 2000
 
-    def _payload_to_prompt_text(self, payload: Dict[str, Any]) -> str:
-        """把 payload 序列化成可落库的 prompt 文本（尽量是 JSON，且控制长度）。"""
-        try:
-            s = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"), default=str)
-        except Exception:
-            # 极端兜底：保证永远能落库
-            s = str(payload or {})
-
-        max_chars = max(64, int(self._prompt_max_chars or 0))
+    def _truncate_text(self, s: str, max_chars: int, *, label: str) -> str:
+        s = str(s or "")
+        max_chars = int(max_chars or 0)
+        if max_chars <= 0:
+            return ""
         if len(s) <= max_chars:
             return s
-
-        # 尽量保留“仍可阅读”的前缀，并明确标记截断信息
-        suffix = f'…(truncated, orig_chars={len(s)}, max_chars={max_chars})'
+        suffix = f"…({label} truncated, orig_chars={len(s)}, max_chars={max_chars})"
         keep = max(0, max_chars - len(suffix))
         if keep <= 0:
             return suffix[:max_chars]
         return s[:keep] + suffix
+
+    def _payload_to_prompt_text(self, payload: Dict[str, Any]) -> str:
+        """把 payload 序列化成可落库的 prompt 文本（尽量是 JSON，且控制长度）。"""
+
+        def _dumps(obj: Any) -> str:
+            return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
+
+        total_max = max(64, int(self._prompt_max_chars or 0))
+        prompt_max = max(0, int(self._payload_prompt_max_chars or 0))
+
+        base_payload: Dict[str, Any]
+        if isinstance(payload, dict):
+            base_payload = dict(payload or {})
+        else:
+            base_payload = {"payload": payload}
+
+        # 先对 payload["prompt"] 做“字段级”限长（<=1000）
+        orig_prompt = str(base_payload.get("prompt") or "")
+        if "prompt" in base_payload or orig_prompt:
+            base_payload["prompt"] = self._truncate_text(orig_prompt, prompt_max, label="prompt")
+
+        try:
+            s = _dumps(base_payload)
+        except Exception:
+            # 极端兜底：保证永远能落库
+            s = self._truncate_text(str(payload or {}), total_max, label="payload")
+
+        if len(s) <= total_max:
+            return s
+
+        # 若整段 JSON 仍超长：降级为最小可查看 JSON（保证总长度 <= 2000 且尽量保持可解析）
+        minimal_flag_key = "_payload_trimmed"
+        prompt_text = str(base_payload.get("prompt") or "")
+
+        def _minimal_json(prompt_val: str) -> str:
+            return _dumps({"prompt": prompt_val, minimal_flag_key: True})
+
+        # 二分裁剪 prompt（在不超过字段级上限的前提下），直到 minimal JSON 满足 total_max
+        hi = len(prompt_text)
+        lo = 0
+        best = ""
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            cand_prompt = self._truncate_text(prompt_text, mid, label="prompt_db")
+            cand = _minimal_json(cand_prompt)
+            if len(cand) <= total_max:
+                best = cand
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        if best:
+            return best
+
+        # 最后兜底：即使 prompt 为空也要可落库
+        empty = _minimal_json("")
+        if len(empty) <= total_max:
+            return empty
+        return empty[:total_max]
 
     async def submit_task(
         self,
