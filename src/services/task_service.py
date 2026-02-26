@@ -136,8 +136,6 @@ class TaskService:
         payload_generation_id = str(payload.get("generation_id") or "").strip() or None
         payload_head_url = str(payload.get("head_url") or "").strip() or None
 
-        print(f"payload_generation_id: {payload_generation_id}, payload_head_url: {payload_head_url}")
-
         picked: Optional[PickedWindow] = None
         # 指定窗口优先级：mapping_id > window_pk > 默认自动挑选
         if mapping_id is not None:
@@ -149,7 +147,6 @@ class TaskService:
             if payload_generation_id and payload_head_url:
                 try:
                     win_pk = await self.db.get_task_window_pk_by_generation_id(payload_generation_id)
-                    print(f"win_pk: {win_pk}")
                 except Exception:
                     win_pk = None
                 if win_pk is not None:
@@ -169,7 +166,7 @@ class TaskService:
                 Task(
                     task_id=task_id,
                     task_type_code=task_type_code,
-                    generation_id=payload_generation_id,
+                    generation_id=None,
                     status="queued",
                     progress=0,
                     prompt=prompt_text,
