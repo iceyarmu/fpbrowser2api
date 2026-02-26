@@ -1913,7 +1913,7 @@ class SoraSession:
                 pass
 
             urls = [
-                _sora_backend_url_from_target(target_url, f"/backend/project_y/in_progress/owned/{str(cameo_id)}"),
+                _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/in_progress/{str(cameo_id)}"),
                 _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}"),
             ]
             last_err: Optional[str] = None
