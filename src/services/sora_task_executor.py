@@ -1852,6 +1852,153 @@ class SoraSession:
                 log_file=log_file,
             )
 
+    async def api_characters_from_generation(self, *, target_url: str, generation_id: str) -> Dict[str, Any]:
+        """POST /backend/characters/from-generation：用 generation_id 创建 cameo，返回 cameo 对象（含 id）。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            headers: Dict[str, str] = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
+            try:
+                if self.oai_device_id:
+                    headers["OAI-Device-Id"] = str(self.oai_device_id)
+            except Exception:
+                pass
+
+            payload = {"generation_id": str(generation_id), "character_id": None, "timestamps": [0, 4]}
+            urls = [
+                _sora_backend_url_from_target(target_url, "/backend/characters/from-generation"),
+                _sora_backend_url_from_target(target_url, "/characters/from-generation"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    obj = tx.get("_json")
+                    data = obj if isinstance(obj, dict) else {}
+                    if status == 404 and not data:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    cameo_id = str((data or {}).get("id") or "").strip()
+                    if cameo_id:
+                        return data
+                    last_err = f"url={url!r} status={status} missing id body={safe_trim(json.dumps(data, ensure_ascii=False), 600)}"
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"from-generation 失败：{last_err}")
+
+    async def api_cameo_owned_status(self, *, target_url: str, cameo_id: str) -> Dict[str, Any]:
+        """GET /backend/project_y/cameos/in_progress/{cameo_id}：读取 from-generation cameo 处理进度。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            headers: Dict[str, str] = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
+            try:
+                if self.oai_device_id:
+                    headers["OAI-Device-Id"] = str(self.oai_device_id)
+            except Exception:
+                pass
+
+            urls = [
+                _sora_backend_url_from_target(target_url, f"/backend/project_y/in_progress/owned/{str(cameo_id)}"),
+                _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_json(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+                    obj = tx.get("_json")
+                    data = obj if isinstance(obj, dict) else {}
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    if status == 404 and not data:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    return data
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"获取 cameo owned 状态失败：{last_err}")
+
+    async def api_username_check(self, *, target_url: str, username: str) -> Dict[str, Any]:
+        """POST /backend/project_y/profile/username/check：检查 username 是否可用。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            headers: Dict[str, str] = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
+            payload = {"username": str(username)}
+            urls = [
+                _sora_backend_url_from_target(target_url, "/backend/project_y/profile/username/check"),
+                _sora_backend_url_from_target(target_url, "/project_y/profile/username/check"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=payload, log_file=log_file)
+                    obj = tx.get("_json")
+                    data = obj if isinstance(obj, dict) else {}
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    if status == 404 and not data:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    return data
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"username/check 失败：{last_err}")
+
+    async def api_cameo_update_v2(self, *, target_url: str, cameo_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /backend/project_y/cameos/by_id/{cameo_id}/update_v2：更新 cameo（如 instruction_set、visibility）。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            if self.pw_ctx.page is None:
+                raise RuntimeError("page 未初始化")
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
+            urls = [
+                _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
+                _sora_backend_url_from_target(target_url, f"/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
+            ]
+            last_err: Optional[str] = None
+            for url in urls:
+                try:
+                    tx = await page_fetch_json(self.pw_ctx.page, url=url, method="POST", headers=headers, json_data=dict(payload or {}), log_file=log_file)
+                    obj = tx.get("_json")
+                    data = obj if isinstance(obj, dict) else {}
+                    status = int(tx.get("status") or 0) if tx.get("status") is not None else 0
+                    if status in (200, 201):
+                        return data
+                    if status == 404 and not data:
+                        last_err = f"url={url!r} status=404"
+                        continue
+                    last_err = f"url={url!r} status={status} body={safe_trim(json.dumps(data, ensure_ascii=False), 500)}"
+                except Exception as e:
+                    last_err = f"url={url!r} err={e}"
+                    continue
+            raise RuntimeError(f"update_v2 失败：{last_err}")
+
     async def api_cameo_status(self, *, target_url: str, cameo_id: str) -> Dict[str, Any]:
         """GET /project_y/cameos/in_progress/{cameo_id}。"""
         self.last_used_at = time.time()
@@ -2529,8 +2676,10 @@ async def sora_gen_video(
     payload = payload or {}
     video_url = str(payload.get("video_url") or payload.get("videoUrl") or payload.get("videoURL") or "").strip() or None
     prompt = str(payload.get("prompt") or "").strip()
-    if not video_url and not prompt:
-        raise NonPenalizedTaskError("payload.prompt 不能为空（或提供 payload.video_url 用于创建角色）", status_code=400)
+    generation_id = str(payload.get("generation_id") or "").strip()
+    head_url = str(payload.get("head_url") or "").strip() or None
+    if not video_url and not prompt and not generation_id:
+        raise NonPenalizedTaskError("payload.prompt 或payload.video_url（用于创建角色） 或payload.generation_id 不能为空（用于创建角色）", status_code=400)
 
     first_image_url = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip() or None
     ratio = str(payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or "").strip() or None
@@ -2561,7 +2710,173 @@ async def sora_gen_video(
         pass
 
     # 新分支：若提供 video_url，则先创建角色（Character Creation Only）
-    if video_url:
+    if generation_id:
+        if not head_url:
+            raise NonPenalizedTaskError("payload.head_url 不能为空（用于创建角色）", status_code=400)
+        sess.monitor_log_path = monitor_log_path
+        sess.idle_close_seconds = max(0.0, float(idle_close_seconds))
+
+        # 依你的约束：最多轮询 60 秒，每 2 秒一次
+        character_max_wait_seconds = 60.0
+        character_poll_interval_seconds = 2.0
+
+        tmp_img: Optional[Path] = None
+        cameo_status: Dict[str, Any] = {}
+        try:
+            
+            await progress_cb(0, {"stage": "character_download_avatar", "head_url": head_url})
+            tmp_img, hdrs = _download_to_tempfile_local(
+                head_url,
+                suffix=".png",
+                timeout_seconds=float(payload.get("avatar_download_timeout_seconds") or 60.0),
+                user_agent=sess.user_agent,
+                max_bytes=6 * 1024 * 1024,
+            )
+
+            try:
+                if int(tmp_img.stat().st_size) <= 0:
+                    raise NonPenalizedTaskError("头像下载失败：文件为空", status_code=400)
+            except NonPenalizedTaskError:
+                raise
+            except Exception:
+                pass
+
+            ct = ""
+            try:
+                ct = str((hdrs or {}).get("content-type") or (hdrs or {}).get("Content-Type") or "").lower()
+            except Exception:
+                ct = ""
+            if ("text/html" in ct) or ("application/json" in ct):
+                raise NonPenalizedTaskError(
+                    f"头像下载失败：响应 Content-Type={safe_trim(ct, 120)!r}，疑似非图片（请检查 head_url）：url={safe_trim(str(head_url), 400)!r}",
+                    status_code=400,
+                )
+
+            await progress_cb(1, {"stage": "character_from_generation_submit", "generation_id": generation_id})
+
+            cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
+            cameo_id = str((cameo_obj or {}).get("id") or "").strip()
+            if not cameo_id:
+                raise RuntimeError(f"from-generation 响应缺少 id：body={safe_trim(json.dumps(cameo_obj, ensure_ascii=False), 600)}")
+
+            await progress_cb(5, {"stage": "character_processing", "cameo_id": cameo_id})
+
+            start = time.time()
+            last_msg = None
+            last_pct: Optional[float] = None
+            consecutive_errors = 0
+            while True:
+                if time.time() - start > character_max_wait_seconds:
+                    raise RuntimeError(f"角色处理超时：cameo_id={cameo_id} waited={int(time.time() - start)}s")
+                try:
+                    await asyncio.sleep(character_poll_interval_seconds)
+                except Exception:
+                    pass
+
+                try:
+                    cameo_status = await sess.api_cameo_owned_status(target_url=target_url, cameo_id=cameo_id)
+                    consecutive_errors = 0
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        raise RuntimeError(f"轮询 cameo owned 状态失败次数过多：{e}")
+                    continue
+
+                msg = str((cameo_status or {}).get("status_message") or "").strip()
+                pct = _normalize_progress((cameo_status or {}).get("progress_pct"))
+                if pct is not None:
+                    try:
+                        pct = float(max(0.0, min(1.0, pct)))
+                    except Exception:
+                        pct = None
+
+                if msg != last_msg or pct != last_pct:
+                    last_msg = msg
+                    last_pct = pct
+                    if pct is None:
+                        prog = 10 + int(min(55.0, (time.time() - start) / max(1.0, character_max_wait_seconds) * 55.0))
+                    else:
+                        prog = 5 + int(pct * 60.0)
+                    await progress_cb(
+                        int(max(5, min(65, prog))),
+                        {"stage": "character_processing", "cameo_id": cameo_id, "status_message": msg, "progress_pct": pct},
+                    )
+
+                if str((cameo_status or {}).get("status") or "") == "failed":
+                    raise NonPenalizedTaskError(f"角色创建失败：{msg or 'failed'}", status_code=400)
+                if msg == "Completed":
+                    break
+
+            display_name = str((cameo_status or {}).get("display_name_hint") or "Character").strip() or "Character"
+            username_hint = str((cameo_status or {}).get("username_hint") or "character").strip().lstrip("@").strip() or "character"
+            await progress_cb(70, {"stage": "character_identified", "cameo_id": cameo_id, "display_name": display_name, "username_hint": username_hint})
+
+            def _sanitize_username(s: str) -> str:
+                s = str(s or "").strip().lstrip("@").strip().lower()
+                out = "".join([ch for ch in s if (ch.isalnum() or ch in ("_", "."))])
+                out = out.strip(".")
+                return out or "character"
+
+            base_username = _sanitize_username(username_hint)
+            username = base_username
+            is_available = False
+            for _i in range(8):
+                available = False
+                try:
+                    check = await sess.api_username_check(target_url=target_url, username=username)
+                    available = bool((check or {}).get("available", False))
+                except Exception:
+                    available = False
+                if available:
+                    is_available = True
+                    break
+                username = f"{base_username}{random.randint(100, 999)}"
+            if not is_available:
+                raise NonPenalizedTaskError(f"username 不可用：{username_hint!r}", status_code=400)
+
+            await progress_cb(75, {"stage": "character_username_checked", "cameo_id": cameo_id, "username_hint": username})
+
+
+            await progress_cb(85, {"stage": "character_upload_avatar"})
+            asset_pointer = await sess.api_character_upload_image(target_url=target_url, image_path=tmp_img)
+
+            await progress_cb(90, {"stage": "character_finalize"})
+            character_id = await sess.api_character_finalize(
+                target_url=target_url,
+                cameo_id=cameo_id,
+                username=username,
+                display_name=display_name,
+                profile_asset_pointer=asset_pointer,
+            )
+
+            await progress_cb(95, {"stage": "character_set_public"})
+            update_payload: Dict[str, Any] = {"visibility": "public"}
+            hint = (cameo_status or {}).get("instruction_set_hint")
+            if isinstance(hint, dict) and hint.get("value") is not None:
+                update_payload["instruction_set"] = hint
+                update_payload["value"] = hint.get("value")
+            elif isinstance(hint, list):
+                update_payload["instruction_set"] = {"value": hint}
+                update_payload["value"] = hint
+            await sess.api_cameo_update_v2(target_url=target_url, cameo_id=cameo_id, payload=update_payload)
+
+            try:
+                await sess._bring_sora_drafts_to_front(refresh_target=False)
+            except Exception:
+                pass
+
+            await progress_cb(100, {"stage": "done", "cameo_id": cameo_id, "character_id": character_id, "username_hint": username})
+            return {"type": "character", "message": "Sora角色创建完成", "username_hint": username}
+        finally:
+            if tmp_img is not None:
+                try:
+                    tmp_img.unlink(missing_ok=True)  # type: ignore[call-arg]
+                except Exception:
+                    try:
+                        os.unlink(str(tmp_img))
+                    except Exception:
+                        pass
+    elif video_url:
         target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
         monitor_log_path = (str(payload.get("sora_monitor_log_path") or "").strip() or None)
         max_wait_seconds = float(payload.get("character_pending_max_wait_seconds") or payload.get("sora_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 60.0 * 15)))
