@@ -328,6 +328,7 @@ class TaskService:
                             mapping_id=picked.mapping_id,
                             remaining_quota=int(rate.get("remaining_count") or 0),
                             sora_remaining_count=int(rate.get("remaining_count") or 0),
+                            sora_purchased_remaining_count=int(rate.get("purchased_remaining_count") or 0),
                             sora_rate_limit_reached=bool(rate.get("rate_limit_reached", False)),
                             sora_access_resets_in_seconds=int(rate.get("access_resets_in_seconds") or 0),
                             cooldown_until=(str(rate.get("cooldown_until")) if rate.get("cooldown_until") else None),

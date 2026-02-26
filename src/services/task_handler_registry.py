@@ -142,6 +142,7 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
     info = await sora_ctx.api_nf_check(target_url=target_url)
 
     remaining = int(info.get("remaining_count") or 0)
+    purchased_remaining = int(info.get("purchased_remaining_count") or 0)
     rate_limit_reached = bool(info.get("rate_limit_reached", False))
     resets = int(info.get("access_resets_in_seconds") or 0)
     cooldown_until = info.get("cooldown_until")
@@ -151,6 +152,7 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
         "mapping_id": int(row.get("id") or 0),
         "remaining_quota": remaining,
         "sora_remaining_count": remaining,
+        "sora_purchased_remaining_count": purchased_remaining,
         "sora_rate_limit_reached": rate_limit_reached,
         "sora_access_resets_in_seconds": resets,
     }

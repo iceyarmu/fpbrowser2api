@@ -915,6 +915,10 @@
           const el = tr.querySelector(`[data-role="remainingQuotaValue"][data-mid="${mappingId}"]`);
           if (el) el.textContent = String(m.remaining_quota ?? 0);
         }
+        if (has("sora_purchased_remaining_count")) {
+          const el = tr.querySelector(`[data-role="purchasedRemainingCount"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = String(m.sora_purchased_remaining_count ?? 0);
+        }
         if (has("cooldown_until")) {
           const el = tr.querySelector(`[data-role="cooldownUntil"][data-mid="${mappingId}"]`);
           if (el) el.textContent = String(m.cooldown_until || "-");
@@ -1345,7 +1349,8 @@
       
                 <div class="text-muted">限流:${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">是</span>` : `<span class="badge text-bg-success">否</span>`}</div>
               </div>
-              <div class="text-muted">重置: <span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
+              <div class="text-muted">费额:<span class="fw-semibold" data-role="purchasedRemainingCount" data-mid="${m.id}">${escapeHtml(String(m.sora_purchased_remaining_count ?? 0))}</span></div>
+              <div class="text-muted">重置:<span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">

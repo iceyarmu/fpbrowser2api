@@ -228,6 +228,7 @@ class Database:
                     daily_quota INTEGER DEFAULT 0,
                     remaining_quota INTEGER DEFAULT 0,
                     sora_remaining_count INTEGER DEFAULT 0,
+                    sora_purchased_remaining_count INTEGER DEFAULT 0,
                     sora_rate_limit_reached BOOLEAN DEFAULT 0,
                     sora_access_resets_in_seconds INTEGER DEFAULT 0,
                     sora_invite_code TEXT,
@@ -517,6 +518,7 @@ class Database:
                 columns_to_add = [
                     ("inflight_slots", "INTEGER DEFAULT 0"),
                     ("sora_remaining_count", "INTEGER DEFAULT 0"),
+                    ("sora_purchased_remaining_count", "INTEGER DEFAULT 0"),
                     ("sora_rate_limit_reached", "BOOLEAN DEFAULT 0"),
                     ("sora_access_resets_in_seconds", "INTEGER DEFAULT 0"),
                     ("sora_invite_code", "TEXT"),
@@ -1602,6 +1604,7 @@ class Database:
         daily_quota: Optional[int] = None,
         remaining_quota: Optional[int] = None,
         sora_remaining_count: Optional[int] = None,
+        sora_purchased_remaining_count: Optional[int] = None,
         sora_rate_limit_reached: Optional[bool] = None,
         sora_access_resets_in_seconds: Optional[int] = None,
         sora_invite_code: Optional[str] = None,
@@ -1629,6 +1632,8 @@ class Database:
             _set("remaining_quota", int(remaining_quota))
         if sora_remaining_count is not None:
             _set("sora_remaining_count", int(sora_remaining_count))
+        if sora_purchased_remaining_count is not None:
+            _set("sora_purchased_remaining_count", int(sora_purchased_remaining_count))
         if sora_rate_limit_reached is not None:
             _set("sora_rate_limit_reached", 1 if bool(sora_rate_limit_reached) else 0)
         if sora_access_resets_in_seconds is not None:
@@ -2200,6 +2205,7 @@ class Database:
                   t.task_id,
                   t.task_type_code,
                   t.status,
+                  t.progress,
                   t.prompt,
                   t.window_pk,
                   w.platform_account AS window_account,

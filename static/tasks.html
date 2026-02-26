@@ -90,6 +90,7 @@
                   <th style="min-width: 120px;">task_id</th>
                   <th style="min-width: 120px;">任务类型</th>
                   <th style="min-width: 120px;">状态</th>
+                  <th style="min-width: 160px;">进度</th>
                   <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 160px;">错误信息</th>
                   <th style="min-width: 160px;">prompt_json</th>
@@ -307,7 +308,7 @@
         document.getElementById("btnNext").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="9" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
@@ -315,6 +316,8 @@
           const code = x.task_type_code || "-";
           const typeName = state.typeMap.get(String(code)) || String(code);
           const err = x.error_message || "";
+          const pNum = Number(x?.progress);
+          const progress = Number.isFinite(pNum) ? Math.max(0, Math.min(100, Math.trunc(pNum))) : null;
           const accRaw = String(x.window_account ?? "").trim();
           const acc = accRaw || "-";
           const sortNum = (x && (x.windowSortNum ?? x.window_sort_num ?? x.window_sortNum)) ?? "";
@@ -328,6 +331,20 @@
               <td class="mono">${escapeHtml(x.task_id || "")}</td>
               <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
               <td>${badgeForStatus(x.status)}</td>
+              <td>
+                ${
+                  progress === null
+                    ? `<span class="text-muted">-</span>`
+                    : `
+                      <div class="d-flex align-items-center gap-2" style="min-width: 140px;">
+                        <div class="progress flex-grow-1" style="height: 8px; min-width: 80px;">
+                          <div class="progress-bar" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <span class="mono text-muted" style="min-width: 44px; text-align: right;">${progress}%</span>
+                      </div>
+                    `
+                }
+              </td>
               <td class="mono">
                 <div class="d-flex align-items-center gap-2">
                   <div class="mono truncate-1 window-acc flex-grow-1" title="${escapeHtml(windowInfo)}">${escapeHtml(windowInfo)}</div>

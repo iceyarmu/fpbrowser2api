@@ -1768,9 +1768,11 @@ class SoraSession:
             rate = (obj or {}).get("rate_limit_and_credit_balance") or {}
 
             remaining = int(rate.get("estimated_num_videos_remaining") or 0)
+            purchased_remaining = int(rate.get("estimated_num_purchased_videos_remaining") or 0)
             resets = int(rate.get("access_resets_in_seconds") or 0)
             out: Dict[str, Any] = {
-                "remaining_count": remaining,
+                "remaining_count": max(0, remaining-purchased_remaining),
+                "purchased_remaining_count": purchased_remaining,
                 "rate_limit_reached": bool(rate.get("rate_limit_reached", False)),
                 "access_resets_in_seconds": resets,
                 "raw": obj,
