@@ -197,6 +197,28 @@
         return "";
       }
 
+      function formatCreatedAtPlus8Hours(createdAt) {
+        const raw = String(createdAt || "").trim();
+        if (!raw) return "";
+
+        let d = null;
+        // Common sqlite timestamp: "YYYY-MM-DD HH:MM:SS" (treat as UTC then +8)
+        if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(raw)) {
+          const iso = raw.replace(" ", "T") + "Z";
+          d = new Date(iso);
+        } else if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+          // ISO string, may include timezone info
+          d = new Date(raw);
+        }
+
+        if (!d || Number.isNaN(d.getTime())) return raw;
+
+        const shifted = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+        const pad2 = (n) => String(n).padStart(2, "0");
+        // Use UTC getters to avoid local timezone affecting the forced +8 shift.
+        return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())} ${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}:${pad2(shifted.getUTCSeconds())}`;
+      }
+
       const promptModalEl = document.getElementById("promptModal");
       const promptModal = promptModalEl ? new bootstrap.Modal(promptModalEl) : null;
       const promptModalTitle = document.getElementById("promptModalTitle");
@@ -318,6 +340,7 @@
           const err = x.error_message || "";
           const pNum = Number(x?.progress);
           const progress = Number.isFinite(pNum) ? Math.max(0, Math.min(100, Math.trunc(pNum))) : null;
+          const createdAtText = formatCreatedAtPlus8Hours(x.created_at);
           const accRaw = String(x.window_account ?? "").trim();
           const acc = accRaw || "-";
           const sortNum = (x && (x.windowSortNum ?? x.window_sort_num ?? x.window_sortNum)) ?? "";
@@ -357,7 +380,7 @@
               <td class="mono">
                 <button class="btn btn-outline-secondary btn-sm py-0" data-action="view-result" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>
-              <td class="mono">${escapeHtml(x.created_at || "")}</td>
+              <td class="mono">${escapeHtml(createdAtText)}</td>
             </tr>
           `;
         }).join("");
