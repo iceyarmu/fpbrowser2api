@@ -147,10 +147,12 @@ class TaskService:
             if payload_generation_id and payload_head_url:
                 try:
                     win_pk = await self.db.get_task_window_pk_by_generation_id(payload_generation_id)
+                    print(f"win_pk1: {win_pk}")
                 except Exception:
                     win_pk = None
                 if win_pk is not None:
                     picked = await self._pick_window_by_window_pk(task_type_code, window_pk=int(win_pk))
+                    print(f"picked1: {picked}")
             if not picked:
                 picked = await self._pick_window(task_type_code)
         if not picked:
