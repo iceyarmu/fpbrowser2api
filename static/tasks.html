@@ -92,12 +92,31 @@
                   <th style="min-width: 120px;">状态</th>
                   <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 160px;">错误信息</th>
+                  <th style="min-width: 160px;">prompt_json</th>
                   <th style="min-width: 160px;">result_json</th>
                   <th style="min-width: 160px;">创建时间</th>
                 </tr>
               </thead>
               <tbody id="body"></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Prompt JSON Modal -->
+    <div class="modal fade" id="promptModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="promptModalTitle">prompt_json</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <pre class="mono small2 mb-0" id="promptModalBody" style="white-space: pre-wrap; word-break: break-word;"></pre>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
           </div>
         </div>
       </div>
@@ -171,6 +190,17 @@
         return "";
       }
 
+      function getPromptText(item) {
+        const p = item?.prompt;
+        if (typeof p === "string" && p.trim()) return p;
+        return "";
+      }
+
+      const promptModalEl = document.getElementById("promptModal");
+      const promptModal = promptModalEl ? new bootstrap.Modal(promptModalEl) : null;
+      const promptModalTitle = document.getElementById("promptModalTitle");
+      const promptModalBody = document.getElementById("promptModalBody");
+
       const resultModalEl = document.getElementById("resultModal");
       const resultModal = resultModalEl ? new bootstrap.Modal(resultModalEl) : null;
       const resultModalTitle = document.getElementById("resultModalTitle");
@@ -197,6 +227,24 @@
         resultModalTitle.textContent = `result_json · ${String(taskId || "")}`;
         resultModalBody.textContent = pretty;
         resultModal.show();
+      }
+
+      function openPromptModal(taskId) {
+        if (!promptModal) return;
+        const item = state.items.find(x => String(x.task_id || "") === String(taskId || ""));
+        const raw = item ? getPromptText(item) : "";
+        let pretty = raw || "-";
+        if (raw) {
+          try {
+            const obj = JSON.parse(raw);
+            pretty = JSON.stringify(obj, null, 2);
+          } catch (_) {
+            // keep raw
+          }
+        }
+        promptModalTitle.textContent = `prompt_json · ${String(taskId || "")}`;
+        promptModalBody.textContent = pretty;
+        promptModal.show();
       }
 
       async function openErrorModalByTaskId(taskId) {
@@ -259,7 +307,7 @@
         document.getElementById("btnNext").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="7" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="8" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
@@ -286,6 +334,9 @@
                 </div>
               </td>
               <td class="mono truncate-1 truncate-err" title="${escapeHtml(err)}">${errCell}</td>
+              <td class="mono">
+                <button class="btn btn-outline-secondary btn-sm py-0" data-action="view-prompt" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
+              </td>
               <td class="mono">
                 <button class="btn btn-outline-secondary btn-sm py-0" data-action="view-result" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>
@@ -339,6 +390,12 @@
         if (elResult) {
           const taskId = elResult.getAttribute("data-task-id");
           openResultModal(taskId);
+          return;
+        }
+        const elPrompt = e.target?.closest?.("[data-action='view-prompt']");
+        if (elPrompt) {
+          const taskId = elPrompt.getAttribute("data-task-id");
+          openPromptModal(taskId);
           return;
         }
         const elErr = e.target?.closest?.("[data-action='view-errors']");

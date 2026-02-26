@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -38,8 +39,29 @@ class PickedWindow:
 class TaskService:
     def __init__(self, db: Database) -> None:
         self.db = db
-        # 仅内存保存 payload（不落库，节省 DB）
+        # 任务 payload 仍保留一份内存副本供执行器使用；DB 侧仅保存一个“可查看/可检索”的 prompt 字符串
         self._task_payloads: dict[str, Dict[str, Any]] = {}
+        # prompt 字段长度上限：避免某些历史/自定义 schema 使用较短 VARCHAR 导致插入失败
+        self._prompt_max_chars: int = 1000
+
+    def _payload_to_prompt_text(self, payload: Dict[str, Any]) -> str:
+        """把 payload 序列化成可落库的 prompt 文本（尽量是 JSON，且控制长度）。"""
+        try:
+            s = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"), default=str)
+        except Exception:
+            # 极端兜底：保证永远能落库
+            s = str(payload or {})
+
+        max_chars = max(64, int(self._prompt_max_chars or 0))
+        if len(s) <= max_chars:
+            return s
+
+        # 尽量保留“仍可阅读”的前缀，并明确标记截断信息
+        suffix = f'…(truncated, orig_chars={len(s)}, max_chars={max_chars})'
+        keep = max(0, max_chars - len(suffix))
+        if keep <= 0:
+            return suffix[:max_chars]
+        return s[:keep] + suffix
 
     async def submit_task(
         self,
@@ -69,14 +91,15 @@ class TaskService:
 
         task_id = uuid.uuid4().hex
         try:
-            # 不把 payload 写入 DB；仅保存最小字段（prompt 存空字符串满足 NOT NULL）
+            # 把 payload 序列化落库到 prompt 里，便于管理台查看/检索（控制长度，避免字段溢出）
+            prompt_text = self._payload_to_prompt_text(payload)
             await self.db.create_task(
                 Task(
                     task_id=task_id,
                     task_type_code=task_type_code,
                     status="queued",
                     progress=0,
-                    prompt="",
+                    prompt=prompt_text,
                     image_path=None,
                     window_pk=picked.window_pk,
                 )

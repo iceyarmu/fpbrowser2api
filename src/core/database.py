@@ -2200,6 +2200,7 @@ class Database:
                   t.task_id,
                   t.task_type_code,
                   t.status,
+                  t.prompt,
                   t.window_pk,
                   w.platform_account AS window_account,
                   w.window_sort_num AS window_sort_num,
