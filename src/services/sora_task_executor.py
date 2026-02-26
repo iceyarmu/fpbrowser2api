@@ -3092,6 +3092,7 @@ async def sora_gen_video(
         "message": "Sora创建完成",
         "task_id": task_id,
         "post_id": publish_result.get("post_id"),
+        "generation_id": publish_result.get("generation_id"),
         "share_url": publish_result.get("share_url"),
         "watermark_free_url": publish_result.get("watermark_free_url"),
         "nf_check": nf_check,

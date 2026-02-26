@@ -131,6 +131,11 @@ class TaskService:
             raise ValueError("task_type_code 不能为空")
         payload = payload or {}
 
+        # Sora 角色创建分支：payload.generation_id + payload.head_url
+        # 需求：若能走该分支，则优先复用 generation_id 对应历史任务的窗口
+        payload_generation_id = str(payload.get("generation_id") or "").strip() or None
+        payload_head_url = str(payload.get("head_url") or "").strip() or None
+
         picked: Optional[PickedWindow] = None
         # 指定窗口优先级：mapping_id > window_pk > 默认自动挑选
         if mapping_id is not None:
@@ -138,7 +143,16 @@ class TaskService:
         elif window_pk is not None:
             picked = await self._pick_window_by_window_pk(task_type_code, window_pk=int(window_pk))
         else:
-            picked = await self._pick_window(task_type_code)
+            # 若 payload 满足“基于 generation_id 创建角色”分支，则尝试按 generation_id 绑定窗口
+            if payload_generation_id and payload_head_url:
+                try:
+                    win_pk = await self.db.get_task_window_pk_by_generation_id(payload_generation_id)
+                except Exception:
+                    win_pk = None
+                if win_pk is not None:
+                    picked = await self._pick_window_by_window_pk(task_type_code, window_pk=int(win_pk))
+            if not picked:
+                picked = await self._pick_window(task_type_code)
         if not picked:
             if mapping_id is not None or window_pk is not None:
                 raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型且额度>0、未冷却、已启用、未超并发")
@@ -152,6 +166,7 @@ class TaskService:
                 Task(
                     task_id=task_id,
                     task_type_code=task_type_code,
+                    generation_id=payload_generation_id,
                     status="queued",
                     progress=0,
                     prompt=prompt_text,
@@ -318,6 +333,15 @@ class TaskService:
                 else:
                     # 默认按图片模拟（包括 gen_image 以及其它未实现类型）
                     result = await asyncio.wait_for(simulate_image_task(prompt, None, progress_cb), timeout=float(picked.timeout_seconds))
+
+                # Sora：单独把 generation_id 落库（用于后续按 generation_id 绑定窗口）
+                try:
+                    if isinstance(result, dict):
+                        gid = str(result.get("generation_id") or "").strip() or None
+                        if gid:
+                            await self.db.update_task(task_id, generation_id=gid)
+                except Exception:
+                    pass
 
                 # Sora：若执行器返回了 nf_check，则用其回写余额/限流信息（覆盖本地扣减，更贴近真实剩余）
                 try:

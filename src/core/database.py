@@ -255,6 +255,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT UNIQUE NOT NULL,
                     task_type_code TEXT NOT NULL,
+                    generation_id TEXT,
                     status TEXT NOT NULL DEFAULT 'queued',
                     progress INTEGER DEFAULT 0,
                     prompt TEXT NOT NULL,
@@ -302,6 +303,11 @@ class Database:
             )
 
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_task_id ON tasks(task_id)")
+            # 兼容旧库：可能还未 ADD COLUMN generation_id，此处索引创建允许失败（迁移阶段会再补一次）
+            try:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_generation_id ON tasks(generation_id)")
+            except Exception:
+                pass
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_space_pk ON proxies(space_pk)")
@@ -397,6 +403,20 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "spaces", col_name):
                         await db.execute(f"ALTER TABLE spaces ADD COLUMN {col_name} {col_type}")
+
+            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）
+            if await self._table_exists(db, "tasks"):
+                columns_to_add = [
+                    ("generation_id", "TEXT"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "tasks", col_name):
+                        await db.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
+                # 索引：便于按 generation_id 快速定位任务
+                try:
+                    await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_generation_id ON tasks(generation_id)")
+                except Exception:
+                    pass
 
             # windows: window_sort_num（RoxyBrowser: windowSortNum，用于 UI 展示）
             if await self._table_exists(db, "windows"):
@@ -2110,10 +2130,19 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 """
-                INSERT INTO tasks (task_id, task_type_code, status, progress, prompt, image_path, window_pk)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (task.task_id, task.task_type_code, task.status, int(task.progress or 0), task.prompt, task.image_path, task.window_pk),
+                (
+                    task.task_id,
+                    task.task_type_code,
+                    (str(task.generation_id).strip() if task.generation_id else None),
+                    task.status,
+                    int(task.progress or 0),
+                    task.prompt,
+                    task.image_path,
+                    task.window_pk,
+                ),
             )
             await db.commit()
             return int(cur.lastrowid)
@@ -2155,8 +2184,8 @@ class Database:
             params.append(int(window_pk))
         if q:
             qq = f"%{q.strip()}%"
-            where.append("(task_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
-            params.extend([qq, qq, qq])
+            where.append("(task_id LIKE ? OR generation_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
+            params.extend([qq, qq, qq, qq])
 
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
@@ -2192,8 +2221,8 @@ class Database:
             params.append(int(window_pk))
         if q:
             qq = f"%{q.strip()}%"
-            where.append("(t.task_id LIKE ? OR t.prompt LIKE ? OR t.error_message LIKE ?)")
-            params.extend([qq, qq, qq])
+            where.append("(t.task_id LIKE ? OR t.generation_id LIKE ? OR t.prompt LIKE ? OR t.error_message LIKE ?)")
+            params.extend([qq, qq, qq, qq])
 
         params.extend([lim, off])
 
@@ -2204,6 +2233,7 @@ class Database:
                 SELECT
                   t.task_id,
                   t.task_type_code,
+                  t.generation_id,
                   t.status,
                   t.progress,
                   t.prompt,
@@ -2230,6 +2260,7 @@ class Database:
         status: Optional[str] = None,
         progress: Optional[int] = None,
         window_pk: Optional[int] = None,
+        generation_id: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None,
         set_started: bool = False,
@@ -2247,6 +2278,10 @@ class Database:
         if window_pk is not None:
             updates.append("window_pk=?")
             params.append(int(window_pk))
+        if generation_id is not None:
+            gid = str(generation_id).strip()
+            updates.append("generation_id=?")
+            params.append(gid if gid else None)
         if result is not None:
             updates.append("result_json=?")
             params.append(json.dumps(result, ensure_ascii=False))
@@ -2268,6 +2303,30 @@ class Database:
                 params,
             )
             await db.commit()
+
+    async def get_task_window_pk_by_generation_id(self, generation_id: str) -> Optional[int]:
+        gid = str(generation_id or "").strip()
+        if not gid:
+            return None
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                SELECT window_pk
+                FROM tasks
+                WHERE generation_id = ?
+                  AND window_pk IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (gid,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            try:
+                return int(row[0])
+            except Exception:
+                return None
 
     # ---------- mapping runtime updates (quota/errors/cooldown) ----------
     async def consume_mapping_quota(self, mapping_id: int, amount: int = 1) -> None:

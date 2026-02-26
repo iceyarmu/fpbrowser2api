@@ -184,6 +184,8 @@ class Task(BaseModel):
     id: Optional[int] = None
     task_id: str
     task_type_code: str
+    # Sora：用于“基于 generation_id 创建角色”等场景的任务关联
+    generation_id: Optional[str] = None
 
     status: str  # queued/running/completed/failed
     progress: int = 0
