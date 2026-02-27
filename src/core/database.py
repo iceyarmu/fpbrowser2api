@@ -2336,8 +2336,8 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 """
-                INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 """,
                 (
                     task.task_id,
