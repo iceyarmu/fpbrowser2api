@@ -152,6 +152,10 @@ class TaskService:
                 
                 if win_pk is None:
                     raise RuntimeError("该视频不属于我们的账号，请先生成视频再使用返回的generation_id创建角色")
+                else:
+                    picked = await self._pick_window_by_window_pk(task_type_code, win_pk)
+                    if not picked:
+                        raise RuntimeError("该视频不属于我们的账号，请先生成视频再使用返回的generation_id创建角色")
             if not picked:
                 picked = await self._pick_window(task_type_code)
         if not picked:
