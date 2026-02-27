@@ -2866,7 +2866,16 @@ async def sora_gen_video(
                 pass
 
             await progress_cb(100, {"stage": "done", "cameo_id": cameo_id, "character_id": character_id, "username_hint": username})
-            return {"type": "character", "message": "Sora角色创建完成", "username_hint": username}
+            return {
+                "type": "character",
+                "message": "Sora角色创建完成",
+                "username": username,
+                "character_id": character_id,
+                "cameo_id": cameo_id,
+                "display_name": display_name,
+                "raw_cameo_status": cameo_status,
+                "profile_asset_url": head_url
+            }
         finally:
             if tmp_img is not None:
                 try:
