@@ -68,8 +68,8 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -84,7 +84,7 @@ class Database:
                     debug_enabled BOOLEAN DEFAULT 0,
                     log_to_file BOOLEAN DEFAULT 0,
                     stop_accepting_tasks BOOLEAN DEFAULT 0,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -95,8 +95,8 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     deleted BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -111,8 +111,8 @@ class Database:
                     vendor TEXT DEFAULT 'generic',
                     access_key TEXT,
                     deleted BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (project_id) REFERENCES projects(id)
                 )
                 """
@@ -127,8 +127,8 @@ class Database:
                     space_id TEXT NOT NULL,
                     project_ids TEXT,
                     deleted BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     UNIQUE (browser_id, space_id),
                     FOREIGN KEY (browser_id) REFERENCES browsers(id)
                 )
@@ -153,8 +153,8 @@ class Database:
                     deleted BOOLEAN DEFAULT 0,
                     raw_json TEXT,
                     synced_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     UNIQUE (space_pk, window_key),
                     FOREIGN KEY (space_pk) REFERENCES spaces(id)
                 )
@@ -189,8 +189,8 @@ class Database:
                     deleted BOOLEAN DEFAULT 0,
                     raw_json TEXT,
                     synced_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     UNIQUE (space_pk, proxy_id),
                     FOREIGN KEY (space_pk) REFERENCES spaces(id)
                 )
@@ -210,8 +210,8 @@ class Database:
                     refresh_quota_handler TEXT,
                     enabled BOOLEAN DEFAULT 1,
                     deleted BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -240,8 +240,8 @@ class Database:
                     error_cooldown_until TIMESTAMP,
                     enabled BOOLEAN DEFAULT 1,
                     deleted BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     UNIQUE (task_type_id, window_pk),
                     FOREIGN KEY (task_type_id) REFERENCES task_types(id),
                     FOREIGN KEY (window_pk) REFERENCES windows(id)
@@ -263,7 +263,7 @@ class Database:
                     window_pk INTEGER,
                     result_json TEXT,
                     error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     started_at TIMESTAMP,
                     completed_at TIMESTAMP
                 )
@@ -281,7 +281,7 @@ class Database:
                     response_body TEXT,
                     status_code INTEGER NOT NULL,
                     duration FLOAT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -297,7 +297,7 @@ class Database:
                     window_name TEXT,
                     platform_account TEXT,
                     error_message TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
             )
@@ -499,8 +499,8 @@ class Database:
                             error_cooldown_until TIMESTAMP,
                             enabled BOOLEAN DEFAULT 1,
                             deleted BOOLEAN DEFAULT 0,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                            updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                             UNIQUE (task_type_id, window_pk),
                             FOREIGN KEY (task_type_id) REFERENCES task_types(id),
                             FOREIGN KEY (window_pk) REFERENCES windows(id)
@@ -613,7 +613,7 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO system_config (id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, stop_accepting_tasks, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (1, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(id) DO UPDATE SET
                   proxy_enabled=excluded.proxy_enabled,
                   proxy_url=excluded.proxy_url,
@@ -621,7 +621,7 @@ class Database:
                   debug_enabled=excluded.debug_enabled,
                   log_to_file=excluded.log_to_file,
                   stop_accepting_tasks=excluded.stop_accepting_tasks,
-                  updated_at=CURRENT_TIMESTAMP
+                  updated_at=datetime('now','localtime')
                 """,
                 (new_proxy_enabled, new_proxy_url, new_api_key, new_debug_enabled, new_log_to_file, new_stop_accepting),
             )
@@ -668,7 +668,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE admin_users
-                SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+                SET password_hash = ?, updated_at = datetime('now','localtime')
                 WHERE username = ?
                 """,
                 (new_password_hash, username),
@@ -680,7 +680,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE admin_users
-                SET username = ?, updated_at = CURRENT_TIMESTAMP
+                SET username = ?, updated_at = datetime('now','localtime')
                 WHERE username = ?
                 """,
                 (new_username, old_username),
@@ -734,14 +734,14 @@ class Database:
     async def update_project(self, project_id: int, name: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE projects SET name = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (name.strip(), project_id),
             )
             await db.commit()
 
     async def delete_project(self, project_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE projects SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (project_id,))
+            await db.execute("UPDATE projects SET deleted = 1, updated_at = datetime('now','localtime') WHERE id = ?", (project_id,))
             await db.commit()
 
     # ---------- browsers ----------
@@ -779,7 +779,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE browsers
-                SET name=?, lan_addr=?, vendor=?, access_key=?, updated_at=CURRENT_TIMESTAMP
+                SET name=?, lan_addr=?, vendor=?, access_key=?, updated_at=datetime('now','localtime')
                 WHERE id=?
                 """,
                 (name.strip(), lan_addr.strip(), vendor.strip() or "generic", access_key, browser_id),
@@ -788,7 +788,7 @@ class Database:
 
     async def delete_browser(self, browser_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE browsers SET deleted = 1, updated_at=CURRENT_TIMESTAMP WHERE id = ?", (browser_id,))
+            await db.execute("UPDATE browsers SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ?", (browser_id,))
             await db.commit()
 
     async def get_browser(self, browser_id: int) -> Optional[FingerprintBrowser]:
@@ -824,14 +824,14 @@ class Database:
     async def update_space(self, space_pk: int, name: str, space_id: str, project_ids: Optional[str] = None) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE spaces SET name=?, space_id=?, project_ids=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                "UPDATE spaces SET name=?, space_id=?, project_ids=?, updated_at=datetime('now','localtime') WHERE id=?",
                 (name.strip(), space_id.strip(), (project_ids or "").strip() or None, space_pk),
             )
             await db.commit()
 
     async def delete_space(self, space_pk: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE spaces SET deleted = 1, updated_at=CURRENT_TIMESTAMP WHERE id = ?", (space_pk,))
+            await db.execute("UPDATE spaces SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ?", (space_pk,))
             await db.commit()
 
     async def get_space(self, space_pk: int) -> Optional[BrowserSpace]:
@@ -930,7 +930,7 @@ class Database:
                         proxy_id,
                         proxy_addr, proxy_country, proxy_expire_at,
                         enabled, deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, window_key) DO UPDATE SET
                         window_sort_num=excluded.window_sort_num,
                         window_name=excluded.window_name,
@@ -945,8 +945,8 @@ class Database:
                         -- 约定：本地标记删除后，不因“同步窗口”而被覆盖为未删除
                         deleted=CASE WHEN windows.deleted = 1 THEN 1 ELSE excluded.deleted END,
                         raw_json=excluded.raw_json,
-                        synced_at=CURRENT_TIMESTAMP,
-                        updated_at=CURRENT_TIMESTAMP
+                        synced_at=datetime('now','localtime'),
+                        updated_at=datetime('now','localtime')
                     """,
                     (
                         space_pk,
@@ -1054,7 +1054,7 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
-                "UPDATE windows SET deleted = 1, updated_at=CURRENT_TIMESTAMP WHERE space_pk = ? AND window_key = ? AND deleted = 0",
+                "UPDATE windows SET deleted = 1, updated_at=datetime('now','localtime') WHERE space_pk = ? AND window_key = ? AND deleted = 0",
                 (int(space_pk), str(window_key).strip()),
             )
             await db.commit()
@@ -1072,7 +1072,7 @@ class Database:
             cur = await db.execute(
                 """
                 UPDATE windows
-                SET proxy_id = ?, updated_at=CURRENT_TIMESTAMP
+                SET proxy_id = ?, updated_at=datetime('now','localtime')
                 WHERE space_pk = ? AND window_key = ? AND deleted = 0
                 """,
                 (proxy_id, int(space_pk), str(window_key).strip()),
@@ -1218,7 +1218,7 @@ class Database:
                         last_ip, last_country, last_state, last_city,
                         check_time, create_time, update_time,
                         deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, proxy_id) DO UPDATE SET
                         expire_at=excluded.expire_at,
                         ip_type=excluded.ip_type,
@@ -1241,8 +1241,8 @@ class Database:
                         update_time=excluded.update_time,
                         deleted=excluded.deleted,
                         raw_json=excluded.raw_json,
-                        synced_at=CURRENT_TIMESTAMP,
-                        updated_at=CURRENT_TIMESTAMP
+                        synced_at=datetime('now','localtime'),
+                        updated_at=datetime('now','localtime')
                     """,
                     (
                         int(space_pk),
@@ -1283,7 +1283,7 @@ class Database:
                     await db.execute(
                         f"""
                         UPDATE proxies
-                        SET deleted = 1, updated_at = CURRENT_TIMESTAMP
+                        SET deleted = 1, updated_at = datetime('now','localtime')
                         WHERE space_pk = ?
                           AND deleted = 0
                           AND proxy_id NOT IN ({placeholders})
@@ -1294,7 +1294,7 @@ class Database:
                     await db.execute(
                         """
                         UPDATE proxies
-                        SET deleted = 1, updated_at = CURRENT_TIMESTAMP
+                        SET deleted = 1, updated_at = datetime('now','localtime')
                         WHERE space_pk = ? AND deleted = 0
                         """,
                         (int(space_pk),),
@@ -1310,7 +1310,7 @@ class Database:
             cur = await db.execute(
                 """
                 UPDATE proxies
-                SET deleted = 1, updated_at = CURRENT_TIMESTAMP
+                SET deleted = 1, updated_at = datetime('now','localtime')
                 WHERE space_pk = ? AND proxy_id = ?
                 """,
                 (int(space_pk), int(proxy_id)),
@@ -1404,7 +1404,7 @@ class Database:
                 UPDATE task_types
                 SET name=?, code=?, concurrency=?, continuous_error_threshold=?, timeout_seconds=?,
                     create_task_handler=?, refresh_quota_handler=?,
-                    enabled=?, updated_at=CURRENT_TIMESTAMP
+                    enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
                 """,
                 (
@@ -1526,7 +1526,7 @@ class Database:
 
     async def delete_task_type(self, task_type_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE task_types SET deleted=1, updated_at=CURRENT_TIMESTAMP WHERE id=?", (task_type_id,))
+            await db.execute("UPDATE task_types SET deleted=1, updated_at=datetime('now','localtime') WHERE id=?", (task_type_id,))
             await db.commit()
 
     async def get_task_type_by_code(self, code: str) -> Optional[TaskType]:
@@ -1596,13 +1596,13 @@ class Database:
                       task_type_id, window_pk,
                       daily_quota, remaining_quota,
                       enabled, deleted, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, 0, datetime('now','localtime'))
                     ON CONFLICT(task_type_id, window_pk) DO UPDATE SET
                       daily_quota=excluded.daily_quota,
                       remaining_quota=excluded.remaining_quota,
                       enabled=excluded.enabled,
                       deleted=0,
-                      updated_at=CURRENT_TIMESTAMP
+                      updated_at=datetime('now','localtime')
                     """,
                     (
                         task_type_id,
@@ -1679,7 +1679,7 @@ class Database:
         params.append(mapping_id)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                f"UPDATE task_type_windows SET {', '.join(updates)}, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                f"UPDATE task_type_windows SET {', '.join(updates)}, updated_at=datetime('now','localtime') WHERE id=?",
                 params,
             )
             await db.commit()
@@ -1733,9 +1733,9 @@ class Database:
                           AND w.deleted=0 AND w.enabled=1
                           AND (
                             (m.remaining_quota > 2)
-                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
+                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
-                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
                           AND (m.consecutive_errors < t.continuous_error_threshold)
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
                         ORDER BY m.consecutive_errors ASC, m.updated_at ASC, m.remaining_quota DESC
@@ -1757,16 +1757,16 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
                             (remaining_quota > 2)
-                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
+                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
-                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
                         """,
                         (mapping_id, threshold, task_concurrency),
                     )
@@ -1858,9 +1858,9 @@ class Database:
                           AND w.deleted=0 AND w.enabled=1
                           AND (
                             (m.remaining_quota > 2)
-                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
+                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
-                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
                           AND (m.consecutive_errors < t.continuous_error_threshold)
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
                         LIMIT 1
@@ -1880,16 +1880,16 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
                             (remaining_quota > 2)
-                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
+                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
-                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
                         """,
                         (mid, threshold, task_concurrency),
                     )
@@ -1989,7 +1989,7 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
                         """,
@@ -2093,7 +2093,7 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
                         """,
@@ -2180,9 +2180,9 @@ class Database:
                           AND w.deleted=0 AND w.enabled=1
                           AND (
                             (m.remaining_quota > 2)
-                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now', '+5 minutes'))
+                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
-                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
                           AND (m.consecutive_errors < t.continuous_error_threshold)
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
                         LIMIT 1
@@ -2203,16 +2203,16 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
                             (remaining_quota > 2)
-                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now', '+5 minutes'))
+                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
-                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= CURRENT_TIMESTAMP)
+                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
                         """,
                         (mid, threshold, task_concurrency),
                     )
@@ -2276,7 +2276,7 @@ class Database:
                               WHEN COALESCE(inflight_slots, 0) >= 1 THEN COALESCE(inflight_slots, 0) - 1
                               ELSE 0
                             END,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = datetime('now','localtime')
                         WHERE id = ?
                         """,
                         (mid,),
@@ -2311,7 +2311,7 @@ class Database:
                       WHEN error_message IS NULL OR TRIM(error_message) = '' THEN 'server restarted'
                       ELSE error_message
                     END,
-                    completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+                    completed_at = COALESCE(completed_at, datetime('now','localtime'))
                 WHERE status IN ('running', 'queued')
                 """
             )
@@ -2322,7 +2322,7 @@ class Database:
                 """
                 UPDATE task_type_windows
                 SET inflight_slots = 0,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE COALESCE(inflight_slots, 0) != 0
                 """
             )
@@ -2495,9 +2495,9 @@ class Database:
             updates.append("error_message=?")
             params.append(error_message)
         if set_started:
-            updates.append("started_at=CURRENT_TIMESTAMP")
+            updates.append("started_at=datetime('now','localtime')")
         if set_completed:
-            updates.append("completed_at=CURRENT_TIMESTAMP")
+            updates.append("completed_at=datetime('now','localtime')")
 
         if not updates:
             return
@@ -2546,7 +2546,7 @@ class Database:
                       WHEN remaining_quota >= ? THEN remaining_quota - ?
                       ELSE 0
                     END,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
                 (amt, amt, int(mapping_id)),
@@ -2560,7 +2560,7 @@ class Database:
                 """
                 UPDATE task_type_windows
                 SET consecutive_errors = 0,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
                 (int(mapping_id),),
@@ -2581,10 +2581,10 @@ class Database:
                 SET total_errors = total_errors + 1,
                     consecutive_errors = consecutive_errors + 1,
                     error_cooldown_until = CASE
-                      WHEN (consecutive_errors + 1) >= ? THEN datetime('now', ?)
-                      ELSE datetime('now', ?)
+                      WHEN (consecutive_errors + 1) >= ? THEN datetime('now','localtime', ?)
+                      ELSE datetime('now','localtime', ?)
                     END,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
                 (thr, modifier, modifier_short, int(mapping_id)),
