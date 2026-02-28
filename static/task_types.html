@@ -218,6 +218,7 @@
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>空间</th>
                       <th>代理</th>
+                      <th title="该窗口已完成的任务数">成功任务</th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th>邀请码</th>
@@ -616,11 +617,12 @@
         return ms !== null && ms > 0 && ms < Date.now();
       }
 
-      function proxyLabel(p) {
+      function proxyLabel(p, successCount) {
         const ip = String(p.last_ip || p.host || "-").trim() || "-";
         const country = String(p.last_country || "-").trim() || "-";
         const bind = Number(p.binding_count || 0) || 0;
-        return `${ip} / ${country} / 绑:${bind}`;
+        const succ = successCount != null ? Number(successCount) : (Number(p.success_count || 0) || 0);
+        return `${ip} / ${country} / 绑:${bind} / 成功:${succ}`;
       }
 
       async function loadProxyBindings(spacePk) {
@@ -629,6 +631,17 @@
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "读取代理绑定数失败");
         return d.counts || {};
+      }
+
+      const proxySuccessCountsCache = new Map(); // space_pk -> { proxy_id: count }
+      async function loadProxySuccessCounts(spacePk) {
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxy-success-counts`);
+        if (!r) return {};
+        const d = await r.json();
+        if (!r.ok) return {};
+        const counts = d.counts || {};
+        proxySuccessCountsCache.set(spacePk, counts);
+        return counts;
       }
 
       const proxyBindingsRefreshInflight = new Map(); // space_pk -> Promise<void>
@@ -685,7 +698,11 @@
         }
       }
 
-      function fillProxySelects(spacePk) {
+      async function fillProxySelects(spacePk) {
+        try {
+          await loadProxySuccessCounts(spacePk);
+        } catch {}
+        const successCounts = proxySuccessCountsCache.get(spacePk) || {};
         const items = normalizeProxies(proxiesCache.get(spacePk) || []);
         // 注意：不要按 binding_count（绑定数）排序；绑定数变化会导致下拉顺序跳动。
         // 这里按 IP（last_ip / host）排序，保证切换绑定/刷新绑定数时顺序稳定。
@@ -784,8 +801,9 @@
 
           const curItem = curIdNum > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum)) : null;
           const curIsExpired = !!(curItem && isProxyExpired(curItem));
+          const getSuccessCount = (pid) => successCounts[String(pid)] ?? successCounts[pid] ?? 0;
           const curOption = (curIdNum > 0 && curItem && curIsExpired)
-            ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem))}</option>`
+            ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem, getSuccessCount(curIdNum)))}</option>`
             : (curIdNum > 0 && !curItem)
               ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum))}</option>`
               : "";
@@ -797,7 +815,7 @@
             ${customOption}
             <option value="0">(不使用代理)</option>
             ${curOption}
-            ${available.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p))}</option>`).join("")}
+            ${available.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p, getSuccessCount(p.proxy_id)))}</option>`).join("")}
           `;
           sel.value = looksCustom ? "__custom__" : String(curIdNum || 0);
         });
@@ -1287,7 +1305,7 @@
       async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="12" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -1417,7 +1435,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="12" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="13" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -1449,7 +1467,7 @@
             <td>
               <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")} · ${escapeHtml(m.space_name || "-")}</div>
             </td>
-            <td style="width: 210px; max-width: 210px;">
+            <td style="width: 340px; min-width: 340px;">
               <select
                 class="form-select form-select-sm mono"
                 data-role="proxySelect"
@@ -1462,6 +1480,9 @@
               >
                 <option value="">(加载代理中...)</option>
               </select>
+            </td>
+            <td class="mono">
+              <span class="fw-semibold" data-role="successCount" data-mid="${m.id}">${m.success_count ?? 0}</span>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1594,7 +1615,7 @@
           btn.addEventListener("click", (e) => openMappingEditor(mid, act, e.currentTarget));
         });
 
-        // 代理下拉：异步加载每个 space_pk 的代理列表，并填充下拉框
+        // 代理下拉：异步加载每个 space_pk 的代理列表，并填充下拉框（含成功任务数）
         try {
           const spacePks = Array.from(new Set((items || [])
             .map(x => parseInt(x?.space_pk, 10))
@@ -1603,6 +1624,14 @@
             ensureProxiesLoaded(spk)
               .then(() => fillProxySelects(spk))
               .catch(() => fillProxySelects(spk));
+          });
+          // 点击代理下拉时刷新成功任务数，便于识别优质 IP
+          body.querySelectorAll('select[data-role="proxySelect"]').forEach(sel => {
+            const spk = parseInt(sel.dataset.space_pk, 10);
+            if (!Number.isFinite(spk) || spk <= 0) return;
+            sel.addEventListener("focus", () => {
+              loadProxySuccessCounts(spk).then(() => fillProxySelects(spk)).catch(() => {});
+            });
           });
         } catch {}
 

@@ -395,6 +395,14 @@ async def list_proxy_bindings(space_pk: int, token: str = Depends(verify_admin_t
     return {"success": True, "counts": await db.count_proxy_bindings(space_pk)}
 
 
+@router.get("/api/admin/spaces/{space_pk}/proxy-success-counts")
+async def list_proxy_success_counts(space_pk: int, token: str = Depends(verify_admin_token)):
+    """返回代理成功任务数：proxy_id -> 该代理下窗口完成的任务数（用于识别优质 IP）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {"success": True, "counts": await db.count_proxy_success_tasks(space_pk)}
+
+
 @router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/delete")
 async def delete_local_proxy(space_pk: int, proxy_id: int, token: str = Depends(verify_admin_token)):
     """本地删除代理（仅标记 deleted=1，不影响指纹浏览器侧）。

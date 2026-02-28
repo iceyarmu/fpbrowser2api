@@ -1031,6 +1031,69 @@ class Database:
                     out[pid] = 0
             return out
 
+    async def count_proxy_success_tasks(self, space_pk: int) -> Dict[int, int]:
+        """统计某个空间下：每个 proxy_id 对应的成功任务数（status=completed）。
+
+        与 count_proxy_bindings 类似，优先用 windows.proxy_id；
+        若 proxy_id=0 且 proxy_addr 非空，则尝试匹配 proxies 表得到 proxy_id。
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                WITH win AS (
+                  SELECT
+                    id,
+                    space_pk,
+                    COALESCE(proxy_id, 0) AS pid,
+                    TRIM(COALESCE(proxy_addr, '')) AS proxy_addr
+                  FROM windows
+                  WHERE deleted = 0 AND space_pk = ?
+                ),
+                matched AS (
+                  SELECT
+                    w.id AS window_id,
+                    MIN(p.proxy_id) AS matched_proxy_id
+                  FROM win w
+                  JOIN proxies p
+                    ON p.space_pk = w.space_pk
+                   AND p.deleted = 0
+                   AND w.pid = 0
+                   AND w.proxy_addr <> ''
+                   AND (
+                     (p.last_ip IS NOT NULL AND TRIM(p.last_ip) <> '' AND TRIM(p.last_ip) = w.proxy_addr)
+                     OR ((p.host || ':' || p.port) IS NOT NULL AND TRIM(p.host || ':' || p.port) = w.proxy_addr)
+                     OR (p.host IS NOT NULL AND TRIM(p.host) <> '' AND TRIM(p.host) = w.proxy_addr)
+                   )
+                  GROUP BY w.id
+                ),
+                task_proxy AS (
+                  SELECT
+                    COALESCE(NULLIF(win.pid, 0), matched.matched_proxy_id, 0) AS proxy_id
+                  FROM tasks t
+                  JOIN win ON win.id = t.window_pk
+                  LEFT JOIN matched ON matched.window_id = win.id
+                  WHERE t.status = 'completed'
+                )
+                SELECT proxy_id, COUNT(*) AS cnt
+                FROM task_proxy
+                GROUP BY proxy_id
+                """,
+                (int(space_pk),),
+            )
+            rows = await cur.fetchall()
+            out: Dict[int, int] = {}
+            for r in rows:
+                try:
+                    pid = int(r["proxy_id"] or 0)
+                except Exception:
+                    pid = 0
+                try:
+                    out[pid] = int(r["cnt"] or 0)
+                except Exception:
+                    out[pid] = 0
+            return out
+
     async def get_window(self, window_pk: int) -> Optional[WindowInfo]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -1565,7 +1628,8 @@ class Database:
                   w.enabled AS window_enabled,
                   s.space_id AS space_id,
                   s.name AS space_name,
-                  b.name AS browser_name
+                  b.name AS browser_name,
+                  (SELECT COUNT(*) FROM tasks WHERE window_pk = m.window_pk AND status = 'completed') AS success_count
                 FROM task_type_windows m
                 JOIN windows w ON m.window_pk = w.id
                 JOIN spaces s ON w.space_pk = s.id
