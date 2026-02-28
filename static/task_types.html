@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>任务类型管理 - FPBrowser2API</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
     <style>
+      html, body { height: 100%; }
+      body { display: flex; flex-direction: column; }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .small2 { font-size: 11px; }
       .cell-stack > div { line-height: 1.15; }
@@ -13,21 +16,46 @@
       .btn-w-72 { min-width: 54px; padding-left: .4rem; padding-right: .4rem; }
 
       /* 更紧凑的表格（让一屏显示更多行） */
-      .win-table-wrap .table > :not(caption) > * > * { padding-top: .18rem; padding-bottom: .18rem; }
-      .win-table-wrap .btn.btn-sm { padding-top: .12rem; padding-bottom: .12rem; padding-left: .4rem; padding-right: .4rem; }
+      .win-table-wrap .table > :not(caption) > * > * { padding-top: .14rem; padding-bottom: .14rem; }
+      .win-table-wrap .btn.btn-sm { padding-top: .10rem; padding-bottom: .10rem; padding-left: .35rem; padding-right: .35rem; }
       .win-table-wrap .form-select.form-select-sm { padding-top: .15rem; padding-bottom: .15rem; padding-left: .5rem; }
 
       /* 更紧凑的配置区，让窗口绑定成为主视觉 */
-      .card-body-compact { padding: 0.85rem 1rem; }
-      .hr-tight { margin: 0.5rem 0; }
+      .card-body-compact { padding: 0.65rem .85rem; }
+      .hr-tight { margin: 0.35rem 0; }
       .form-label-tight { margin-bottom: 0.25rem; font-size: 12px; color: #6c757d; }
       .type-config .form-text { margin-top: 0.15rem; font-size: 12px; }
       .type-config .form-control,
       .type-config .form-select { padding-top: .375rem; padding-bottom: .375rem; }
 
-      .win-card .card-body { padding: 0.85rem 1rem; }
+      #pageMain { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+      #mainRow { flex: 1; min-height: 0; }
+      #mainColumn { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+      .win-card { flex: 1; min-height: 0; overflow: hidden; }
+      .win-card .card-body { padding: 0.65rem .85rem; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
       .win-toolbar { position: sticky; top: 0; z-index: 2; background: rgba(248, 249, 250, 0.95); backdrop-filter: blur(6px); }
-      .win-table-wrap { max-height: calc(100vh - 320px); overflow: auto; }
+      .win-table-wrap {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        /* 兜底：防止某些布局情况下外层没“收缩”，导致列表无法滚动 */
+        max-height: calc(100dvh - 240px);
+      }
+
+      /* 仅窗口绑定模式：隐藏上方两块卡片 */
+      body.focus-wins #cardTypeHeader,
+      body.focus-wins #cardTypeConfig { display: none !important; }
+
+      .btn-icon.btn-sm {
+        width: 30px;
+        height: 24px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+      }
+      .btn-icon i { font-size: 0.95rem; line-height: 1; }
 
       .sort-head { cursor: pointer; user-select: none; }
       .quota-sort { cursor: pointer; user-select: none; }
@@ -59,25 +87,39 @@
       </div>
     </nav>
 
-    <div class="container-fluid py-4">
-      <div class="card shadow-sm mb-4">
-        <div class="card-body">
-          <div class="d-flex flex-wrap gap-2 align-items-center">
+    <div class="container-fluid py-2" id="pageMain">
+      <div class="card shadow-sm mb-2" id="cardTypeHeader">
+        <div class="card-body card-body-compact">
+          <div class="d-flex flex-wrap gap-1 align-items-center">
             <div class="fw-semibold">任务类型</div>
-            <div class="flex-grow-1" style="min-width: 260px; max-width: 560px;">
-              <select class="form-select" id="typeSelect"></select>
-              <div class="form-text">英文名称（code）必须唯一；对外接口用 code 作为任务类型参数。</div>
+            <span class="text-muted small ms-auto" id="currentTypeHintTop">未选择</span>
+            <button
+              class="btn btn-outline-secondary btn-sm"
+              id="btnToggleTypeHeader"
+              type="button"
+              data-bs-toggle="collapse"
+              data-bs-target="#typeHeaderCollapse"
+              aria-expanded="true"
+              aria-controls="typeHeaderCollapse"
+            >收起</button>
+            <button class="btn btn-primary btn-sm" id="btnNewType">新增</button>
+          </div>
+          <div class="collapse show mt-1" id="typeHeaderCollapse">
+            <div class="d-flex flex-wrap gap-1 align-items-start">
+              <div class="flex-grow-1" style="min-width: 260px; max-width: 560px;">
+                <select class="form-select" id="typeSelect"></select>
+                <div class="form-text">英文名称（code）必须唯一；对外接口用 code 作为任务类型参数。</div>
+              </div>
             </div>
-            <button class="btn btn-primary ms-auto" id="btnNewType">新增</button>
           </div>
         </div>
       </div>
 
-      <div class="row g-4">
-        <div class="col-12">
-          <div class="card shadow-sm mb-4">
+      <div class="row g-2" id="mainRow">
+        <div class="col-12 d-flex flex-column" id="mainColumn">
+          <div class="card shadow-sm mb-2" id="cardTypeConfig">
             <div class="card-body card-body-compact type-config">
-              <div class="d-flex flex-wrap gap-2 align-items-center">
+              <div class="d-flex flex-wrap gap-1 align-items-center">
                 <h5 class="card-title mb-0">任务类型配置</h5>
                 <span class="text-muted small ms-auto" id="currentTypeHint">未选择</span>
                 <button class="btn btn-outline-secondary btn-sm" id="btnToggleTypeConfig" type="button" data-bs-toggle="collapse" data-bs-target="#typeConfigCollapse" aria-expanded="true" aria-controls="typeConfigCollapse">收起</button>
@@ -131,20 +173,25 @@
             </div>
           </div>
 
-          <div class="card shadow-sm win-card">
+          <div class="card shadow-sm win-card flex-grow-1">
             <div class="card-body">
-              <div class="d-flex flex-wrap gap-2 align-items-center">
+              <div class="d-flex flex-wrap gap-1 align-items-center">
                 <h5 class="card-title mb-0">窗口绑定</h5>
-                <button class="btn btn-outline-primary btn-sm ms-auto" id="btnAddWindows">添加窗口</button>
+                <span class="text-muted small ms-2" id="currentTypeHintWin">未选择</span>
+                <div class="form-check form-switch ms-auto mb-0">
+                  <input class="form-check-input" type="checkbox" role="switch" id="chkFocusWinOnly" />
+                  <label class="form-check-label small" for="chkFocusWinOnly">仅窗口绑定</label>
+                </div>
+                <button class="btn btn-outline-primary btn-sm" id="btnAddWindows">添加窗口</button>
               </div>
-              <div class="text-muted small mt-1">
+              <div class="text-muted small mt-0">
                 每个窗口可绑定多个任务类型；这里做“多窗口管理”：批量打开、批量刷新额度、定时刷新、按额度排序。
               </div>
               <hr class="hr-tight" />
 
-              <div class="win-toolbar border rounded p-2 mb-2">
-                <div class="d-flex flex-wrap gap-2 align-items-center">
-                  <div class="d-flex flex-wrap gap-2 align-items-center">
+              <div class="win-toolbar border rounded p-1 mb-1">
+                <div class="d-flex flex-wrap gap-1 align-items-center">
+                  <div class="d-flex flex-wrap gap-1 align-items-center">
                     <div class="form-check">
                       <input class="form-check-input" type="checkbox" id="chkMapAll" />
                       <label class="form-check-label small" for="chkMapAll">全选</label>
@@ -158,19 +205,6 @@
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
-                  </div>
-
-                  <div class="ms-auto d-flex flex-wrap gap-2 align-items-center">
-                    <div class="small text-muted">定时刷新</div>
-                    <select class="form-select form-select-sm" id="autoRefreshScope" style="min-width: 120px;">
-                      <option value="enabled">仅启用</option>
-                      <option value="all">全部</option>
-                      <option value="selected">仅选中</option>
-                    </select>
-                    <input class="form-control form-control-sm mono" id="autoRefreshSeconds" type="number" min="5" value="60" style="width: 84px;" title="刷新间隔（秒）" />
-                    <button class="btn btn-outline-primary btn-sm" id="btnAutoRefreshToggle">开始</button>
-                    <button class="btn btn-outline-danger btn-sm" id="btnAutoRefreshErrors" title="查看定时刷新失败记录">失败列表</button>
-                    <div class="small text-muted" id="autoRefreshHint">未开启</div>
                   </div>
                 </div>
                 <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
@@ -770,7 +804,9 @@
       }
 
       const LS_KEYS_UI = {
+        typeHeaderCollapsed: `${LS_PREFIX}task_types.type_header_collapsed`,
         typeConfigCollapsed: `${LS_PREFIX}task_types.type_config_collapsed`,
+        focusWinOnly: `${LS_PREFIX}task_types.focus_win_only`,
         mappingSortKey: `${LS_PREFIX}task_types.mapping_sort_key`,
         mappingSortDir: `${LS_PREFIX}task_types.mapping_sort_dir`,
         autoRefreshSeconds: `${LS_PREFIX}task_types.auto_refresh_seconds`,
@@ -1005,17 +1041,27 @@
 
       function setBtnBusy(btn, busy, { loadingText = "处理中", keepWidth = true } = {}) {
         if (!btn) return;
+        const iconOnly = btn.classList?.contains?.("btn-icon");
         if (busy) {
           if (btn.dataset.origHtml == null) btn.dataset.origHtml = btn.innerHTML;
           btn.disabled = true;
-          if (keepWidth && !btn.classList.contains("btn-w-72")) {
+          if (!iconOnly && keepWidth && !btn.classList.contains("btn-w-72")) {
             btn.classList.add("btn-w-72");
             btn.dataset.widthAdded = "1";
           }
-          btn.innerHTML = `
-            <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
-            <span>${escapeHtml(loadingText)}</span>
-          `;
+          if (iconOnly) {
+            if (btn.dataset.origTitle == null) btn.dataset.origTitle = btn.getAttribute("title") || "";
+            btn.innerHTML = `
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span class="visually-hidden">${escapeHtml(loadingText)}</span>
+            `;
+            btn.setAttribute("title", loadingText);
+          } else {
+            btn.innerHTML = `
+              <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+              <span>${escapeHtml(loadingText)}</span>
+            `;
+          }
           return;
         }
         btn.disabled = false;
@@ -1024,14 +1070,29 @@
           delete btn.dataset.widthAdded;
         }
         if (btn.dataset.origHtml != null) btn.innerHTML = btn.dataset.origHtml;
+        if (iconOnly && btn.dataset.origTitle != null) {
+          btn.setAttribute("title", btn.dataset.origTitle);
+          delete btn.dataset.origTitle;
+        }
       }
 
       function flashBtnText(btn, text, ms = 900) {
         if (!btn) return;
+        const iconOnly = btn.classList?.contains?.("btn-icon");
         if (btn.dataset.origHtml == null) btn.dataset.origHtml = btn.innerHTML;
-        btn.innerHTML = escapeHtml(text);
+        if (iconOnly) {
+          if (btn.dataset.origTitle == null) btn.dataset.origTitle = btn.getAttribute("title") || "";
+          btn.innerHTML = `<i class="bi bi-check2" aria-hidden="true"></i><span class="visually-hidden">${escapeHtml(text)}</span>`;
+          btn.setAttribute("title", text);
+        } else {
+          btn.innerHTML = escapeHtml(text);
+        }
         window.setTimeout(() => {
           if (btn.dataset.origHtml != null) btn.innerHTML = btn.dataset.origHtml;
+          if (iconOnly && btn.dataset.origTitle != null) {
+            btn.setAttribute("title", btn.dataset.origTitle);
+            delete btn.dataset.origTitle;
+          }
         }, ms);
       }
 
@@ -1161,7 +1222,13 @@
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
         document.getElementById("typeCode").disabled = false;
-        document.getElementById("currentTypeHint").textContent = t ? `当前：${t.name} (${t.code})` : "未选择";
+        const hint = t ? `当前：${t.name} (${t.code})` : "未选择";
+        const hintEl = document.getElementById("currentTypeHint");
+        const hintTopEl = document.getElementById("currentTypeHintTop");
+        const hintWinEl = document.getElementById("currentTypeHintWin");
+        if (hintEl) hintEl.textContent = hint;
+        if (hintTopEl) hintTopEl.textContent = hint;
+        if (hintWinEl) hintWinEl.textContent = hint;
       }
 
       async function saveType() {
@@ -1368,9 +1435,9 @@
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}</span>
                 <div class="fw-semibold quota-click" title="点击按窗口编号（#）排序" data-role="winName">${escapeHtml(m.window_name || "-")}</div>
                 <div class="btn-group btn-group-sm" role="group" aria-label="window-manual-open-close">
-                  <button class="btn btn-outline-success btn-sm btn-w-72" data-act="manualOpen" data-mid="${m.id}">打开</button>
-                  <button class="btn btn-outline-primary btn-sm btn-w-72" title="启用 + 立刻重启窗口并进入 Sora drafts" data-act="manualStart" data-mid="${m.id}">启动</button>
-                  <button class="btn btn-outline-secondary btn-sm btn-w-72" data-act="manualClose" data-mid="${m.id}">关闭</button>
+                  <button class="btn btn-outline-success btn-sm btn-icon" title="打开窗口（禁止自动关闭）" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
+                  <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
+                  <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                 </div>
               </div>
               <div class="text-muted truncate-1" title="${escapeHtml(String(m.platform_account || "-") + " · " + String(m.browser_name || "-"))}">
@@ -1403,9 +1470,8 @@
                 </div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
       
-                <div class="text-muted">限流:${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">是</span>` : `<span class="badge text-bg-success">否</span>`}</div>
+                <div class="text-muted">限流:${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">是</span>` : `<span class="badge text-bg-success">否</span>`}费额:<span class="fw-semibold" data-role="purchasedRemainingCount" data-mid="${m.id}">${escapeHtml(String(m.sora_purchased_remaining_count ?? 0))}</span></div>
               </div>
-              <div class="text-muted">费额:<span class="fw-semibold" data-role="purchasedRemainingCount" data-mid="${m.id}">${escapeHtml(String(m.sora_purchased_remaining_count ?? 0))}</span></div>
               <div class="text-muted">重置:<span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
             <td class="mono cell-stack">
@@ -2281,6 +2347,22 @@
       }
 
       function applyUiDefaultsFromLS() {
+        // 仅窗口绑定模式：隐藏“任务类型”和“任务类型配置”，只保留窗口绑定
+        const focusOnly = readBoolLS(LS_KEYS_UI.focusWinOnly, false);
+        const chkFocus = document.getElementById("chkFocusWinOnly");
+        if (chkFocus) chkFocus.checked = !!focusOnly;
+        document.body.classList.toggle("focus-wins", !!focusOnly);
+
+        // 顶部任务类型区收起状态
+        const headerCollapsed = readBoolLS(LS_KEYS_UI.typeHeaderCollapsed, false);
+        const headerCollapseEl = document.getElementById("typeHeaderCollapse");
+        const headerBtn = document.getElementById("btnToggleTypeHeader");
+        if (headerCollapseEl) {
+          const bsH = bootstrap.Collapse.getOrCreateInstance(headerCollapseEl, { toggle: false });
+          if (headerCollapsed) bsH.hide(); else bsH.show();
+          if (headerBtn) headerBtn.textContent = headerCollapsed ? "展开" : "收起";
+        }
+
         // 配置区收起状态
         const collapsed = readBoolLS(LS_KEYS_UI.typeConfigCollapsed, false);
         const collapseEl = document.getElementById("typeConfigCollapse");
@@ -2308,6 +2390,11 @@
       }
 
       // --- UI 事件：多窗口管理 ---
+      document.getElementById("chkFocusWinOnly")?.addEventListener("change", (e) => {
+        const on = !!e.target.checked;
+        document.body.classList.toggle("focus-wins", on);
+        lsSet(LS_KEYS_UI.focusWinOnly, on ? "1" : "0");
+      });
       document.getElementById("chkMapAll")?.addEventListener("change", (e) => {
         const checked = !!e.target.checked;
         const boxes = Array.from(document.querySelectorAll("#mappingBody .chkMap"));
@@ -2350,6 +2437,18 @@
       document.getElementById("typeConfigCollapse")?.addEventListener("hidden.bs.collapse", () => {
         lsSet(LS_KEYS_UI.typeConfigCollapsed, "1");
         const btn = document.getElementById("btnToggleTypeConfig");
+        if (btn) btn.textContent = "展开";
+      });
+
+      // 顶部任务类型区：收起/展开按钮文案 + 记忆
+      document.getElementById("typeHeaderCollapse")?.addEventListener("shown.bs.collapse", () => {
+        lsSet(LS_KEYS_UI.typeHeaderCollapsed, "0");
+        const btn = document.getElementById("btnToggleTypeHeader");
+        if (btn) btn.textContent = "收起";
+      });
+      document.getElementById("typeHeaderCollapse")?.addEventListener("hidden.bs.collapse", () => {
+        lsSet(LS_KEYS_UI.typeHeaderCollapsed, "1");
+        const btn = document.getElementById("btnToggleTypeHeader");
         if (btn) btn.textContent = "展开";
       });
 
