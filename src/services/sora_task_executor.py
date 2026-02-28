@@ -1052,10 +1052,13 @@ class _SoraWatcher:
     deadline: float
     progress_cb: ProgressCB
     future: "asyncio.Future[Dict[str, Any]]"
+    start_time: float
+    max_wait_seconds: float
     last_sent_progress: int = -1
     last_status: Any = None
     last_progress_pct: Optional[float] = None
     miss_pending_count: int = 0
+    has_progress: bool = False
 
 
 @dataclass
@@ -2298,13 +2301,17 @@ class SoraSession:
         self.sniff_timeout_seconds = max(0.2, float(sniff_timeout_seconds))
         self.idle_close_seconds = max(0.0, float(idle_close_seconds))
 
+        start_time = time.time()
+        max_wait = max(1.0, float(max_wait_seconds))
         loop = asyncio.get_running_loop()
         fut: "asyncio.Future[Dict[str, Any]]" = loop.create_future()
         w = _SoraWatcher(
             task_id=str(task_id),
-            deadline=time.time() + max(1.0, float(max_wait_seconds)),
+            deadline=start_time + max_wait,
             progress_cb=progress_cb,
             future=fut,
+            start_time=start_time,
+            max_wait_seconds=max_wait,
         )
         self.watchers[w.task_id] = w
         if self.monitor_task is None or self.monitor_task.done():
@@ -2326,7 +2333,11 @@ class SoraSession:
 
                 now = time.time()
                 for tid, w in list(self.watchers.items()):
-                    if now > w.deadline and not w.future.done():
+                    if w.future.done():
+                        continue
+                    elapsed = now - w.start_time
+                    timeout_seconds = w.max_wait_seconds * (2.0 if w.has_progress else 1.0)
+                    if elapsed > timeout_seconds:
                         w.future.set_exception(RuntimeError(f"进度监控超时：task_id={tid}"))
                         self.watchers.pop(tid, None)
 
@@ -2415,6 +2426,7 @@ class SoraSession:
                         p_int = int(max(0.0, min(1.0, float(progress_pct))) * 100.0)
                         if p_int != w.last_sent_progress:
                             w.last_sent_progress = p_int
+                            w.has_progress = True
                             try:
                                 await w.progress_cb(p_int, {"task_id": tid, "status": status})
                             except Exception:
