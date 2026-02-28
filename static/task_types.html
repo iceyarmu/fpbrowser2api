@@ -188,6 +188,7 @@
                       <th>AccessToken / 过期</th>
                       <th>邀请码</th>
                       <th class="sort-head" id="thStatus" title="点击按连续错误排序">状态 <span class="text-muted" id="statusSortHint">↕</span></th>
+                      <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
                       <th>占用</th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th>操作</th>
@@ -549,6 +550,31 @@
         const t = Date.parse(s);
         if (Number.isNaN(t)) return null;
         return t;
+      }
+
+      // 计算“冷却中”字段：1=当前不能被选择；0=可被选择（逻辑对齐 database.py 的 pick_and_reserve_window_for_task）
+      function coolingFlagForMapping(m) {
+        const now = Date.now();
+        const concurrency = Math.max(1, parseInt(document.getElementById("typeConcurrency")?.value, 10) || 1);
+        const threshold = Math.max(1, parseInt(document.getElementById("typeErrThr")?.value, 10) || 1);
+        const rq = parseInt(m?.remaining_quota, 10);
+        const remainingQuota = Number.isNaN(rq) ? 0 : rq;
+        const infl = parseInt(m?.inflight_slots, 10);
+        const inflight = Number.isNaN(infl) ? 0 : infl;
+        const ce = parseInt(m?.consecutive_errors, 10);
+        const consecutiveErrors = Number.isNaN(ce) ? 0 : ce;
+
+        const cooldownMs = parseTimeMs(m?.cooldown_until);
+        const errorCooldownMs = parseTimeMs(m?.error_cooldown_until);
+        const quotaOk = (remainingQuota > 2)
+          || (cooldownMs !== null && cooldownMs <= (now + 5 * 60 * 1000));
+        const errOk = (errorCooldownMs === null) || (errorCooldownMs <= now);
+        const healthOk = consecutiveErrors < threshold;
+        const inflightOk = inflight < concurrency;
+        const enabledOk = !!m?.enabled;
+
+        const selectable = quotaOk && errOk && healthOk && inflightOk && enabledOk;
+        return selectable ? 0 : 1;
       }
 
       function isProxyExpired(p) {
@@ -958,6 +984,23 @@
           const expEl = tr.querySelector(`[data-role="accessTokenExpires"][data-mid="${mappingId}"]`);
           if (expEl) expEl.textContent = String(formatDateTimeShanghai(m.sora_access_expires) || "-");
         }
+
+        // 派生字段：冷却中（对齐 pick_and_reserve_window_for_task）
+        if (
+          has("remaining_quota")
+          || has("cooldown_until")
+          || has("error_cooldown_until")
+          || has("enabled")
+          || has("consecutive_errors")
+          || has("inflight_slots")
+        ) {
+          const el = tr.querySelector(`[data-role="coolingFlag"][data-mid="${mappingId}"]`);
+          if (el) {
+            const cooling = coolingFlagForMapping(m);
+            el.textContent = String(cooling);
+            el.className = `fw-semibold ${cooling ? "text-danger" : "text-success"}`;
+          }
+        }
       }
 
       function setBtnBusy(btn, busy, { loadingText = "处理中", keepWidth = true } = {}) {
@@ -1177,7 +1220,7 @@
       async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="12" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -1253,6 +1296,15 @@
           });
           return items;
         }
+        if (key === "cooling") {
+          items.sort((a, b) => {
+            const av = coolingFlagForMapping(a);
+            const bv = coolingFlagForMapping(b);
+            if (av !== bv) return (av - bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         // 默认 id 倒序（保持稳定）
         items.sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
         return items;
@@ -1272,6 +1324,7 @@
         mk(document.getElementById("balanceSortHint"), ui.mappingSortKey === "remaining_quota");
         mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
+        mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
       }
 
@@ -1297,13 +1350,15 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="11" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="12" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
         updateQuotaSortHint();
         const items = getSortedMappings();
-        body.innerHTML = items.map(m => `
+        body.innerHTML = items.map(m => {
+          const cooling = coolingFlagForMapping(m);
+          return `
           <tr class="small2" data-mid="${m.id}">
             <td>
               <input type="checkbox" class="form-check-input chkMap" value="${m.id}" ${state.mapSelected.has(m.id) ? "checked" : ""} />
@@ -1394,6 +1449,9 @@
               <div>冷却：<span class="fw-semibold" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></div>
             </td>
             <td class="mono">
+              <span class="fw-semibold ${cooling ? "text-danger" : "text-success"}" data-role="coolingFlag" data-mid="${m.id}">${cooling}</span>
+            </td>
+            <td class="mono">
               <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
             </td>
             <td>${m.enabled ? `<span class="badge text-bg-success enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">是</span>` : `<span class="badge text-bg-secondary enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">否</span>`}</td>
@@ -1402,7 +1460,7 @@
               <button class="btn btn-outline-danger btn-sm" data-act="del" data-mid="${m.id}">删除</button>
             </td>
           </tr>
-        `).join("");
+        `; }).join("");
 
         // 行多选：仅影响本地勾选，不触发后端
         body.querySelectorAll(".chkMap").forEach(chk => {
@@ -1909,7 +1967,7 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="12" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -1924,7 +1982,7 @@
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="11" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="12" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
@@ -2280,6 +2338,7 @@
       document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));
+      document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));
       document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));
 
       // 任务类型配置：收起/展开按钮文案 + 记忆
