@@ -27,14 +27,13 @@ class PickedWindow:
     threshold: int
     timeout_seconds: int
     create_task_handler: Optional[str]
-    window_ip: Optional[str] = None  # 窗口绑定的 IP/代理地址，落库到任务
-
     browser_vendor: str
     browser_base_url: str
     browser_access_key: Optional[str]
     space_id: str
     sora_access_token: Optional[str] = None
     sora_access_expires: Optional[str] = None
+    window_ip: Optional[str] = None  # 窗口绑定的 IP/代理地址，落库到任务
 
 
 class TaskService:
