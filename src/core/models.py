@@ -194,6 +194,7 @@ class Task(BaseModel):
     image_path: Optional[str] = None
 
     window_pk: Optional[int] = None
+    window_ip: Optional[str] = None  # 窗口绑定的 IP/代理地址（来自 windows.proxy_addr）
     result: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
 

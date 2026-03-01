@@ -27,6 +27,7 @@ class PickedWindow:
     threshold: int
     timeout_seconds: int
     create_task_handler: Optional[str]
+    window_ip: Optional[str] = None  # 窗口绑定的 IP/代理地址，落库到任务
 
     browser_vendor: str
     browser_base_url: str
@@ -177,6 +178,7 @@ class TaskService:
                     prompt=prompt_text,
                     image_path=None,
                     window_pk=picked.window_pk,
+                    window_ip=picked.window_ip,
                 )
             )
             self._task_payloads[task_id] = payload
@@ -211,6 +213,7 @@ class TaskService:
             threshold=int(r.get("continuous_error_threshold") or 3),
             timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
+            window_ip=(str(r.get("window_ip") or "").strip() or None),
             browser_vendor=str(r.get("vendor") or "generic"),
             browser_base_url=str(r.get("lan_addr") or ""),
             browser_access_key=r.get("access_key"),
@@ -243,6 +246,7 @@ class TaskService:
             threshold=int(r.get("continuous_error_threshold") or 3),
             timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
+            window_ip=(str(r.get("window_ip") or "").strip() or None),
             browser_vendor=str(r.get("vendor") or "generic"),
             browser_base_url=str(r.get("lan_addr") or ""),
             browser_access_key=r.get("access_key"),
@@ -274,6 +278,7 @@ class TaskService:
             threshold=int(r.get("continuous_error_threshold") or 3),
             timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
+            window_ip=(str(r.get("window_ip") or "").strip() or None),
             browser_vendor=str(r.get("vendor") or "generic"),
             browser_base_url=str(r.get("lan_addr") or ""),
             browser_access_key=r.get("access_key"),

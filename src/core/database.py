@@ -261,6 +261,7 @@ class Database:
                     prompt TEXT NOT NULL,
                     image_path TEXT,
                     window_pk INTEGER,
+                    window_ip TEXT,
                     result_json TEXT,
                     error_message TEXT,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
@@ -404,10 +405,11 @@ class Database:
                     if not await self._column_exists(db, "spaces", col_name):
                         await db.execute(f"ALTER TABLE spaces ADD COLUMN {col_name} {col_type}")
 
-            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）
+            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）；window_ip（窗口绑定 IP）
             if await self._table_exists(db, "tasks"):
                 columns_to_add = [
                     ("generation_id", "TEXT"),
+                    ("window_ip", "TEXT"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "tasks", col_name):
@@ -1839,7 +1841,7 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回 join 后的上下文字段（与旧实现一致）
+                    # Step 3: 返回 join 后的上下文字段（与旧实现一致），含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -1853,6 +1855,7 @@ class Database:
                           w.window_name,
                           w.platform_account,
                           w.platform_url,
+                          w.proxy_addr AS window_ip,
                           s.id AS space_pk,
                           s.space_id AS space_id,
                           b.id AS browser_pk,
@@ -1961,7 +1964,7 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致）
+                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致），含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -1975,6 +1978,7 @@ class Database:
                           w.window_name,
                           w.platform_account,
                           w.platform_url,
+                          w.proxy_addr AS window_ip,
                           s.id AS space_pk,
                           s.space_id AS space_id,
                           b.id AS browser_pk,
@@ -2063,7 +2067,7 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致）
+                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致），含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -2077,6 +2081,7 @@ class Database:
                           w.window_name,
                           w.platform_account,
                           w.platform_url,
+                          w.proxy_addr AS window_ip,
                           s.id AS space_pk,
                           s.space_id AS space_id,
                           b.id AS browser_pk,
@@ -2167,7 +2172,7 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文
+                    # Step 3: 返回上下文，含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -2181,6 +2186,7 @@ class Database:
                           w.window_name,
                           w.platform_account,
                           w.platform_url,
+                          w.proxy_addr AS window_ip,
                           s.id AS space_pk,
                           s.space_id AS space_id,
                           b.id AS browser_pk,
@@ -2400,8 +2406,8 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 """
-                INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, window_ip, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 """,
                 (
                     task.task_id,
@@ -2412,6 +2418,7 @@ class Database:
                     task.prompt,
                     task.image_path,
                     task.window_pk,
+                    (str(task.window_ip).strip() if task.window_ip else None),
                 ),
             )
             await db.commit()
@@ -2508,6 +2515,7 @@ class Database:
                   t.progress,
                   t.prompt,
                   t.window_pk,
+                  t.window_ip,
                   w.platform_account AS window_account,
                   w.window_sort_num AS window_sort_num,
                   t.error_message,
