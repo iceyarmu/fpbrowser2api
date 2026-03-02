@@ -446,19 +446,60 @@ async def analyze_local_proxy_ip(space_pk: int, proxy_id: int, token: str = Depe
     if not ip:
         raise HTTPException(status_code=400, detail="该代理缺少可检测的 IP（last_ip/host）")
 
+    syscfg = await db.get_system_config()
     url = "https://getgpt.pro/api/analyze-ip"
+    timeout = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+    proxy_url = str(syscfg.proxy_url or "").strip()
+    use_proxy = bool(syscfg.proxy_enabled) and bool(proxy_url)
+
+    def _build_client_kwargs(enable_proxy: bool) -> Dict[str, Any]:
+        # 禁用环境变量代理，避免其他机器上 HTTP(S)_PROXY 导致意外失败。
+        kwargs: Dict[str, Any] = {"timeout": timeout, "trust_env": False}
+        if enable_proxy:
+            try:
+                kwargs["proxy"] = proxy_url
+            except TypeError:
+                kwargs["proxies"] = proxy_url
+        return kwargs
+
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(**_build_client_kwargs(use_proxy)) as client:
             rsp = await client.get(url, params={"ip": ip})
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"调用 IP 检测接口失败：{e}")
+    except Exception as first_err:
+        if use_proxy:
+            # 配了代理但请求失败时，回退直连重试一次。
+            try:
+                async with httpx.AsyncClient(**_build_client_kwargs(False)) as client:
+                    rsp = await client.get(url, params={"ip": ip})
+            except Exception as second_err:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "调用 IP 检测接口失败（代理+直连均失败）："
+                        f"proxy_err={first_err.__class__.__name__}: {first_err}; "
+                        f"direct_err={second_err.__class__.__name__}: {second_err}"
+                    ),
+                )
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"调用 IP 检测接口失败（直连）：{first_err.__class__.__name__}: {first_err}",
+            )
 
     try:
         payload = rsp.json()
     except Exception:
         payload = None
     if rsp.status_code >= 400 or not isinstance(payload, dict):
-        raise HTTPException(status_code=502, detail=f"IP 检测接口返回异常（status={rsp.status_code}）")
+        body_preview = ""
+        try:
+            body_preview = (rsp.text or "")[:200]
+        except Exception:
+            body_preview = ""
+        raise HTTPException(
+            status_code=502,
+            detail=f"IP 检测接口返回异常（status={rsp.status_code}, body={body_preview}）",
+        )
 
     if not payload.get("success"):
         raise HTTPException(status_code=400, detail=str(payload.get("message") or "IP 检测失败"))
