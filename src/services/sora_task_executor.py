@@ -1250,7 +1250,9 @@ class SoraSession:
         except Exception:
             deadline = time.time() + 10.0
 
-        poll = 1.0
+        # 两档等待：点击后给 Cloudflare 3s 处理时间；未点击时 1s 轮询
+        poll_after_click = 6.0
+        poll_idle = 1.0
         while time.time() < deadline:
             try:
                 is_closed = bool(getattr(page, "is_closed", lambda: False)())
@@ -1266,17 +1268,20 @@ class SoraSession:
             if not still_cf:
                 return False
 
-            # 尝试点击 Cloudflare Turnstile checkbox，协助通过验证
+            # 尝试点击 Cloudflare Turnstile checkbox
+            clicked = False
             try:
-                await self._try_click_cloudflare_checkbox(page)
+                clicked = await self._try_click_cloudflare_checkbox(page)
             except Exception:
                 pass
 
             remain = deadline - time.time()
             if remain <= 0:
                 break
+            # 点击成功后多等一会，给 Cloudflare 时间处理；否则短轮询
+            sleep_sec = poll_after_click if clicked else poll_idle
             try:
-                await asyncio.sleep(min(poll, max(0.1, remain)))
+                await asyncio.sleep(min(sleep_sec, max(0.1, remain)))
             except Exception:
                 break
         return True
@@ -1760,7 +1765,7 @@ class SoraSession:
             try:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
-                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=25.0)
+                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=60.0)
                     if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
                         new_page = await self._restart_window_and_restore_single_drafts(
                             drafts_url=drafts_url, sora_host=sora_host
