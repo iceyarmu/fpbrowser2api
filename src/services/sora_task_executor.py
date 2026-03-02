@@ -1249,7 +1249,7 @@ class SoraSession:
             deadline = time.time() + max(0.0, float(max_wait_seconds))
         except Exception:
             deadline = time.time() + 10.0
-        await asyncio.sleep(10.0)
+        await asyncio.sleep(5.0)
         # 两档等待：点击后给 Cloudflare 3s 处理时间；未点击时 1s 轮询
         poll_after_click = 6.0
         poll_idle = 1.0
