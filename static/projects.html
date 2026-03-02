@@ -183,6 +183,7 @@
               <input class="form-control form-control-sm" id="proxiesFilter" placeholder="搜索：host / 端口 / 最后IP / 国家 / 备注 / proxy_id" style="max-width: 460px;" />
               <button class="btn btn-outline-secondary btn-sm" id="btnRefreshProxies">刷新</button>
               <button class="btn btn-primary btn-sm" id="btnSyncProxies">同步该空间代理到本地</button>
+              <button class="btn btn-outline-primary btn-sm" id="btnAnalyzeAllProxies">一键检测全部代理</button>
               <span class="text-muted small ms-auto" id="proxiesSummary"></span>
             </div>
             <div id="proxiesBody"></div>
@@ -873,6 +874,7 @@
       const proxiesFilter = document.getElementById("proxiesFilter");
       const btnRefreshProxies = document.getElementById("btnRefreshProxies");
       const btnSyncProxies = document.getElementById("btnSyncProxies");
+      const btnAnalyzeAllProxies = document.getElementById("btnAnalyzeAllProxies");
       const proxyTasksModalTitle = document.getElementById("proxyTasksModalTitle");
       const proxyTasksStatus = document.getElementById("proxyTasksStatus");
       const proxyTasksLimit = document.getElementById("proxyTasksLimit");
@@ -900,6 +902,7 @@
         proxiesState.loading = !!loading;
         btnRefreshProxies.disabled = !!loading;
         btnSyncProxies.disabled = !!loading;
+        if (btnAnalyzeAllProxies) btnAnalyzeAllProxies.disabled = !!loading;
         if (loading) {
           proxiesBody.innerHTML = `
             <div class="d-flex align-items-center gap-2 text-muted">
@@ -1408,6 +1411,12 @@
         if (!proxiesState.spacePk) return;
         await syncProxies(proxiesState.spacePk);
       });
+      if (btnAnalyzeAllProxies) {
+        btnAnalyzeAllProxies.addEventListener("click", async () => {
+          if (!proxiesState.spacePk) return;
+          await analyzeAllProxies(proxiesState.spacePk, btnAnalyzeAllProxies);
+        });
+      }
       proxiesFilter.addEventListener("input", () => renderProxies());
       btnProxyTasksRefresh.addEventListener("click", async () => {
         proxyTasksState.offset = 0;
@@ -1467,37 +1476,82 @@
         }
       }
 
+      async function analyzeProxyIpCore(spacePk, proxyId) {
+        const pid = parseInt(String(proxyId || "0"), 10) || 0;
+        if (!spacePk || !pid) throw new Error("参数无效");
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies/${pid}/analyze-ip`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        if (!r) return null;
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "检测失败");
+
+        const riskLevel = String(d.risk_level || "").trim();
+        const asnType = String(d.asn_type || "").trim();
+        const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
+        const it = arr.find(x => String(x.proxy_id) === String(pid));
+        if (it) {
+          it.risk_level = riskLevel;
+          it.asn_type = asnType;
+          if (Object.prototype.hasOwnProperty.call(d, "check_status")) {
+            it.check_status = d.check_status;
+          }
+        }
+        proxiesCache.set(spacePk, arr);
+        if (Number(proxiesState.spacePk) === Number(spacePk)) {
+          proxiesState.proxies = arr;
+          renderProxies();
+        }
+        return { riskLevel, asnType };
+      }
+
       async function analyzeProxyIp(spacePk, proxyId, fromEl) {
         const pid = parseInt(String(proxyId || "0"), 10) || 0;
         if (!spacePk || !pid) return;
         const btn = fromEl;
         try {
           setBtnBusy(btn, true, { loadingText: "检测中" });
-          const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies/${pid}/analyze-ip`, {
-            method: "POST",
-            body: JSON.stringify({}),
-          });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "检测失败");
-
-          const riskLevel = String(d.risk_level || "").trim();
-          const asnType = String(d.asn_type || "").trim();
-          const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
-          const it = arr.find(x => String(x.proxy_id) === String(pid));
-          if (it) {
-            it.risk_level = riskLevel;
-            it.asn_type = asnType;
-          }
-          proxiesCache.set(spacePk, arr);
-          if (Number(proxiesState.spacePk) === Number(spacePk)) {
-            proxiesState.proxies = arr;
-            renderProxies();
-          }
+          const res = await analyzeProxyIpCore(spacePk, pid);
+          if (!res) return;
+          const { riskLevel, asnType } = res;
           toast(`检测完成：安全级别=${riskLevel || "-"}，IP类型=${asnType || "-"}`, "success");
         } catch (e) {
           toast(e.message || "检测失败", "error");
         } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      async function analyzeAllProxies(spacePk, fromEl) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        if (!spk) return;
+        const btn = fromEl;
+        const all = normalizeProxies(proxiesCache.get(spk) || proxiesState.proxies || []);
+        const targets = all.map(x => parseInt(String(x.proxy_id || "0"), 10) || 0).filter(pid => pid > 0);
+        if (!targets.length) return toast("没有可检测的代理", "warning");
+        if (!confirm(`确定一键检测全部代理吗？\n共 ${targets.length} 个，结果将更新到本地数据库。`)) return;
+
+        const prevSummary = proxiesSummary?.textContent || "";
+        let ok = 0;
+        let fail = 0;
+        try {
+          setBtnBusy(btn, true, { loadingText: "检测中" });
+          for (let i = 0; i < targets.length; i += 1) {
+            const pid = targets[i];
+            if (proxiesSummary) proxiesSummary.textContent = `检测进度 ${i + 1}/${targets.length} ...`;
+            try {
+              await analyzeProxyIpCore(spk, pid);
+              ok += 1;
+            } catch {
+              fail += 1;
+            }
+          }
+          toast(`批量检测完成：成功 ${ok}，失败 ${fail}`, fail > 0 ? "warning" : "success");
+        } catch (e) {
+          toast(e.message || "批量检测失败", "error");
+        } finally {
+          if (proxiesSummary) proxiesSummary.textContent = prevSummary;
           setBtnBusy(btn, false);
         }
       }
