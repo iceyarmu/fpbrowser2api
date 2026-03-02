@@ -2635,7 +2635,18 @@ class Database:
         if grp == "ip":
             group_expr = "TRIM(COALESCE(t.window_ip, ''))"
         else:
-            group_expr = "TRIM(COALESCE(w.platform_account, ''))"
+            group_expr = """
+            CASE
+              WHEN TRIM(COALESCE(CAST(w.window_sort_num AS TEXT), '')) <> ''
+                THEN TRIM(COALESCE(CAST(w.window_sort_num AS TEXT), '')) ||
+                     CASE
+                       WHEN TRIM(COALESCE(w.platform_account, '')) <> ''
+                         THEN '-' || TRIM(COALESCE(w.platform_account, ''))
+                       ELSE ''
+                     END
+              ELSE TRIM(COALESCE(w.platform_account, ''))
+            END
+            """
 
         bucket_start_expr_map = {
             "month": "strftime('%Y-%m-01 00:00:00', t.created_at)",
@@ -2772,7 +2783,18 @@ class Database:
         if grp == "ip":
             group_expr = "TRIM(COALESCE(t.window_ip, ''))"
         else:
-            group_expr = "TRIM(COALESCE(w.platform_account, ''))"
+            group_expr = """
+            CASE
+              WHEN TRIM(COALESCE(CAST(w.window_sort_num AS TEXT), '')) <> ''
+                THEN TRIM(COALESCE(CAST(w.window_sort_num AS TEXT), '')) ||
+                     CASE
+                       WHEN TRIM(COALESCE(w.platform_account, '')) <> ''
+                         THEN '-' || TRIM(COALESCE(w.platform_account, ''))
+                       ELSE ''
+                     END
+              ELSE TRIM(COALESCE(w.platform_account, ''))
+            END
+            """
 
         bucket_start_expr_map = {
             "month": "strftime('%Y-%m-01 00:00:00', t.created_at)",
