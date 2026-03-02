@@ -1153,62 +1153,106 @@ class SoraSession:
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
 
-        返回 True 表示找到并点击了 checkbox，False 表示未找到或点击失败。
+        策略：
+        1. 优先按 URL 匹配 Cloudflare challenge iframe
+        2. 兜底：遍历页面所有 iframe，找到含 checkbox 的那个
+        3. 点击方式：依次尝试 click() / dispatch_event / JS evaluate
+
+        返回 True 表示找到并成功触发了点击，False 表示未找到或全部失败。
         """
-        try:
-            # Cloudflare Turnstile challenge 的 iframe selector
-            cf_iframe_selectors = [
-                "iframe[src*='challenges.cloudflare.com']",
-                "iframe[src*='/cdn-cgi/challenge-platform']",
-                "iframe[src*='/cdn-cgi/']",
-            ]
-            frame = None
-            for sel in cf_iframe_selectors:
-                try:
-                    iframe_elem = await page.query_selector(sel)
-                    if iframe_elem is not None:
-                        frame = await iframe_elem.content_frame()
-                        if frame is not None:
-                            break
-                except Exception:
-                    continue
 
-            # 也尝试从 page.frames() 中查找 challenges.cloudflare.com 的 frame
-            if frame is None:
-                try:
-                    for f in page.frames:
-                        try:
-                            fu = str(getattr(f, "url", "") or "")
-                            if "challenges.cloudflare.com" in fu or (
-                                "/cdn-cgi/" in fu and "cloudflare" in fu.lower()
-                            ):
-                                frame = f
-                                break
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
+        async def _click_el(el, frame) -> bool:
+            """对同一元素依次尝试三种点击手段。"""
+            # 方式1: Playwright 原生 click（force=True 跳过可见性检查）
+            try:
+                await el.click(force=True, timeout=2000)
+                return True
+            except Exception:
+                pass
+            # 方式2: dispatch_event（绕过 Playwright 的坐标计算）
+            try:
+                await el.dispatch_event("click")
+                return True
+            except Exception:
+                pass
+            # 方式3: JavaScript 直接调用 .click()
+            try:
+                await frame.evaluate("el => el.click()", el)
+                return True
+            except Exception:
+                pass
+            return False
 
-            if frame is None:
-                return False
-
-            # 在 iframe 内寻找 checkbox 并点击
+        async def _try_click_in_frame(frame) -> bool:
+            """在指定 frame 内查找 checkbox 并点击。"""
             checkbox_selectors = [
                 "input[type='checkbox']",
                 ".ctp-checkbox-label",
                 "[id^='cf-chl-widget']",
                 "label.cb-lb",
-                "div[id='challenge-stage'] input",
-                "#challenge-stage input",
+                "#challenge-stage input[type='checkbox']",
+                "div[class*='checkbox'] input",
             ]
             for csel in checkbox_selectors:
                 try:
                     el = await frame.query_selector(csel)
                     if el is not None:
-                        await el.click(timeout=3000)
+                        if await _click_el(el, frame):
+                            return True
+                except Exception:
+                    continue
+            # JS 兜底：在 frame 内直接遍历所有 checkbox
+            try:
+                result = await frame.evaluate("""() => {
+                    const inputs = document.querySelectorAll("input[type='checkbox']");
+                    for (const cb of inputs) {
+                        cb.click();
+                        return true;
+                    }
+                    return false;
+                }""")
+                if result:
+                    return True
+            except Exception:
+                pass
+            return False
+
+        try:
+            # --- 阶段1：按 URL 优先匹配已知 Cloudflare frame ---
+            cf_frame = None
+            try:
+                for f in page.frames:
+                    try:
+                        fu = str(getattr(f, "url", "") or "")
+                        if "challenges.cloudflare.com" in fu or (
+                            "/cdn-cgi/" in fu
+                        ):
+                            cf_frame = f
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if cf_frame is not None and await _try_click_in_frame(cf_frame):
+                return True
+
+            # --- 阶段2：遍历页面所有 iframe 元素，获取 content_frame ---
+            try:
+                all_iframes = await page.query_selector_all("iframe")
+            except Exception:
+                all_iframes = []
+
+            for iframe_elem in all_iframes:
+                try:
+                    f = await iframe_elem.content_frame()
+                    if f is None or f is cf_frame:
+                        continue
+                    if await _try_click_in_frame(f):
                         return True
                 except Exception:
                     continue
+
         except Exception:
             pass
         return False
