@@ -204,6 +204,7 @@
 
                   <div class="btn-group btn-group-sm" role="group" aria-label="bulk-actions">
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
+                    <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
@@ -2414,6 +2415,7 @@
         };
 
         setBtnDisabledById("btnBulkOpen", true);
+        setBtnDisabledById("btnBulkClose", true);
         setBtnDisabledById("btnBulkRefreshQuota", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
@@ -2431,6 +2433,7 @@
           toast(`${label}完成：成功 ${ok}，失败 ${fail}`, fail ? "warning" : "success");
         } finally {
           setBtnDisabledById("btnBulkOpen", false);
+          setBtnDisabledById("btnBulkClose", false);
           setBtnDisabledById("btnBulkRefreshQuota", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
@@ -2444,6 +2447,17 @@
           ids,
           runner: async (mappingId) => {
             await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+          },
+        });
+      }
+
+      async function bulkCloseSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量关闭",
+          ids,
+          runner: async (mappingId) => {
+            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
           },
         });
       }
@@ -2624,6 +2638,7 @@
         updateMapSelectedCountUI();
       });
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
+      document.getElementById("btnBulkClose")?.addEventListener("click", bulkCloseSelected);
       document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
