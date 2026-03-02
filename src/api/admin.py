@@ -399,10 +399,18 @@ async def list_proxy_bindings(space_pk: int, token: str = Depends(verify_admin_t
 
 @router.get("/api/admin/spaces/{space_pk}/proxy-success-counts")
 async def list_proxy_success_counts(space_pk: int, token: str = Depends(verify_admin_token)):
-    """返回代理成功任务数：proxy_id -> 该代理下窗口完成的任务数（用于识别优质 IP）。"""
+    """返回代理成功任务数：proxy_id -> tasks 表中该 IP 的 completed 数。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     return {"success": True, "counts": await db.count_proxy_success_tasks(space_pk)}
+
+
+@router.get("/api/admin/spaces/{space_pk}/proxy-task-stats")
+async def list_proxy_task_stats(space_pk: int, token: str = Depends(verify_admin_token)):
+    """返回代理任务统计：proxy_id -> {completed, failed}（按 tasks.window_ip 聚合）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {"success": True, "stats": await db.count_proxy_task_stats(space_pk)}
 
 
 @router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/delete")
@@ -1224,6 +1232,7 @@ async def list_tasks(
     task_type_code: Optional[str] = None,
     status: Optional[str] = None,
     window_pk: Optional[int] = None,
+    window_ip: Optional[str] = None,
     q: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
@@ -1232,8 +1241,16 @@ async def list_tasks(
 
     lim = max(1, min(200, int(limit or 50)))
     off = max(0, int(offset or 0))
-    total = await db.count_tasks(task_type_code=task_type_code, status=status, window_pk=window_pk, q=q)
-    items = await db.list_tasks(limit=lim, offset=off, task_type_code=task_type_code, status=status, window_pk=window_pk, q=q)
+    total = await db.count_tasks(task_type_code=task_type_code, status=status, window_pk=window_pk, window_ip=window_ip, q=q)
+    items = await db.list_tasks(
+        limit=lim,
+        offset=off,
+        task_type_code=task_type_code,
+        status=status,
+        window_pk=window_pk,
+        window_ip=window_ip,
+        q=q,
+    )
     return {"success": True, "total": total, "limit": lim, "offset": off, "items": items}
 
 

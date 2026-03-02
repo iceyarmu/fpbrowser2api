@@ -195,6 +195,41 @@
       </div>
     </div>
 
+    <!-- Proxy Tasks Modal -->
+    <div class="modal fade" id="proxyTasksModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="proxyTasksModalTitle">代理任务列表</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <label class="form-label mb-0 small text-muted">状态</label>
+              <select class="form-select form-select-sm" id="proxyTasksStatus" style="width: 140px;">
+                <option value="failed">失败</option>
+                <option value="completed">成功</option>
+              </select>
+              <label class="form-label mb-0 small text-muted">每页</label>
+              <select class="form-select form-select-sm" id="proxyTasksLimit" style="width: 110px;">
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+              <button class="btn btn-outline-secondary btn-sm" id="btnProxyTasksRefresh">刷新</button>
+              <span class="text-muted small ms-auto" id="proxyTasksSummary"></span>
+            </div>
+            <div id="proxyTasksBody"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-outline-secondary btn-sm" id="btnProxyTasksPrev">上一页</button>
+            <button class="btn btn-outline-secondary btn-sm" id="btnProxyTasksNext">下一页</button>
+            <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
@@ -210,6 +245,7 @@
       const spaceModal = new bootstrap.Modal("#spaceModal");
       const workspaceProjectsModal = new bootstrap.Modal("#workspaceProjectsModal");
       const proxiesModal = new bootstrap.Modal("#proxiesModal");
+      const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
 
       let state = { projects: [], tree: [] };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
@@ -837,9 +873,28 @@
       const proxiesFilter = document.getElementById("proxiesFilter");
       const btnRefreshProxies = document.getElementById("btnRefreshProxies");
       const btnSyncProxies = document.getElementById("btnSyncProxies");
+      const proxyTasksModalTitle = document.getElementById("proxyTasksModalTitle");
+      const proxyTasksStatus = document.getElementById("proxyTasksStatus");
+      const proxyTasksLimit = document.getElementById("proxyTasksLimit");
+      const btnProxyTasksRefresh = document.getElementById("btnProxyTasksRefresh");
+      const btnProxyTasksPrev = document.getElementById("btnProxyTasksPrev");
+      const btnProxyTasksNext = document.getElementById("btnProxyTasksNext");
+      const proxyTasksSummary = document.getElementById("proxyTasksSummary");
+      const proxyTasksBody = document.getElementById("proxyTasksBody");
 
       let proxiesState = { spacePk: null, proxies: [], loading: false };
       const proxiesCache = new Map(); // spacePk -> proxies[]
+      const proxyTaskStatsCache = new Map(); // spacePk -> { proxy_id: { completed, failed } }
+      const proxyTasksState = {
+        spacePk: null,
+        proxyId: null,
+        proxyIp: "",
+        status: "failed",
+        limit: 20,
+        offset: 0,
+        total: 0,
+        items: [],
+      };
 
       function setProxiesLoading(loading) {
         proxiesState.loading = !!loading;
@@ -869,6 +924,8 @@
           risk_level: x.risk_level ?? x.riskLevel ?? "",
           asn_type: x.asn_type ?? x.asnType ?? "",
           binding_count: x.binding_count ?? x.bindingCount ?? 0,
+          task_completed_count: x.task_completed_count ?? x.taskCompletedCount ?? 0,
+          task_failed_count: x.task_failed_count ?? x.taskFailedCount ?? 0,
           remark: x.remark ?? "",
           check_status: x.check_status,
           refresh_url: x.refresh_url ?? "",
@@ -924,6 +981,130 @@
         return `${ip} / ${country} / 安全:${risk} / 类型:${asnType} / 绑定:${bind}`;
       }
 
+      function resolveProxyTaskIp(p) {
+        return String(p?.last_ip || p?.host || "").trim();
+      }
+
+      async function loadProxyTaskStats(spacePk) {
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxy-task-stats`);
+        if (!r) return {};
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取代理任务统计失败");
+        const stats = d.stats && typeof d.stats === "object" ? d.stats : {};
+        proxyTaskStatsCache.set(spacePk, stats);
+        return stats;
+      }
+
+      function getProxyTaskStat(spacePk, proxyId) {
+        const stats = proxyTaskStatsCache.get(spacePk) || {};
+        const row = stats[String(proxyId)] ?? stats[proxyId] ?? {};
+        return {
+          completed: Number(row?.completed ?? 0) || 0,
+          failed: Number(row?.failed ?? 0) || 0,
+        };
+      }
+
+      function renderProxyTasks() {
+        const total = Number(proxyTasksState.total || 0);
+        const limit = Math.max(1, Number(proxyTasksState.limit || 20));
+        const offset = Math.max(0, Number(proxyTasksState.offset || 0));
+        const page = Math.floor(offset / limit) + 1;
+        const maxPage = Math.max(1, Math.ceil(total / limit) || 1);
+
+        proxyTasksSummary.textContent = `共 ${total} 条 · 第 ${page}/${maxPage} 页`;
+        btnProxyTasksPrev.disabled = offset <= 0;
+        btnProxyTasksNext.disabled = (offset + limit) >= total;
+
+        if (!Array.isArray(proxyTasksState.items) || !proxyTasksState.items.length) {
+          proxyTasksBody.innerHTML = `<div class="text-muted small">暂无任务记录</div>`;
+          return;
+        }
+
+        proxyTasksBody.innerHTML = `
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr class="small2">
+                  <th>created_at</th>
+                  <th>task_id</th>
+                  <th>任务类型</th>
+                  <th>状态</th>
+                  <th>窗口</th>
+                  <th>IP</th>
+                  <th>错误信息</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${proxyTasksState.items.map(x => {
+                  const code = String(x.task_type_code || "-");
+                  const status = String(x.status || "-");
+                  const winSort = String((x.window_sort_num ?? "") || "").trim();
+                  const winAcc = String(x.window_account || "").trim();
+                  const winText = [winSort, winAcc].filter(Boolean).join("-");
+                  const err = String(x.error_message || "").trim();
+                  return `
+                    <tr class="small2">
+                      <td class="mono">${escapeHtml(String(x.created_at || "-"))}</td>
+                      <td class="mono">${escapeHtml(String(x.task_id || "-"))}</td>
+                      <td class="mono">${escapeHtml(code)}</td>
+                      <td class="mono">${escapeHtml(status)}</td>
+                      <td>${escapeHtml(winText || "-")}</td>
+                      <td class="mono">${escapeHtml(String(x.window_ip || "-"))}</td>
+                      <td class="mono truncate-1" style="max-width: 460px;" title="${escapeHtml(err)}">${escapeHtml(err || "-")}</td>
+                    </tr>
+                  `;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      async function loadProxyTasks() {
+        const ip = String(proxyTasksState.proxyIp || "").trim();
+        const spacePk = Number(proxyTasksState.spacePk || 0);
+        if (!spacePk || !ip) {
+          proxyTasksBody.innerHTML = `<div class="text-muted small">当前代理无可用 IP，无法查询任务。</div>`;
+          proxyTasksSummary.textContent = "共 0 条";
+          return;
+        }
+        proxyTasksBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        const params = new URLSearchParams();
+        params.set("limit", String(proxyTasksState.limit));
+        params.set("offset", String(proxyTasksState.offset));
+        params.set("window_ip", ip);
+        params.set("status", String(proxyTasksState.status || "failed"));
+        const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取代理任务列表失败");
+        proxyTasksState.total = Number(d.total || 0) || 0;
+        proxyTasksState.items = Array.isArray(d.items) ? d.items : [];
+        renderProxyTasks();
+      }
+
+      async function openProxyTasksModal(spacePk, proxyId) {
+        const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
+        const p = arr.find(x => String(x.proxy_id) === String(proxyId));
+        if (!p) {
+          toast("找不到该代理记录", "error");
+          return;
+        }
+        const ip = resolveProxyTaskIp(p);
+        proxyTasksState.spacePk = Number(spacePk);
+        proxyTasksState.proxyId = Number(proxyId);
+        proxyTasksState.proxyIp = ip;
+        proxyTasksState.status = "failed";
+        proxyTasksState.limit = parseInt(String(proxyTasksLimit.value || "20"), 10) || 20;
+        proxyTasksState.offset = 0;
+        proxyTasksState.total = 0;
+        proxyTasksState.items = [];
+        proxyTasksStatus.value = "failed";
+        proxyTasksModalTitle.textContent = `代理任务列表 · proxy_id=${String(proxyId)} · IP=${ip || "-"}`;
+        proxyTasksModal.show();
+        await loadProxyTasks();
+      }
+
       function renderProxies() {
         const items = normalizeProxies(proxiesState.proxies || []);
         const q = (proxiesFilter.value || "").trim().toLowerCase();
@@ -955,6 +1136,7 @@
                   <th>安全级别</th>
                   <th>IP类型</th>
                   <th>绑定数</th>
+                  <th>任务统计</th>
                   ${showExpire ? `<th>到期</th>` : ""}
                   <th>状态</th>
                   <th>备注</th>
@@ -973,6 +1155,22 @@
                     <td class="mono">${escapeHtml(p.risk_level || "-")}</td>
                     <td class="mono">${escapeHtml(p.asn_type || "-")}</td>
                     <td class="mono">${escapeHtml(String(p.binding_count ?? 0))}</td>
+                    <td class="mono">
+                      ${(() => {
+                        const taskStat = getProxyTaskStat(proxiesState.spacePk, p.proxy_id);
+                        const ip = resolveProxyTaskIp(p);
+                        if (!ip) return `<span class="text-muted">-</span>`;
+                        return `
+                          <button class="btn btn-link p-0 text-decoration-none mono text-start"
+                            data-action="view_proxy_tasks"
+                            data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                            data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}"
+                            title="点击查看该IP任务列表（分页）">
+                            失败:${escapeHtml(String(taskStat.failed))} / 成功:${escapeHtml(String(taskStat.completed))}
+                          </button>
+                        `;
+                      })()}
+                    </td>
                     ${showExpire ? `<td class="mono">${escapeHtml(formatExpireAt(p.expire_at) || "")}</td>` : ""}
                     <td class="mono">${escapeHtml(p.check_status ?? "-")}</td>
                     <td>${escapeHtml(p.remark || "-")}</td>
@@ -1013,15 +1211,27 @@
         if (!r.ok) throw new Error(d.detail || "读取本地代理失败");
         const items = d.proxies || [];
         let counts = {};
+        let taskStats = {};
         try {
           counts = await loadProxyBindings(spacePk);
         } catch (_e) {
           counts = {};
         }
+        try {
+          taskStats = await loadProxyTaskStats(spacePk);
+        } catch (_e) {
+          taskStats = {};
+        }
         const merged = (Array.isArray(items) ? items : []).map(p => {
           const pid = p?.proxy_id ?? p?.id ?? 0;
           const c = counts && typeof counts === "object" ? (counts[String(pid)] ?? counts[pid] ?? 0) : 0;
-          return { ...p, binding_count: c };
+          const row = taskStats && typeof taskStats === "object" ? (taskStats[String(pid)] ?? taskStats[pid] ?? {}) : {};
+          return {
+            ...p,
+            binding_count: c,
+            task_completed_count: Number(row?.completed ?? 0) || 0,
+            task_failed_count: Number(row?.failed ?? 0) || 0,
+          };
         });
         proxiesCache.set(spacePk, merged);
         return merged;
@@ -1199,6 +1409,35 @@
         await syncProxies(proxiesState.spacePk);
       });
       proxiesFilter.addEventListener("input", () => renderProxies());
+      btnProxyTasksRefresh.addEventListener("click", async () => {
+        proxyTasksState.offset = 0;
+        proxyTasksState.status = String(proxyTasksStatus.value || "failed");
+        proxyTasksState.limit = parseInt(String(proxyTasksLimit.value || "20"), 10) || 20;
+        await loadProxyTasks();
+      });
+      proxyTasksStatus.addEventListener("change", async () => {
+        proxyTasksState.status = String(proxyTasksStatus.value || "failed");
+        proxyTasksState.offset = 0;
+        await loadProxyTasks();
+      });
+      proxyTasksLimit.addEventListener("change", async () => {
+        proxyTasksState.limit = parseInt(String(proxyTasksLimit.value || "20"), 10) || 20;
+        proxyTasksState.offset = 0;
+        await loadProxyTasks();
+      });
+      btnProxyTasksPrev.addEventListener("click", async () => {
+        const lim = Math.max(1, Number(proxyTasksState.limit || 20));
+        proxyTasksState.offset = Math.max(0, Number(proxyTasksState.offset || 0) - lim);
+        await loadProxyTasks();
+      });
+      btnProxyTasksNext.addEventListener("click", async () => {
+        const lim = Math.max(1, Number(proxyTasksState.limit || 20));
+        const total = Math.max(0, Number(proxyTasksState.total || 0));
+        const nextOffset = Number(proxyTasksState.offset || 0) + lim;
+        if (nextOffset >= total) return;
+        proxyTasksState.offset = nextOffset;
+        await loadProxyTasks();
+      });
 
       async function deleteProxy(spacePk, proxyId, bindingCount, fromEl) {
         const pid = parseInt(String(proxyId || "0"), 10) || 0;
@@ -1271,6 +1510,10 @@
         const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
         const proxyId = parseInt(btn.getAttribute("data-proxy_id") || "", 10);
         if (!spacePk || !proxyId) return;
+        if (action === "view_proxy_tasks") {
+          await openProxyTasksModal(spacePk, proxyId);
+          return;
+        }
         if (action === "analyze_proxy_ip") {
           await analyzeProxyIp(spacePk, proxyId, btn);
           return;

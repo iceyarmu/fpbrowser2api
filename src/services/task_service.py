@@ -414,10 +414,10 @@ class TaskService:
                                 window_key=picked.window_key,
                             )
                             # 连续错误达到阈值：切换 IP（更换代理），降低后续继续被风控/封禁概率
-                            try:
-                                await sess.switch_window_ip_by_proxy_pool()
-                            except Exception:
-                                pass
+                            #try:
+                            #    await sess.switch_window_ip_by_proxy_pool()
+                            #except Exception:
+                            #    pass
                             sess._schedule_idle_close()
                     except Exception:
                         pass

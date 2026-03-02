@@ -1038,66 +1038,75 @@ class Database:
             return out
 
     async def count_proxy_success_tasks(self, space_pk: int) -> Dict[int, int]:
-        """统计某个空间下：每个 proxy_id 对应的成功任务数（status=completed）。
+        """统计某个空间下：每个 proxy_id 对应的成功任务数（基于 tasks.window_ip）。"""
+        stats = await self.count_proxy_task_stats(space_pk)
+        out: Dict[int, int] = {}
+        for pid, row in stats.items():
+            try:
+                out[int(pid)] = int((row or {}).get("completed", 0) or 0)
+            except Exception:
+                out[int(pid)] = 0
+        return out
 
-        与 count_proxy_bindings 类似，优先用 windows.proxy_id；
-        若 proxy_id=0 且 proxy_addr 非空，则尝试匹配 proxies 表得到 proxy_id。
-        """
+    async def count_proxy_task_stats(self, space_pk: int) -> Dict[int, Dict[str, int]]:
+        """统计某个空间下：每个 proxy_id 的成功/失败任务数（按 tasks.window_ip 精确匹配）。"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
-                WITH win AS (
+                WITH px AS (
                   SELECT
-                    id,
-                    space_pk,
-                    COALESCE(proxy_id, 0) AS pid,
-                    TRIM(COALESCE(proxy_addr, '')) AS proxy_addr
-                  FROM windows
+                    proxy_id,
+                    TRIM(COALESCE(last_ip, '')) AS key_last_ip,
+                    TRIM(COALESCE(host, '')) AS key_host,
+                    CASE
+                      WHEN TRIM(COALESCE(host, '')) <> '' AND TRIM(COALESCE(port, '')) <> ''
+                      THEN TRIM(COALESCE(host, '')) || ':' || TRIM(COALESCE(port, ''))
+                      ELSE ''
+                    END AS key_host_port
+                  FROM proxies
                   WHERE deleted = 0 AND space_pk = ?
-                ),
-                matched AS (
-                  SELECT
-                    w.id AS window_id,
-                    MIN(p.proxy_id) AS matched_proxy_id
-                  FROM win w
-                  JOIN proxies p
-                    ON p.space_pk = w.space_pk
-                   AND p.deleted = 0
-                   AND w.pid = 0
-                   AND w.proxy_addr <> ''
-                   AND (
-                     (p.last_ip IS NOT NULL AND TRIM(p.last_ip) <> '' AND TRIM(p.last_ip) = w.proxy_addr)
-                     OR ((p.host || ':' || p.port) IS NOT NULL AND TRIM(p.host || ':' || p.port) = w.proxy_addr)
-                     OR (p.host IS NOT NULL AND TRIM(p.host) <> '' AND TRIM(p.host) = w.proxy_addr)
-                   )
-                  GROUP BY w.id
-                ),
-                task_proxy AS (
-                  SELECT
-                    COALESCE(NULLIF(win.pid, 0), matched.matched_proxy_id, 0) AS proxy_id
-                  FROM tasks t
-                  JOIN win ON win.id = t.window_pk
-                  LEFT JOIN matched ON matched.window_id = win.id
-                  WHERE t.status = 'completed'
                 )
-                SELECT proxy_id, COUNT(*) AS cnt
-                FROM task_proxy
-                GROUP BY proxy_id
+                SELECT
+                  px.proxy_id AS proxy_id,
+                  SUM(
+                    CASE
+                      WHEN t.status = 'completed' THEN 1
+                      ELSE 0
+                    END
+                  ) AS completed_count,
+                  SUM(
+                    CASE
+                      WHEN t.status = 'failed' THEN 1
+                      ELSE 0
+                    END
+                  ) AS failed_count
+                FROM px
+                LEFT JOIN tasks t
+                  ON TRIM(COALESCE(t.window_ip, '')) <> ''
+                 AND (
+                      (px.key_last_ip <> '' AND TRIM(COALESCE(t.window_ip, '')) = px.key_last_ip)
+                   OR (px.key_host <> '' AND TRIM(COALESCE(t.window_ip, '')) = px.key_host)
+                   OR (px.key_host_port <> '' AND TRIM(COALESCE(t.window_ip, '')) = px.key_host_port)
+                 )
+                GROUP BY px.proxy_id
                 """,
                 (int(space_pk),),
             )
             rows = await cur.fetchall()
-            out: Dict[int, int] = {}
+            out: Dict[int, Dict[str, int]] = {}
             for r in rows:
                 try:
                     pid = int(r["proxy_id"] or 0)
                 except Exception:
                     pid = 0
                 try:
-                    out[pid] = int(r["cnt"] or 0)
+                    out[pid] = {
+                        "completed": int(r["completed_count"] or 0),
+                        "failed": int(r["failed_count"] or 0),
+                    }
                 except Exception:
-                    out[pid] = 0
+                    out[pid] = {"completed": 0, "failed": 0}
             return out
 
     async def get_window(self, window_pk: int) -> Optional[WindowInfo]:
@@ -2504,6 +2513,7 @@ class Database:
         task_type_code: Optional[str] = None,
         status: Optional[str] = None,
         window_pk: Optional[int] = None,
+        window_ip: Optional[str] = None,
         q: Optional[str] = None,
     ) -> int:
         where: List[str] = ["1=1"]
@@ -2518,10 +2528,13 @@ class Database:
         if window_pk is not None:
             where.append("window_pk = ?")
             params.append(int(window_pk))
+        if window_ip:
+            where.append("TRIM(COALESCE(window_ip, '')) = ?")
+            params.append(window_ip.strip())
         if q:
             qq = f"%{q.strip()}%"
-            where.append("(task_id LIKE ? OR generation_id LIKE ? OR prompt LIKE ? OR error_message LIKE ?)")
-            params.extend([qq, qq, qq, qq])
+            where.append("(task_id LIKE ? OR generation_id LIKE ? OR prompt LIKE ? OR error_message LIKE ? OR window_ip LIKE ?)")
+            params.extend([qq, qq, qq, qq, qq])
 
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
@@ -2538,6 +2551,7 @@ class Database:
         task_type_code: Optional[str] = None,
         status: Optional[str] = None,
         window_pk: Optional[int] = None,
+        window_ip: Optional[str] = None,
         q: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         lim = max(1, min(200, int(limit or 50)))
@@ -2555,10 +2569,13 @@ class Database:
         if window_pk is not None:
             where.append("t.window_pk = ?")
             params.append(int(window_pk))
+        if window_ip:
+            where.append("TRIM(COALESCE(t.window_ip, '')) = ?")
+            params.append(window_ip.strip())
         if q:
             qq = f"%{q.strip()}%"
-            where.append("(t.task_id LIKE ? OR t.generation_id LIKE ? OR t.prompt LIKE ? OR t.error_message LIKE ?)")
-            params.extend([qq, qq, qq, qq])
+            where.append("(t.task_id LIKE ? OR t.generation_id LIKE ? OR t.prompt LIKE ? OR t.error_message LIKE ? OR t.window_ip LIKE ?)")
+            params.extend([qq, qq, qq, qq, qq])
 
         params.extend([lim, off])
 
