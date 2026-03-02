@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import secrets
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, Field
 
@@ -416,6 +418,71 @@ async def delete_local_proxy(space_pk: int, proxy_id: int, token: str = Depends(
     if affected <= 0:
         raise HTTPException(status_code=404, detail="proxy not found")
     return {"success": True, "message": "已在本地删除该代理", "affected": affected}
+
+
+@router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/analyze-ip")
+async def analyze_local_proxy_ip(space_pk: int, proxy_id: int, token: str = Depends(verify_admin_token)):
+    """检测代理 IP 风险并回写到本地 proxies 表。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    proxy = await db.get_proxy(space_pk=int(space_pk), proxy_id=int(proxy_id))
+    if not proxy:
+        raise HTTPException(status_code=404, detail="proxy not found")
+
+    def _pick_ip(*candidates: Optional[str]) -> Optional[str]:
+        for c in candidates:
+            v = str(c or "").strip()
+            if not v:
+                continue
+            try:
+                ipaddress.ip_address(v)
+                return v
+            except Exception:
+                continue
+        return None
+
+    ip = _pick_ip(proxy.last_ip, proxy.host)
+    if not ip:
+        raise HTTPException(status_code=400, detail="该代理缺少可检测的 IP（last_ip/host）")
+
+    url = "https://getgpt.pro/api/analyze-ip"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            rsp = await client.get(url, params={"ip": ip})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"调用 IP 检测接口失败：{e}")
+
+    try:
+        payload = rsp.json()
+    except Exception:
+        payload = None
+    if rsp.status_code >= 400 or not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail=f"IP 检测接口返回异常（status={rsp.status_code}）")
+
+    if not payload.get("success"):
+        raise HTTPException(status_code=400, detail=str(payload.get("message") or "IP 检测失败"))
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    risk_level = str(data.get("riskLevel") or "").strip() or None
+    asn_type = str(data.get("asnType") or "").strip() or None
+
+    await db.update_proxy_ip_profile(
+        space_pk=int(space_pk),
+        proxy_id=int(proxy_id),
+        risk_level=risk_level,
+        asn_type=asn_type,
+    )
+
+    return {
+        "success": True,
+        "space_pk": int(space_pk),
+        "proxy_id": int(proxy_id),
+        "ip": ip,
+        "risk_level": risk_level,
+        "asn_type": asn_type,
+        "data": data,
+    }
 
 
 @router.post("/api/admin/spaces/{space_pk}/sync-proxies")

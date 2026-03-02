@@ -866,6 +866,8 @@
           ip_type: x.ip_type ?? "",
           last_ip: x.last_ip ?? "",
           last_country: x.last_country ?? "",
+          risk_level: x.risk_level ?? x.riskLevel ?? "",
+          asn_type: x.asn_type ?? x.asnType ?? "",
           binding_count: x.binding_count ?? x.bindingCount ?? 0,
           remark: x.remark ?? "",
           check_status: x.check_status,
@@ -916,8 +918,10 @@
       function proxyLabel(p) {
         const ip = String(p.last_ip || p.host || "-").trim() || "-";
         const country = String(p.last_country || "-").trim() || "-";
+        const risk = String(p.risk_level || "-").trim() || "-";
+        const asnType = String(p.asn_type || "-").trim() || "-";
         const bind = Number(p.binding_count || 0) || 0;
-        return `${ip} / ${country} / 绑定:${bind}`;
+        return `${ip} / ${country} / 安全:${risk} / 类型:${asnType} / 绑定:${bind}`;
       }
 
       function renderProxies() {
@@ -926,7 +930,7 @@
         let filtered = items;
         if (q) {
           filtered = items.filter(p => {
-            const hay = `${p.proxy_id} ${p.host} ${p.port} ${p.last_ip} ${p.last_country} ${p.remark} ${p.protocol} ${p.ip_type} ${p.expire_at || ""}`.toLowerCase();
+            const hay = `${p.proxy_id} ${p.host} ${p.port} ${p.last_ip} ${p.last_country} ${p.remark} ${p.protocol} ${p.ip_type} ${p.risk_level || ""} ${p.asn_type || ""} ${p.expire_at || ""}`.toLowerCase();
             return hay.includes(q);
           });
         }
@@ -948,10 +952,13 @@
                   <th>协议/IP类型</th>
                   <th>最后IP</th>
                   <th>国家</th>
+                  <th>安全级别</th>
+                  <th>IP类型</th>
                   <th>绑定数</th>
                   ${showExpire ? `<th>到期</th>` : ""}
                   <th>状态</th>
                   <th>备注</th>
+                  <th>检测</th>
                   <th>删除</th>
                 </tr>
               </thead>
@@ -963,10 +970,18 @@
                     <td class="mono">${escapeHtml([p.protocol, p.ip_type].filter(Boolean).join("/") || "-")}</td>
                     <td class="mono">${escapeHtml(p.last_ip || "-")}</td>
                     <td>${escapeHtml(p.last_country || "-")}</td>
+                    <td class="mono">${escapeHtml(p.risk_level || "-")}</td>
+                    <td class="mono">${escapeHtml(p.asn_type || "-")}</td>
                     <td class="mono">${escapeHtml(String(p.binding_count ?? 0))}</td>
                     ${showExpire ? `<td class="mono">${escapeHtml(formatExpireAt(p.expire_at) || "")}</td>` : ""}
                     <td class="mono">${escapeHtml(p.check_status ?? "-")}</td>
                     <td>${escapeHtml(p.remark || "-")}</td>
+                    <td>
+                      <button class="btn btn-outline-primary btn-sm" type="button"
+                        data-action="analyze_proxy_ip"
+                        data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                        data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}">检测</button>
+                    </td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_proxy"
@@ -1213,17 +1228,57 @@
         }
       }
 
+      async function analyzeProxyIp(spacePk, proxyId, fromEl) {
+        const pid = parseInt(String(proxyId || "0"), 10) || 0;
+        if (!spacePk || !pid) return;
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "检测中" });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies/${pid}/analyze-ip`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "检测失败");
+
+          const riskLevel = String(d.risk_level || "").trim();
+          const asnType = String(d.asn_type || "").trim();
+          const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
+          const it = arr.find(x => String(x.proxy_id) === String(pid));
+          if (it) {
+            it.risk_level = riskLevel;
+            it.asn_type = asnType;
+          }
+          proxiesCache.set(spacePk, arr);
+          if (Number(proxiesState.spacePk) === Number(spacePk)) {
+            proxiesState.proxies = arr;
+            renderProxies();
+          }
+          toast(`检测完成：安全级别=${riskLevel || "-"}，IP类型=${asnType || "-"}`, "success");
+        } catch (e) {
+          toast(e.message || "检测失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       proxiesBody.addEventListener("click", async (ev) => {
         const t = ev.target;
         const btn = t && typeof t.closest === "function" ? t.closest("[data-action]") : null;
         if (!btn) return;
         const action = btn.getAttribute("data-action");
-        if (action !== "delete_proxy") return;
         const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
         const proxyId = parseInt(btn.getAttribute("data-proxy_id") || "", 10);
-        const bindingCount = parseInt(btn.getAttribute("data-binding_count") || "0", 10) || 0;
         if (!spacePk || !proxyId) return;
-        await deleteProxy(spacePk, proxyId, bindingCount, btn);
+        if (action === "analyze_proxy_ip") {
+          await analyzeProxyIp(spacePk, proxyId, btn);
+          return;
+        }
+        if (action === "delete_proxy") {
+          const bindingCount = parseInt(btn.getAttribute("data-binding_count") || "0", 10) || 0;
+          await deleteProxy(spacePk, proxyId, bindingCount, btn);
+        }
       });
 
       // 代理下拉改动：立即调用后端 /browser/mdf

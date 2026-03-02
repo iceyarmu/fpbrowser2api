@@ -561,6 +561,8 @@
           ip_type: x.ip_type ?? "",
           last_ip: x.last_ip ?? "",
           last_country: x.last_country ?? "",
+          risk_level: x.risk_level ?? x.riskLevel ?? "",
+          asn_type: x.asn_type ?? x.asnType ?? "",
           binding_count: x.binding_count ?? x.bindingCount ?? 0,
           remark: x.remark ?? "",
           created_at: x.created_at ?? x.create_time ?? x.createdAt ?? "",
@@ -621,9 +623,11 @@
       function proxyLabel(p, successCount) {
         const ip = String(p.last_ip || p.host || "-").trim() || "-";
         const country = String(p.last_country || "-").trim() || "-";
+        const risk = String(p.risk_level || "-").trim() || "-";
+        const asnType = String(p.asn_type || "-").trim() || "-";
         const bind = Number(p.binding_count || 0) || 0;
         const succ = successCount != null ? Number(successCount) : (Number(p.success_count || 0) || 0);
-        return `${ip} / ${country} / 绑:${bind} / 成功:${succ}`;
+        return `${ip} / ${country} / 安全:${risk} / 类型:${asnType} / 绑:${bind} / 成功:${succ}`;
       }
 
       async function loadProxyBindings(spacePk) {

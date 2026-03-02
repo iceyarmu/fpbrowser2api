@@ -107,6 +107,9 @@ class ProxyInfo(BaseModel):
     # 代理过期时间（若指纹浏览器返回；字段名不统一，这里统一落到 expire_at）
     expire_at: Optional[str] = None
     ip_type: Optional[str] = None
+    # IP 画像分析结果（来源：外部 analyze-ip 接口）
+    risk_level: Optional[str] = None
+    asn_type: Optional[str] = None
     protocol: Optional[str] = None
     host: Optional[str] = None
     port: Optional[str] = None

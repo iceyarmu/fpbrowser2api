@@ -169,6 +169,8 @@ class Database:
                     proxy_id INTEGER NOT NULL,
                     expire_at TEXT,
                     ip_type TEXT,
+                    risk_level TEXT,
+                    asn_type TEXT,
                     protocol TEXT,
                     host TEXT,
                     port TEXT,
@@ -473,6 +475,8 @@ class Database:
             if await self._table_exists(db, "proxies"):
                 columns_to_add = [
                     ("expire_at", "TEXT"),
+                    ("risk_level", "TEXT"),
+                    ("asn_type", "TEXT"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "proxies", col_name):
@@ -1252,6 +1256,9 @@ class Database:
                 )
 
                 ip_type = (p.get("ipType") or p.get("ip_type"))
+                # 这两个字段由“IP检测接口”写入；同步指纹浏览器代理时默认不覆盖已有值
+                risk_level = p.get("riskLevel") or p.get("risk_level")
+                asn_type = p.get("asnType") or p.get("asn_type")
                 protocol = (p.get("protocol") or p.get("proxyCategory") or p.get("proxy_category"))
                 host = p.get("host")
                 port = p.get("port")
@@ -1277,13 +1284,13 @@ class Database:
                     INSERT INTO proxies (
                         space_pk, proxy_id,
                         expire_at,
-                        ip_type, protocol, host, port,
+                        ip_type, risk_level, asn_type, protocol, host, port,
                         proxy_username, proxy_password, refresh_url, remark,
                         check_status, check_channel, check_channel_value,
                         last_ip, last_country, last_state, last_city,
                         check_time, create_time, update_time,
                         deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now','localtime'), datetime('now','localtime'))
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, proxy_id) DO UPDATE SET
                         expire_at=excluded.expire_at,
                         ip_type=excluded.ip_type,
@@ -1314,6 +1321,8 @@ class Database:
                         int(proxy_id),
                         str(expire_at).strip() if expire_at is not None else None,
                         str(ip_type).strip() if ip_type is not None else None,
+                        str(risk_level).strip() if risk_level is not None else None,
+                        str(asn_type).strip() if asn_type is not None else None,
                         str(protocol).strip() if protocol is not None else None,
                         str(host).strip() if host is not None else None,
                         str(port).strip() if port is not None else None,
@@ -1379,6 +1388,56 @@ class Database:
                 WHERE space_pk = ? AND proxy_id = ?
                 """,
                 (int(space_pk), int(proxy_id)),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
+
+    async def get_proxy(self, *, space_pk: int, proxy_id: int) -> Optional[ProxyInfo]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM proxies
+                WHERE deleted = 0 AND space_pk = ? AND proxy_id = ?
+                LIMIT 1
+                """,
+                (int(space_pk), int(proxy_id)),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("raw_json"):
+                try:
+                    d["raw"] = json.loads(d["raw_json"])
+                except Exception:
+                    d["raw"] = None
+            d.pop("raw_json", None)
+            return ProxyInfo(**d)
+
+    async def update_proxy_ip_profile(
+        self,
+        *,
+        space_pk: int,
+        proxy_id: int,
+        risk_level: Optional[str],
+        asn_type: Optional[str],
+    ) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE proxies
+                SET risk_level = ?,
+                    asn_type = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND proxy_id = ? AND deleted = 0
+                """,
+                (
+                    str(risk_level).strip() if risk_level is not None else None,
+                    str(asn_type).strip() if asn_type is not None else None,
+                    int(space_pk),
+                    int(proxy_id),
+                ),
             )
             await db.commit()
             return int(cur.rowcount or 0)
