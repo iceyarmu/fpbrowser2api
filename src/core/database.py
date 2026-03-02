@@ -2703,8 +2703,38 @@ class Database:
             row_total = await cur_total.fetchone()
             total_groups = int((row_total["c"] if row_total and row_total["c"] is not None else 0) or 0)
 
-            cur_groups = await db.execute(
-                f"""
+            if grp == "ip":
+                # IP 模式：关联 proxies 表获取代理创建时间/ID，与 task_types.html 代理下拉列表保持一致排序
+                # （按 created_at DESC, proxy_id DESC，未匹配到代理的 IP 排在最后，最终兜底按 last_created_at DESC）
+                groups_sql = f"""
+                SELECT g.group_key, g.total_count, g.completed_count, g.failed_count, g.last_created_at
+                FROM (
+                  SELECT
+                    {group_expr} AS group_key,
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                    SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    MAX(t.created_at) AS last_created_at
+                  FROM tasks t
+                  LEFT JOIN windows w ON w.id = t.window_pk
+                  WHERE {where_clause}
+                  GROUP BY {group_expr}
+                ) g
+                LEFT JOIN (
+                  SELECT
+                    TRIM(COALESCE(last_ip, '')) AS last_ip,
+                    MAX(created_at) AS best_created_at,
+                    MAX(proxy_id) AS best_proxy_id
+                  FROM proxies
+                  WHERE deleted = 0 AND TRIM(COALESCE(last_ip, '')) <> ''
+                  GROUP BY TRIM(COALESCE(last_ip, ''))
+                ) pr ON pr.last_ip = g.group_key
+                ORDER BY pr.best_created_at DESC, pr.best_proxy_id DESC, g.last_created_at DESC
+                LIMIT ? OFFSET ?
+                """
+            else:
+                # 账号模式：按窗口号（window_sort_num）倒序排列，无窗口号的排在最后
+                groups_sql = f"""
                 SELECT
                   {group_expr} AS group_key,
                   COUNT(*) AS total_count,
@@ -2715,11 +2745,10 @@ class Database:
                 LEFT JOIN windows w ON w.id = t.window_pk
                 WHERE {where_clause}
                 GROUP BY {group_expr}
-                ORDER BY last_created_at DESC
+                ORDER BY CAST(MAX(w.window_sort_num) AS INTEGER) DESC, last_created_at DESC
                 LIMIT ? OFFSET ?
-                """,
-                [*params, lim, off],
-            )
+                """
+            cur_groups = await db.execute(groups_sql, [*params, lim, off])
             groups_rows = await cur_groups.fetchall()
             groups = [dict(r) for r in groups_rows]
 

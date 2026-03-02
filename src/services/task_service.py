@@ -304,10 +304,65 @@ class TaskService:
                 except Exception:
                     pass
 
-            try:
-                payload = self._task_payloads.get(task_id) or {}
-                prompt = str(payload.get("prompt") or "").strip()
+            payload = self._task_payloads.get(task_id) or {}
+            prompt = str(payload.get("prompt") or "").strip()
+            target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
 
+            async def _refresh_sora_balance() -> Optional[Dict[str, Any]]:
+                handler = str(picked.create_task_handler or "").strip().lower()
+                if not handler.startswith("sora_gen_video"):
+                    return None
+
+                try:
+                    sess = get_or_create_sora_session(
+                        vendor=picked.browser_vendor,
+                        base_url=picked.browser_base_url,
+                        access_key=picked.browser_access_key,
+                        space_id=picked.space_id,
+                        window_key=picked.window_key,
+                    )
+                except Exception:
+                    return None
+
+                nf_check: Optional[Dict[str, Any]] = None
+                nf_check_err: Optional[Exception] = None
+                try:
+                    checked = await sess.api_nf_check(target_url=target_url)
+                    nf_check = checked if isinstance(checked, dict) else None
+                except Exception as e:
+                    nf_check_err = e
+                    nf_check = None
+
+                try:
+                    if nf_check and nf_check.get("remaining_count") is not None:
+                        await self.db.update_task_type_window(
+                            mapping_id=picked.mapping_id,
+                            remaining_quota=int(nf_check.get("remaining_count") or 0),
+                            sora_remaining_count=int(nf_check.get("remaining_count") or 0),
+                            sora_purchased_remaining_count=int(nf_check.get("purchased_remaining_count") or 0),
+                            sora_rate_limit_reached=bool(nf_check.get("rate_limit_reached", False)),
+                            sora_access_resets_in_seconds=int(nf_check.get("access_resets_in_seconds") or 0),
+                            cooldown_until=(str(nf_check.get("cooldown_until")) if nf_check.get("cooldown_until") else None),
+                        )
+                except Exception:
+                    pass
+
+                # 余额低/查询异常时倾向于回收会话，余额充足时保持会话热态
+                try:
+                    if nf_check_err is not None:
+                        sess._schedule_idle_close()
+                    else:
+                        remaining = int((nf_check or {}).get("remaining_count") or 0)
+                        if remaining <= 2:
+                            sess._schedule_idle_close()
+                        else:
+                            sess._cancel_idle_close()
+                except Exception:
+                    pass
+
+                return nf_check
+
+            try:
                 # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
                 if picked.create_task_handler == "sora_gen_video":
                     result = await asyncio.wait_for(
@@ -354,29 +409,16 @@ class TaskService:
                 except Exception:
                     pass
 
-                # Sora：若执行器返回了 nf_check，则用其回写余额/限流信息（覆盖本地扣减，更贴近真实剩余）
-                try:
-                    nf = (result or {}).get("nf_check") if isinstance(result, dict) else None
-                    rate = (nf or {}) if isinstance(nf, dict) else None
-                    if rate and rate.get("remaining_count") is not None:
-                        await self.db.update_task_type_window(
-                            mapping_id=picked.mapping_id,
-                            remaining_quota=int(rate.get("remaining_count") or 0),
-                            sora_remaining_count=int(rate.get("remaining_count") or 0),
-                            sora_purchased_remaining_count=int(rate.get("purchased_remaining_count") or 0),
-                            sora_rate_limit_reached=bool(rate.get("rate_limit_reached", False)),
-                            sora_access_resets_in_seconds=int(rate.get("access_resets_in_seconds") or 0),
-                            cooldown_until=(str(rate.get("cooldown_until")) if rate.get("cooldown_until") else None),
-                        )
-                except Exception:
-                    pass
+                await _refresh_sora_balance()
                 # 清空一下result中的nf_check，避免敏感信息泄露
-                result["nf_check"] = None
+                if isinstance(result, dict):
+                    result["nf_check"] = None
                 await self.db.update_task(task_id, status="completed", progress=100, result=result, set_completed=True)
                 #await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
                 await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
             except Exception as e:
+                await _refresh_sora_balance()
                 # 失败：尽量把“是否不扣罚(no_penalty)”等信息写入 result_json，便于上游做退款/分类。
                 no_penalty = bool(getattr(e, "no_penalty", False))
                 status_code = getattr(e, "status_code", None)

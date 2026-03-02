@@ -3083,28 +3083,6 @@ async def sora_gen_video(
 
     await sess._bring_sora_drafts_to_front();
 
-    nf_check = None
-    nf_check_err: Optional[Exception] = None
-    try:
-        nf_check = await sess.api_nf_check(target_url=target_url)
-    except Exception as e:
-        nf_check_err = e
-        nf_check = None
-
-    # 仅当“任务执行完毕后确认余额 <= 1”，或“查询余额报错并将导致禁用”时，才启动倒计时关窗
-    try:
-        if nf_check_err is not None:
-            sess._schedule_idle_close()
-        else:
-            remaining = int((nf_check or {}).get("remaining_count") or 0)
-            if remaining <= 2:
-                sess._schedule_idle_close()
-            else:
-                sess._cancel_idle_close()
-    except Exception:
-        # 不要让关窗策略影响主流程返回
-        pass
-
     await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
     _ = progress_result
 
@@ -3116,6 +3094,5 @@ async def sora_gen_video(
         "generation_id": publish_result.get("generation_id"),
         "share_url": publish_result.get("share_url"),
         "watermark_free_url": publish_result.get("watermark_free_url"),
-        "nf_check": nf_check,
     }
 

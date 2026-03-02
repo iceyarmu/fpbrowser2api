@@ -385,8 +385,7 @@
           const totalCount = Number(g.total_count || 0);
           const firstCol = `
             <td class="sticky-first mono">
-              <div class="truncate-1" title="${escapeHtml(keyShow)}">${escapeHtml(keyShow)}</div>
-              <div class="text-muted small2">成功 ${succ} / 失败 ${fail} / 总 ${totalCount}</div>
+              <div class="truncate-1" title="${escapeHtml(keyShow)}">${escapeHtml(keyShow)} <span class="text-muted small2">[成功${succ}/失败${fail}/总${totalCount}]</span></div>
             </td>
           `;
 
