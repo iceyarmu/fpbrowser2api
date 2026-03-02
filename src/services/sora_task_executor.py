@@ -1150,8 +1150,71 @@ class SoraSession:
             return True
         return False
 
+    async def _try_click_cloudflare_checkbox(self, page) -> bool:
+        """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
+
+        返回 True 表示找到并点击了 checkbox，False 表示未找到或点击失败。
+        """
+        try:
+            # Cloudflare Turnstile challenge 的 iframe selector
+            cf_iframe_selectors = [
+                "iframe[src*='challenges.cloudflare.com']",
+                "iframe[src*='/cdn-cgi/challenge-platform']",
+                "iframe[src*='/cdn-cgi/']",
+            ]
+            frame = None
+            for sel in cf_iframe_selectors:
+                try:
+                    iframe_elem = await page.query_selector(sel)
+                    if iframe_elem is not None:
+                        frame = await iframe_elem.content_frame()
+                        if frame is not None:
+                            break
+                except Exception:
+                    continue
+
+            # 也尝试从 page.frames() 中查找 challenges.cloudflare.com 的 frame
+            if frame is None:
+                try:
+                    for f in page.frames:
+                        try:
+                            fu = str(getattr(f, "url", "") or "")
+                            if "challenges.cloudflare.com" in fu or (
+                                "/cdn-cgi/" in fu and "cloudflare" in fu.lower()
+                            ):
+                                frame = f
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            if frame is None:
+                return False
+
+            # 在 iframe 内寻找 checkbox 并点击
+            checkbox_selectors = [
+                "input[type='checkbox']",
+                ".ctp-checkbox-label",
+                "[id^='cf-chl-widget']",
+                "label.cb-lb",
+                "div[id='challenge-stage'] input",
+                "#challenge-stage input",
+            ]
+            for csel in checkbox_selectors:
+                try:
+                    el = await frame.query_selector(csel)
+                    if el is not None:
+                        await el.click(timeout=3000)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
     async def _wait_cloudflare_auto_pass(self, page, *, max_wait_seconds: float = 10.0) -> bool:
-        """等待 Cloudflare 可能自动放行。
+        """等待 Cloudflare 可能自动放行，同时尝试点击 Turnstile checkbox。
 
         返回：
         - True: 超时后仍像 Cloudflare（可考虑重启）
@@ -1177,6 +1240,12 @@ class SoraSession:
                 still_cf = True
             if not still_cf:
                 return False
+
+            # 尝试点击 Cloudflare Turnstile checkbox，协助通过验证
+            try:
+                await self._try_click_cloudflare_checkbox(page)
+            except Exception:
+                pass
 
             remain = deadline - time.time()
             if remain <= 0:
@@ -1666,7 +1735,7 @@ class SoraSession:
             try:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
-                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=10.0)
+                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=25.0)
                     if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
                         new_page = await self._restart_window_and_restore_single_drafts(
                             drafts_url=drafts_url, sora_host=sora_host
