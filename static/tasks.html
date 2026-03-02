@@ -8,6 +8,7 @@
     <style>
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .small2 { font-size: 12px; }
+      .btn-compact { padding: 0 6px; font-size: 11px; line-height: 1.2; }
       .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .truncate-err { max-width: 520px; }
       .window-acc { max-width: 360px; }
@@ -85,18 +86,19 @@
       <div class="card shadow-sm">
         <div class="card-body">
           <div class="table-responsive">
-            <table class="table table-sm align-middle" style="min-width: 1280px;">
+            <table class="table table-sm align-middle" style="min-width: 1240px;">
               <thead>
                 <tr class="small2">
                   <th style="min-width: 120px;">task_id</th>
                   <th style="min-width: 120px;">任务类型</th>
-                  <th style="min-width: 120px;">状态</th>
-                  <th style="min-width: 160px;">进度</th>
+                  <th style="min-width: 100px;">状态</th>
+                  <th style="min-width: 150px;">进度</th>
                   <th style="min-width: 160px;">窗口信息</th>
-                  <th style="min-width: 160px;">错误信息</th>
-                  <th style="min-width: 160px;">prompt_json</th>
-                  <th style="min-width: 160px;">result_json</th>
-                  <th style="min-width: 160px;">创建时间</th>
+                  <th style="min-width: 150px;">IP</th>
+                  <th style="min-width: 200px;">错误信息</th>
+                  <th style="min-width: 80px;">prompt</th>
+                  <th style="min-width: 80px;">result</th>
+                  <th style="min-width: 145px;">创建时间</th>
                 </tr>
               </thead>
               <tbody id="body"></tbody>
@@ -330,7 +332,7 @@
         document.getElementById("btnNext").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="9" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
@@ -346,6 +348,7 @@
           const sortNum = (x && (x.windowSortNum ?? x.window_sort_num ?? x.window_sortNum)) ?? "";
           const sortNumText = String(sortNum ?? "").trim();
           const windowInfo = sortNumText ? (accRaw ? `${sortNumText}-${accRaw}` : sortNumText) : acc;
+          const windowIp = String(x.window_ip ?? "").trim() || "-";
           const errCell = (String(err || "").trim())
             ? `<button class="btn btn-link p-0 text-danger mono truncate-1 truncate-err text-start" style="max-width: 520px;" data-action="view-errors" data-task-id="${escapeHtml(x.task_id || "")}" title="点击查看该条错误信息">${escapeHtml(err)}</button>`
             : `<span class="text-muted">-</span>`;
@@ -373,14 +376,15 @@
                   <div class="mono truncate-1 window-acc flex-grow-1" title="${escapeHtml(windowInfo)}">${escapeHtml(windowInfo)}</div>
                 </div>
               </td>
+              <td class="mono truncate-1" title="${escapeHtml(windowIp)}">${escapeHtml(windowIp)}</td>
               <td class="mono truncate-1 truncate-err" title="${escapeHtml(err)}">${errCell}</td>
               <td class="mono">
-                <button class="btn btn-outline-secondary btn-sm py-0" data-action="view-prompt" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
+                <button class="btn btn-outline-secondary btn-sm btn-compact" data-action="view-prompt" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>
               <td class="mono">
-                <button class="btn btn-outline-secondary btn-sm py-0" data-action="view-result" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
+                <button class="btn btn-outline-secondary btn-sm btn-compact" data-action="view-result" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>
-              <td class="mono">${escapeHtml(createdAtText)}</td>
+              <td class="mono text-nowrap">${escapeHtml(createdAtText)}</td>
             </tr>
           `;
         }).join("");
