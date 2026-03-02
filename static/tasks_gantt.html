@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>任务成功失败甘特分析 - FPBrowser2API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+      .small2 { font-size: 12px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .matrix-wrap { overflow: auto; border: 1px solid #e9ecef; border-radius: 8px; background: #fff; max-height: 72vh; }
+      .matrix-table { border-collapse: separate; border-spacing: 0; min-width: 980px; }
+      .matrix-table th, .matrix-table td { border-right: 1px solid #f1f3f5; border-bottom: 1px solid #f1f3f5; padding: 6px 8px; white-space: nowrap; }
+      .matrix-table thead th { position: sticky; top: 0; background: #f8f9fa; z-index: 3; }
+      .sticky-first { position: sticky; left: 0; background: #fff; z-index: 2; min-width: 240px; max-width: 320px; }
+      .matrix-table thead .sticky-first { background: #f8f9fa; z-index: 4; }
+      .bucket-head { min-width: 68px; text-align: center; font-size: 11px; color: #495057; }
+      .cell-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
+      .dot-ok { background: #0d6efd; }
+      .dot-fail { background: #dc3545; }
+      .cell-num { font-size: 11px; color: #6c757d; margin-left: 4px; }
+      .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+      .empty-cell { color: #dee2e6; text-align: center; }
+      .truncate-1 { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .clickable-cell { cursor: pointer; }
+      .clickable-cell:hover { background: #f8f9fa; }
+      .task-list-pre { white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/admin/system">FPBrowser2API</a>
+        <div class="navbar-nav me-auto">
+          <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
+          <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
+          <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
+          <a class="nav-link" data-nav="tasks_gantt" href="/admin/tasks-gantt">成功失败甘特</a>
+          <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
+        </div>
+        <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
+        <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
+      </div>
+    </nav>
+
+    <div class="container-fluid py-3">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <div class="row g-2 align-items-end">
+            <div class="col-6 col-md-2">
+              <label class="form-label">纵轴</label>
+              <select class="form-select" id="fltGroupBy">
+                <option value="account" selected>账号</option>
+                <option value="ip">IP</option>
+              </select>
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label">时间粒度</label>
+              <select class="form-select" id="fltBucket">
+                <option value="month">月</option>
+                <option value="week">周</option>
+                <option value="day" selected>日</option>
+                <option value="hour">小时</option>
+                <option value="minute">分钟</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-2">
+              <label class="form-label">任务类型</label>
+              <select class="form-select" id="fltType"></select>
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label">开始时间</label>
+              <input class="form-control" id="fltStart" type="datetime-local" />
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label">结束时间</label>
+              <input class="form-control" id="fltEnd" type="datetime-local" />
+            </div>
+            <div class="col-12 col-md-2">
+              <label class="form-label">搜索账号/IP</label>
+              <input class="form-control" id="fltQ" placeholder="关键字" />
+            </div>
+          </div>
+
+          <div class="row g-2 align-items-end mt-1">
+            <div class="col-6 col-md-2">
+              <label class="form-label">每页行数</label>
+              <select class="form-select" id="fltLimit">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+              </select>
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label">最多时间点</label>
+              <select class="form-select" id="fltMaxBuckets">
+                <option value="60">60</option>
+                <option value="120" selected>120</option>
+                <option value="240">240</option>
+                <option value="400">400</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-4 d-flex gap-2">
+              <button class="btn btn-outline-secondary w-100" id="btnReset">重置</button>
+              <button class="btn btn-primary w-100" id="btnRefresh">刷新</button>
+            </div>
+            <div class="col-12 col-md-4 d-flex flex-wrap align-items-center justify-content-md-end gap-3 small2">
+              <span><span class="legend-dot" style="background:#0d6efd;"></span>成功</span>
+              <span><span class="legend-dot" style="background:#dc3545;"></span>失败</span>
+              <span class="text-muted">仅展示发生过事件的时间点（非连续时间轴）</span>
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap gap-2 align-items-center mt-2 small2">
+            <div>分组总数：<span class="fw-semibold" id="hintTotal">0</span></div>
+            <div>当前页：<span class="fw-semibold" id="hintPage">1/1</span></div>
+            <div class="ms-auto d-flex gap-2">
+              <button class="btn btn-outline-secondary btn-sm" id="btnPrev">上一页</button>
+              <button class="btn btn-outline-secondary btn-sm" id="btnNext">下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-body p-2">
+          <div class="matrix-wrap">
+            <table class="matrix-table w-100" id="matrixTable">
+              <thead id="matrixHead"></thead>
+              <tbody id="matrixBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="detailModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="detailModalTitle">时间点任务详情</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="detailModalBody"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module">
+      import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
+
+      setActiveNav("tasks_gantt");
+      document.getElementById("btnLogout").addEventListener("click", logout);
+
+      const state = {
+        offset: 0,
+        limit: 100,
+        totalGroups: 0,
+        groups: [],
+        events: [],
+      };
+      const detailModal = new bootstrap.Modal("#detailModal");
+      const detailModalTitle = document.getElementById("detailModalTitle");
+      const detailModalBody = document.getElementById("detailModalBody");
+
+      function toApiDateTime(v) {
+        const s = String(v || "").trim();
+        if (!s) return "";
+        return s.replace("T", " ") + (s.length === 16 ? ":00" : "");
+      }
+
+      function nowLocalInput() {
+        const d = new Date();
+        const pad2 = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      }
+
+      function shiftHours(inputValue, hours) {
+        const base = inputValue ? new Date(inputValue) : new Date();
+        const d = new Date(base.getTime() + Number(hours || 0) * 3600 * 1000);
+        const pad2 = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      }
+
+      function currentFilters() {
+        return {
+          group_by: document.getElementById("fltGroupBy").value || "account",
+          bucket: document.getElementById("fltBucket").value || "day",
+          task_type_code: document.getElementById("fltType").value || "",
+          q: (document.getElementById("fltQ").value || "").trim(),
+          start_at: toApiDateTime(document.getElementById("fltStart").value),
+          end_at: toApiDateTime(document.getElementById("fltEnd").value),
+          limit: parseInt(document.getElementById("fltLimit").value, 10) || 100,
+          maxBuckets: parseInt(document.getElementById("fltMaxBuckets").value, 10) || 120,
+        };
+      }
+
+      async function loadTaskTypes() {
+        const sel = document.getElementById("fltType");
+        sel.innerHTML = `<option value="">（全部）</option>`;
+        const r = await adminFetch("/api/admin/task-types");
+        if (!r) return;
+        const d = await r.json();
+        (d.task_types || []).forEach((t) => {
+          const opt = document.createElement("option");
+          opt.value = String(t.code || "");
+          opt.textContent = `${String(t.name || t.code || "-")} (${String(t.code || "-")})`;
+          sel.appendChild(opt);
+        });
+      }
+
+      function badgeForStatus(s) {
+        const v = String(s || "").toLowerCase();
+        if (v === "completed") return `<span class="badge text-bg-primary">completed</span>`;
+        if (v === "failed") return `<span class="badge text-bg-danger">failed</span>`;
+        return `<span class="badge text-bg-light text-dark">${escapeHtml(v || "-")}</span>`;
+      }
+
+      function renderTaskList(items, { includeError = true } = {}) {
+        if (!items.length) return `<div class="text-muted small">暂无数据</div>`;
+        return `
+          <div class="list-group">
+            ${items.map((x) => {
+              const err = String(x.error_message || "").trim();
+              const promptText = String(x.prompt || "").trim();
+              const resultText = String(x.result_json || "").trim();
+              const code = String(x.task_type_code || "-");
+              const taskIp = String(x.window_ip || "-");
+              const accRaw = String(x.window_account || "").trim();
+              const sortNum = String(x.window_sort_num ?? "").trim();
+              const acc = sortNum ? `${sortNum}${accRaw ? `-${accRaw}` : ""}` : (accRaw || "-");
+              const errHtml = includeError && err
+                ? `<details class="mt-2">
+                    <summary class="small2 text-danger">error_message</summary>
+                    <pre class="mono small2 mb-0 mt-1 task-list-pre">${escapeHtml(err)}</pre>
+                  </details>`
+                : "";
+              const promptHtml = promptText
+                ? `<details class="mt-2">
+                    <summary class="small2 text-primary">prompt</summary>
+                    <pre class="mono small2 mb-0 mt-1 task-list-pre">${escapeHtml(promptText)}</pre>
+                  </details>`
+                : "";
+              const resultHtml = resultText
+                ? `<details class="mt-2">
+                    <summary class="small2 text-success">result_json</summary>
+                    <pre class="mono small2 mb-0 mt-1 task-list-pre">${escapeHtml(resultText)}</pre>
+                  </details>`
+                : "";
+              return `
+                <div class="list-group-item">
+                  <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                    <span class="mono">${escapeHtml(x.created_at || "")}</span>
+                    <span class="text-muted">·</span>
+                    <span class="mono">${escapeHtml(x.task_id || "")}</span>
+                    <span class="text-muted">·</span>
+                    <span class="mono">${escapeHtml(code)}</span>
+                    <span class="ms-auto">${badgeForStatus(x.status)}</span>
+                  </div>
+                  <div class="mono small2 text-muted">账号: ${escapeHtml(acc)} · IP: ${escapeHtml(taskIp)}</div>
+                  ${errHtml}
+                  ${promptHtml}
+                  ${resultHtml}
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
+      async function openTimelineDetail(groupKey, bucketStart, bucketLabel) {
+        const f = currentFilters();
+        const groupShow = String(groupKey || "").trim() || "(空值)";
+        detailModalTitle.textContent = `时间点详情 · ${f.group_by === "ip" ? "IP" : "账号"}=${groupShow} · ${bucketLabel || bucketStart}`;
+        detailModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        detailModal.show();
+        try {
+          const params = new URLSearchParams();
+          params.set("group_by", f.group_by);
+          params.set("bucket", f.bucket);
+          params.set("group_key", String(groupKey || ""));
+          params.set("bucket_start", String(bucketStart || ""));
+          params.set("limit", "500");
+          params.set("offset", "0");
+          if (f.task_type_code) params.set("task_type_code", f.task_type_code);
+
+          const r = await adminFetch(`/api/admin/tasks/timeline-items?${params.toString()}`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载时间点详情失败");
+
+          const items = d.items || [];
+          const failed = items.filter((x) => String(x.status || "").toLowerCase() === "failed");
+          const completed = items.filter((x) => String(x.status || "").toLowerCase() === "completed");
+          const mixed = [...items].sort((a, b) => {
+            const ta = Date.parse(String(a?.created_at || ""));
+            const tb = Date.parse(String(b?.created_at || ""));
+            if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return tb - ta;
+            return String(b?.created_at || "").localeCompare(String(a?.created_at || ""));
+          });
+
+          detailModalBody.innerHTML = `
+            <div class="mb-2 small2">
+              <span class="badge text-bg-danger me-2">失败 ${failed.length}</span>
+              <span class="badge text-bg-primary">成功 ${completed.length}</span>
+            </div>
+            <div class="border rounded p-2">
+              <div class="fw-semibold mb-2">任务列表（按时间倒序，成功/失败混排）</div>
+              ${renderTaskList(mixed, { includeError: true })}
+            </div>
+          `;
+        } catch (e) {
+          detailModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载时间点详情失败")}</div>`;
+        }
+      }
+
+      function render() {
+        const head = document.getElementById("matrixHead");
+        const body = document.getElementById("matrixBody");
+        const total = Number(state.totalGroups || 0);
+        const limit = Number(state.limit || 100);
+        const offset = Number(state.offset || 0);
+        const page = Math.floor(offset / limit) + 1;
+        const maxPage = Math.max(1, Math.ceil(total / limit) || 1);
+
+        document.getElementById("hintTotal").textContent = String(total);
+        document.getElementById("hintPage").textContent = `${page}/${maxPage}`;
+        document.getElementById("btnPrev").disabled = offset <= 0;
+        document.getElementById("btnNext").disabled = offset + limit >= total;
+
+        const f = currentFilters();
+        const maxBuckets = Math.max(1, Number(f.maxBuckets || 120));
+
+        const allBuckets = Array.from(
+          new Set(
+            (state.events || [])
+              .map((e) => String(e.bucket_start || "").trim())
+              .filter(Boolean)
+          )
+        ).sort((a, b) => String(a).localeCompare(String(b)));
+        const bucketKeys = allBuckets.length > maxBuckets ? allBuckets.slice(allBuckets.length - maxBuckets) : allBuckets;
+
+        const bucketLabelMap = new Map();
+        (state.events || []).forEach((e) => {
+          const k = String(e.bucket_start || "").trim();
+          if (!k) return;
+          if (!bucketLabelMap.has(k)) {
+            bucketLabelMap.set(k, String(e.bucket_label || k));
+          }
+        });
+
+        const eventMap = new Map();
+        (state.events || []).forEach((e) => {
+          const g = String(e.group_key || "");
+          const b = String(e.bucket_start || "");
+          if (!b) return;
+          eventMap.set(`${g}__${b}`, e);
+        });
+
+        head.innerHTML = `
+          <tr class="small2">
+            <th class="sticky-first">${escapeHtml(f.group_by === "ip" ? "IP" : "账号")}（当前页）</th>
+            ${bucketKeys.map((k) => `<th class="bucket-head mono" title="${escapeHtml(k)}">${escapeHtml(bucketLabelMap.get(k) || k)}</th>`).join("")}
+          </tr>
+        `;
+
+        if (!state.groups.length) {
+          body.innerHTML = `<tr><td class="sticky-first text-muted small2">暂无数据</td>${bucketKeys.map(() => `<td class="empty-cell">-</td>`).join("")}</tr>`;
+          return;
+        }
+
+        body.innerHTML = state.groups.map((g) => {
+          const keyRaw = String(g.group_key || "");
+          const keyShow = keyRaw || "(空值)";
+          const succ = Number(g.completed_count || 0);
+          const fail = Number(g.failed_count || 0);
+          const totalCount = Number(g.total_count || 0);
+          const firstCol = `
+            <td class="sticky-first mono">
+              <div class="truncate-1" title="${escapeHtml(keyShow)}">${escapeHtml(keyShow)}</div>
+              <div class="text-muted small2">成功 ${succ} / 失败 ${fail} / 总 ${totalCount}</div>
+            </td>
+          `;
+
+          const cells = bucketKeys.map((bk) => {
+            const e = eventMap.get(`${keyRaw}__${bk}`);
+            if (!e) return `<td class="empty-cell">·</td>`;
+            const c = Number(e.completed_count || 0);
+            const f2 = Number(e.failed_count || 0);
+            const bucketLabel = String(e.bucket_label || bk);
+            const clickAttrs = `class="text-center small2 clickable-cell" data-action="open-timeline-detail" data-group-key="${escapeHtml(keyRaw)}" data-bucket-start="${escapeHtml(bk)}" data-bucket-label="${escapeHtml(bucketLabel)}"`;
+            if (c > 0 && f2 > 0) {
+              return `<td ${clickAttrs} title="点击查看：成功 ${c}，失败 ${f2}">
+                <span class="cell-dot dot-ok"></span><span class="cell-num">${c}</span>
+                <span class="mx-1"></span>
+                <span class="cell-dot dot-fail"></span><span class="cell-num">${f2}</span>
+              </td>`;
+            }
+            if (c > 0) return `<td ${clickAttrs} title="点击查看：成功 ${c}"><span class="cell-dot dot-ok"></span><span class="cell-num">${c}</span></td>`;
+            return `<td ${clickAttrs} title="点击查看：失败 ${f2}"><span class="cell-dot dot-fail"></span><span class="cell-num">${f2}</span></td>`;
+          }).join("");
+          return `<tr>${firstCol}${cells}</tr>`;
+        }).join("");
+      }
+
+      async function load() {
+        try {
+          const f = currentFilters();
+          state.limit = f.limit;
+
+          const params = new URLSearchParams();
+          params.set("group_by", f.group_by);
+          params.set("bucket", f.bucket);
+          params.set("limit", String(state.limit));
+          params.set("offset", String(state.offset));
+          if (f.task_type_code) params.set("task_type_code", f.task_type_code);
+          if (f.q) params.set("q", f.q);
+          if (f.start_at) params.set("start_at", f.start_at);
+          if (f.end_at) params.set("end_at", f.end_at);
+
+          const r = await adminFetch(`/api/admin/tasks/timeline?${params.toString()}`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载分析数据失败");
+
+          state.totalGroups = Number(d.total_groups || 0);
+          state.groups = d.groups || [];
+          state.events = d.events || [];
+          render();
+        } catch (e) {
+          toast(e.message || "加载分析数据失败", "error");
+        }
+      }
+
+      function resetFilters() {
+        document.getElementById("fltGroupBy").value = "account";
+        document.getElementById("fltBucket").value = "day";
+        document.getElementById("fltType").value = "";
+        document.getElementById("fltQ").value = "";
+        document.getElementById("fltLimit").value = "100";
+        document.getElementById("fltMaxBuckets").value = "120";
+        const end = nowLocalInput();
+        document.getElementById("fltEnd").value = end;
+        document.getElementById("fltStart").value = shiftHours(end, -72);
+        state.offset = 0;
+      }
+
+      document.getElementById("btnRefresh").addEventListener("click", () => load());
+      document.getElementById("btnReset").addEventListener("click", async () => {
+        resetFilters();
+        await load();
+      });
+
+      document.getElementById("btnPrev").addEventListener("click", async () => {
+        state.offset = Math.max(0, state.offset - state.limit);
+        await load();
+      });
+      document.getElementById("btnNext").addEventListener("click", async () => {
+        state.offset = state.offset + state.limit;
+        await load();
+      });
+
+      ["fltGroupBy", "fltBucket", "fltType", "fltLimit", "fltMaxBuckets", "fltStart", "fltEnd"].forEach((id) => {
+        document.getElementById(id).addEventListener("change", async () => {
+          state.offset = 0;
+          await load();
+        });
+      });
+      document.getElementById("fltQ").addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          state.offset = 0;
+          await load();
+        }
+      });
+      document.getElementById("matrixBody").addEventListener("click", async (e) => {
+        const el = e.target?.closest?.("[data-action='open-timeline-detail']");
+        if (!el) return;
+        const groupKey = el.getAttribute("data-group-key") || "";
+        const bucketStart = el.getAttribute("data-bucket-start") || "";
+        const bucketLabel = el.getAttribute("data-bucket-label") || bucketStart;
+        await openTimelineDetail(groupKey, bucketStart, bucketLabel);
+      });
+
+      await loadTaskTypes();
+      resetFilters();
+      await load();
+    </script>
+  </body>
+</html>

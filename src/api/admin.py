@@ -1254,6 +1254,62 @@ async def list_tasks(
     return {"success": True, "total": total, "limit": lim, "offset": off, "items": items}
 
 
+@router.get("/api/admin/tasks/timeline")
+async def list_task_success_fail_timeline(
+    group_by: str = "account",  # account | ip
+    bucket: str = "day",  # month | week | day | hour | minute
+    limit: int = 100,
+    offset: int = 0,
+    task_type_code: Optional[str] = None,
+    q: Optional[str] = None,
+    start_at: Optional[str] = None,
+    end_at: Optional[str] = None,
+    token: str = Depends(verify_admin_token),
+):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    data = await db.list_task_success_fail_timeline(
+        group_by=group_by,
+        bucket=bucket,
+        limit=limit,
+        offset=offset,
+        task_type_code=task_type_code,
+        q=q,
+        start_at=start_at,
+        end_at=end_at,
+    )
+    return {"success": True, **data}
+
+
+@router.get("/api/admin/tasks/timeline-items")
+async def list_task_timeline_items(
+    group_by: str = "account",  # account | ip
+    bucket: str = "day",  # month | week | day | hour | minute
+    group_key: str = "",
+    bucket_start: str = "",
+    limit: int = 200,
+    offset: int = 0,
+    task_type_code: Optional[str] = None,
+    token: str = Depends(verify_admin_token),
+):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    if not str(bucket_start or "").strip():
+        raise HTTPException(status_code=400, detail="bucket_start is required")
+
+    data = await db.list_task_timeline_items(
+        group_by=group_by,
+        bucket=bucket,
+        group_key=group_key,
+        bucket_start=bucket_start,
+        limit=limit,
+        offset=offset,
+        task_type_code=task_type_code,
+    )
+    return {"success": True, **data}
+
+
 # -------------------- logs --------------------
 @router.get("/api/admin/logs")
 async def get_logs(limit: int = 200, token: str = Depends(verify_admin_token)):

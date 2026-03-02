@@ -2608,6 +2608,245 @@ class Database:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
+    async def list_task_success_fail_timeline(
+        self,
+        group_by: str = "account",  # account | ip
+        bucket: str = "day",  # month | week | day | hour | minute
+        limit: int = 100,
+        offset: int = 0,
+        task_type_code: Optional[str] = None,
+        q: Optional[str] = None,
+        start_at: Optional[str] = None,
+        end_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """按账号/IP + 时间桶聚合任务成功失败数据（仅 completed/failed）。"""
+
+        grp = str(group_by or "account").strip().lower()
+        if grp not in ("account", "ip"):
+            grp = "account"
+
+        bkt = str(bucket or "day").strip().lower()
+        if bkt not in ("month", "week", "day", "hour", "minute"):
+            bkt = "day"
+
+        lim = max(1, min(200, int(limit or 100)))
+        off = max(0, int(offset or 0))
+
+        if grp == "ip":
+            group_expr = "TRIM(COALESCE(t.window_ip, ''))"
+        else:
+            group_expr = "TRIM(COALESCE(w.platform_account, ''))"
+
+        bucket_start_expr_map = {
+            "month": "strftime('%Y-%m-01 00:00:00', t.created_at)",
+            "week": "datetime(date(t.created_at, '-' || ((CAST(strftime('%w', t.created_at) AS INTEGER) + 6) % 7) || ' days') || ' 00:00:00')",
+            "day": "strftime('%Y-%m-%d 00:00:00', t.created_at)",
+            "hour": "strftime('%Y-%m-%d %H:00:00', t.created_at)",
+            "minute": "strftime('%Y-%m-%d %H:%M:00', t.created_at)",
+        }
+        bucket_label_expr_map = {
+            "month": "strftime('%Y-%m', t.created_at)",
+            "week": "strftime('%Y-W%W', t.created_at)",
+            "day": "strftime('%Y-%m-%d', t.created_at)",
+            "hour": "strftime('%m-%d %H:00', t.created_at)",
+            "minute": "strftime('%m-%d %H:%M', t.created_at)",
+        }
+        bucket_start_expr = bucket_start_expr_map[bkt]
+        bucket_label_expr = bucket_label_expr_map[bkt]
+
+        where: List[str] = ["t.status IN ('completed','failed')"]
+        params: List[Any] = []
+
+        if task_type_code:
+            where.append("t.task_type_code = ?")
+            params.append(str(task_type_code).strip())
+        if q:
+            qq = f"%{str(q).strip()}%"
+            where.append(f"({group_expr} LIKE ?)")
+            params.append(qq)
+        if start_at:
+            where.append("t.created_at >= ?")
+            params.append(str(start_at).strip())
+        if end_at:
+            where.append("t.created_at <= ?")
+            params.append(str(end_at).strip())
+
+        where_clause = " AND ".join(where)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            cur_total = await db.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM (
+                  SELECT {group_expr} AS group_key
+                  FROM tasks t
+                  LEFT JOIN windows w ON w.id = t.window_pk
+                  WHERE {where_clause}
+                  GROUP BY {group_expr}
+                ) g
+                """,
+                params,
+            )
+            row_total = await cur_total.fetchone()
+            total_groups = int((row_total["c"] if row_total and row_total["c"] is not None else 0) or 0)
+
+            cur_groups = await db.execute(
+                f"""
+                SELECT
+                  {group_expr} AS group_key,
+                  COUNT(*) AS total_count,
+                  SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                  SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                  MAX(t.created_at) AS last_created_at
+                FROM tasks t
+                LEFT JOIN windows w ON w.id = t.window_pk
+                WHERE {where_clause}
+                GROUP BY {group_expr}
+                ORDER BY last_created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, lim, off],
+            )
+            groups_rows = await cur_groups.fetchall()
+            groups = [dict(r) for r in groups_rows]
+
+            group_values: List[str] = [str((r.get("group_key") if isinstance(r, dict) else "") or "") for r in groups]
+            events: List[Dict[str, Any]] = []
+            if group_values:
+                placeholders = ",".join("?" for _ in group_values)
+                cur_events = await db.execute(
+                    f"""
+                    SELECT
+                      {group_expr} AS group_key,
+                      {bucket_start_expr} AS bucket_start,
+                      {bucket_label_expr} AS bucket_label,
+                      SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                      SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                      COUNT(*) AS total_count
+                    FROM tasks t
+                    LEFT JOIN windows w ON w.id = t.window_pk
+                    WHERE {where_clause}
+                      AND {group_expr} IN ({placeholders})
+                    GROUP BY {group_expr}, {bucket_start_expr}, {bucket_label_expr}
+                    ORDER BY bucket_start ASC
+                    """,
+                    [*params, *group_values],
+                )
+                events_rows = await cur_events.fetchall()
+                events = [dict(r) for r in events_rows]
+
+            return {
+                "group_by": grp,
+                "bucket": bkt,
+                "total_groups": total_groups,
+                "limit": lim,
+                "offset": off,
+                "groups": groups,
+                "events": events,
+            }
+
+    async def list_task_timeline_items(
+        self,
+        group_by: str = "account",  # account | ip
+        bucket: str = "day",  # month | week | day | hour | minute
+        group_key: str = "",
+        bucket_start: str = "",
+        limit: int = 200,
+        offset: int = 0,
+        task_type_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """查询某个分组在某个时间桶内的任务明细（completed/failed）。"""
+
+        grp = str(group_by or "account").strip().lower()
+        if grp not in ("account", "ip"):
+            grp = "account"
+        bkt = str(bucket or "day").strip().lower()
+        if bkt not in ("month", "week", "day", "hour", "minute"):
+            bkt = "day"
+
+        lim = max(1, min(500, int(limit or 200)))
+        off = max(0, int(offset or 0))
+
+        if grp == "ip":
+            group_expr = "TRIM(COALESCE(t.window_ip, ''))"
+        else:
+            group_expr = "TRIM(COALESCE(w.platform_account, ''))"
+
+        bucket_start_expr_map = {
+            "month": "strftime('%Y-%m-01 00:00:00', t.created_at)",
+            "week": "datetime(date(t.created_at, '-' || ((CAST(strftime('%w', t.created_at) AS INTEGER) + 6) % 7) || ' days') || ' 00:00:00')",
+            "day": "strftime('%Y-%m-%d 00:00:00', t.created_at)",
+            "hour": "strftime('%Y-%m-%d %H:00:00', t.created_at)",
+            "minute": "strftime('%Y-%m-%d %H:%M:00', t.created_at)",
+        }
+        bucket_start_expr = bucket_start_expr_map[bkt]
+
+        where: List[str] = [
+            "t.status IN ('completed','failed')",
+            f"{group_expr} = ?",
+            f"{bucket_start_expr} = ?",
+        ]
+        params: List[Any] = [str(group_key or "").strip(), str(bucket_start or "").strip()]
+        if task_type_code:
+            where.append("t.task_type_code = ?")
+            params.append(str(task_type_code).strip())
+        where_clause = " AND ".join(where)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            cur_total = await db.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM tasks t
+                LEFT JOIN windows w ON w.id = t.window_pk
+                WHERE {where_clause}
+                """,
+                params,
+            )
+            row_total = await cur_total.fetchone()
+            total = int((row_total["c"] if row_total and row_total["c"] is not None else 0) or 0)
+
+            cur_items = await db.execute(
+                f"""
+                SELECT
+                  t.task_id,
+                  t.task_type_code,
+                  t.generation_id,
+                  t.status,
+                  t.progress,
+                  t.prompt,
+                  t.window_pk,
+                  t.window_ip,
+                  w.platform_account AS window_account,
+                  w.window_sort_num AS window_sort_num,
+                  t.error_message,
+                  t.result_json,
+                  t.created_at
+                FROM tasks t
+                LEFT JOIN windows w ON w.id = t.window_pk
+                WHERE {where_clause}
+                ORDER BY t.created_at DESC, t.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, lim, off],
+            )
+            rows = await cur_items.fetchall()
+            items = [dict(r) for r in rows]
+
+            return {
+                "group_by": grp,
+                "bucket": bkt,
+                "group_key": str(group_key or ""),
+                "bucket_start": str(bucket_start or ""),
+                "total": total,
+                "limit": lim,
+                "offset": off,
+                "items": items,
+            }
+
     async def update_task(
         self,
         task_id: str,
