@@ -1153,14 +1153,15 @@ class SoraSession:
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
 
-        根因：Turnstile iframe 在主页 shadow DOM 中，query_selector 找不到；
-        且 iframe 刚注册时 body 为空，需等待内容加载后再操作。
+        根因：
+        - Turnstile iframe 在主页 closed shadow-root 内，query_selector 找不到
+        - iframe 内部还有一层 closed shadow-root 包裹 checkbox
+        - wait_for_selector 无法穿透 closed shadow-root，会超时
 
         策略：
-        1. 从 page.frames 找到 CF frame
-        2. wait_for_selector 等待 checkbox 加载，成功则点击
-        3. 兜底：frame_element().bounding_box() 获取 iframe 屏幕坐标，
-           mouse.click() 直接点击 checkbox 所在位置
+        1. frame.locator()：CDP 原生可穿透 shadow-root，尝试直接点击
+        2. 坐标法：frame_element().bounding_box() 拿到 iframe 屏幕位置，
+           模拟拟人化鼠标移动后 mouse.click() 点击 checkbox 坐标
 
         返回 True 表示触发了点击动作，False 表示完全失败。
         """
@@ -1184,62 +1185,50 @@ class SoraSession:
                     fu = str(getattr(f, "url", "") or "")
                     if "challenges.cloudflare.com" in fu or "/cdn-cgi/" in fu:
                         cf_frame = f
-                        _log(f"找到 cf_frame: frame[{i}] url={fu}")
+                        _log(f"找到 cf_frame: frame[{i}]")
                         break
             except Exception as e:
                 _log(f"遍历 page.frames 异常: {e}")
 
             if cf_frame is None:
-                _log("未找到 CF frame，跳过")
                 return False
 
-            # --- 策略1：等待 checkbox 出现后点击 ---
-            el = None
+            # --- 策略1：frame.locator()（CDP 可穿 closed shadow-root）---
             try:
-                el = await cf_frame.wait_for_selector(
-                    "input[type='checkbox']", timeout=3000, state="attached"
-                )
-                _log("wait_for_selector 找到 checkbox")
+                loc = cf_frame.locator("input[type='checkbox']")
+                cnt = await loc.count()
+                _log(f"策略1 locator count={cnt}")
+                if cnt > 0:
+                    await loc.first.click(force=True, timeout=1500)
+                    _log("策略1 locator click 成功")
+                    return True
             except Exception as e:
-                _log(f"wait_for_selector 超时/失败: {e}")
+                _log(f"策略1 locator 失败: {e}")
 
-            if el is not None:
-                # 尝试三种点击方式
-                try:
-                    await el.click(force=True, timeout=2000)
-                    _log("策略1 click(force=True) 成功")
-                    return True
-                except Exception as e:
-                    _log(f"策略1 click(force=True) 失败: {e}")
-                try:
-                    await el.dispatch_event("click")
-                    _log("策略1 dispatch_event 成功")
-                    return True
-                except Exception as e:
-                    _log(f"策略1 dispatch_event 失败: {e}")
-                try:
-                    await cf_frame.evaluate("el => el.click()", el)
-                    _log("策略1 JS el.click() 成功")
-                    return True
-                except Exception as e:
-                    _log(f"策略1 JS el.click() 失败: {e}")
-
-            # --- 策略2：坐标法 ---
-            # frame_element() 可绕过 shadow DOM 直接拿到 iframe 的 ElementHandle
-            # Cloudflare Turnstile checkbox 在 widget 内偏左侧，约 x+26, y+33
+            # --- 策略2：坐标法 + 拟人化鼠标移动 ---
+            # Cloudflare Turnstile widget 固定为 300×65px
+            # checkbox 位于 widget 左侧，水平约 26px，垂直居中
             try:
                 iframe_handle = await cf_frame.frame_element()
                 box = await iframe_handle.bounding_box()
-                _log(f"iframe bounding_box: {box}")
-                if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
-                    click_x = box["x"] + 26
-                    click_y = box["y"] + box["height"] / 2
-                    _log(f"策略2 坐标点击: ({click_x:.1f}, {click_y:.1f})")
-                    await page.mouse.click(click_x, click_y)
-                    _log("策略2 坐标点击完成")
-                    return True
-                else:
+                if not (box and box.get("width", 0) > 0 and box.get("height", 0) > 0):
                     _log(f"策略2 bounding_box 无效: {box}")
+                    return False
+
+                target_x = box["x"] + 26.0
+                target_y = box["y"] + box["height"] / 2.0
+                _log(f"策略2 目标坐标: ({target_x:.1f}, {target_y:.1f})")
+
+                # 从随机偏移位置平滑移入，模拟人手移动
+                start_x = target_x + random.uniform(-80, 120)
+                start_y = target_y + random.uniform(-50, 50)
+                await page.mouse.move(start_x, start_y)
+                await asyncio.sleep(random.uniform(0.08, 0.20))
+                await page.mouse.move(target_x, target_y, steps=random.randint(6, 12))
+                await asyncio.sleep(random.uniform(0.04, 0.12))
+                await page.mouse.click(target_x, target_y)
+                _log("策略2 坐标点击完成")
+                return True
             except Exception as e:
                 _log(f"策略2 坐标法异常: {e}")
 
