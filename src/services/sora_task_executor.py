@@ -1153,12 +1153,16 @@ class SoraSession:
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
 
-        策略：
-        1. 优先按 URL 匹配 Cloudflare challenge iframe
-        2. 兜底：遍历页面所有 iframe，找到含 checkbox 的那个
-        3. 点击方式：依次尝试 click() / dispatch_event / JS evaluate
+        根因：Turnstile iframe 在主页 shadow DOM 中，query_selector 找不到；
+        且 iframe 刚注册时 body 为空，需等待内容加载后再操作。
 
-        返回 True 表示找到并成功触发了点击，False 表示未找到或全部失败。
+        策略：
+        1. 从 page.frames 找到 CF frame
+        2. wait_for_selector 等待 checkbox 加载，成功则点击
+        3. 兜底：frame_element().bounding_box() 获取 iframe 屏幕坐标，
+           mouse.click() 直接点击 checkbox 所在位置
+
+        返回 True 表示触发了点击动作，False 表示完全失败。
         """
         log_file = (
             Path(self.monitor_log_path)
@@ -1172,140 +1176,76 @@ class SoraSession:
             except Exception:
                 pass
 
-        async def _click_el(el, frame, tag: str) -> bool:
-            """对同一元素依次尝试三种点击手段，逐一记录结果。"""
-            # 方式1: Playwright 原生 click（force=True 跳过可见性检查）
-            try:
-                await el.click(force=True, timeout=2000)
-                _log(f"{tag} click(force=True) 成功")
-                return True
-            except Exception as e:
-                _log(f"{tag} click(force=True) 失败: {e}")
-            # 方式2: dispatch_event（绕过 Playwright 的坐标计算）
-            try:
-                await el.dispatch_event("click")
-                _log(f"{tag} dispatch_event('click') 成功")
-                return True
-            except Exception as e:
-                _log(f"{tag} dispatch_event('click') 失败: {e}")
-            # 方式3: JavaScript 直接调用 .click()
-            try:
-                await frame.evaluate("el => el.click()", el)
-                _log(f"{tag} JS el.click() 成功")
-                return True
-            except Exception as e:
-                _log(f"{tag} JS el.click() 失败: {e}")
-            return False
-
-        async def _try_click_in_frame(frame, frame_tag: str) -> bool:
-            """在指定 frame 内查找 checkbox 并点击。"""
-            # 先 dump 一下 frame 内的 HTML 片段，方便定位
-            try:
-                snippet = await frame.evaluate("""() => {
-                    const b = document.body;
-                    return b ? b.innerHTML.substring(0, 800) : '(empty body)';
-                }""")
-                _log(f"{frame_tag} body snippet: {snippet!r}")
-            except Exception as e:
-                _log(f"{frame_tag} 获取 body snippet 失败: {e}")
-
-            checkbox_selectors = [
-                "input[type='checkbox']",
-                ".ctp-checkbox-label",
-                "[id^='cf-chl-widget']",
-                "label.cb-lb",
-                "#challenge-stage input[type='checkbox']",
-                "div[class*='checkbox'] input",
-            ]
-            for csel in checkbox_selectors:
-                try:
-                    el = await frame.query_selector(csel)
-                    if el is not None:
-                        _log(f"{frame_tag} 找到元素: {csel}")
-                        if await _click_el(el, frame, f"{frame_tag}[{csel}]"):
-                            return True
-                    else:
-                        _log(f"{frame_tag} 未找到: {csel}")
-                except Exception as e:
-                    _log(f"{frame_tag} query_selector({csel}) 异常: {e}")
-
-            # JS 兜底：在 frame 内直接遍历所有 checkbox
-            try:
-                result = await frame.evaluate("""() => {
-                    const inputs = document.querySelectorAll("input[type='checkbox']");
-                    for (const cb of inputs) {
-                        cb.click();
-                        return true;
-                    }
-                    return false;
-                }""")
-                _log(f"{frame_tag} JS 兜底点击结果: {result}")
-                if result:
-                    return True
-            except Exception as e:
-                _log(f"{frame_tag} JS 兜底点击异常: {e}")
-            return False
-
         try:
-            # 记录当前页面 URL 和所有 frames
-            try:
-                page_url = str(getattr(page, "url", "") or "")
-                _log(f"page.url={page_url}")
-            except Exception:
-                pass
-
-            # --- 阶段1：按 URL 优先匹配已知 Cloudflare frame ---
+            # --- 找到 CF iframe frame ---
             cf_frame = None
             try:
-                all_frames = page.frames
-                _log(f"page.frames 数量: {len(all_frames)}")
-                for i, f in enumerate(all_frames):
-                    try:
-                        fu = str(getattr(f, "url", "") or "")
-                        _log(f"  frame[{i}] url={fu}")
-                        if cf_frame is None and (
-                            "challenges.cloudflare.com" in fu or "/cdn-cgi/" in fu
-                        ):
-                            cf_frame = f
-                            _log(f"  -> 选为 cf_frame")
-                    except Exception as e:
-                        _log(f"  frame[{i}] 读取异常: {e}")
+                for i, f in enumerate(page.frames):
+                    fu = str(getattr(f, "url", "") or "")
+                    if "challenges.cloudflare.com" in fu or "/cdn-cgi/" in fu:
+                        cf_frame = f
+                        _log(f"找到 cf_frame: frame[{i}] url={fu}")
+                        break
             except Exception as e:
                 _log(f"遍历 page.frames 异常: {e}")
 
-            if cf_frame is not None:
-                _log("阶段1：尝试在 cf_frame 中点击")
-                if await _try_click_in_frame(cf_frame, "cf_frame"):
-                    return True
-            else:
-                _log("阶段1：未找到匹配的 cf_frame")
+            if cf_frame is None:
+                _log("未找到 CF frame，跳过")
+                return False
 
-            # --- 阶段2：遍历页面所有 iframe 元素，获取 content_frame ---
+            # --- 策略1：等待 checkbox 出现后点击 ---
+            el = None
             try:
-                all_iframes = await page.query_selector_all("iframe")
-                _log(f"阶段2：page 内 <iframe> 元素数量: {len(all_iframes)}")
+                el = await cf_frame.wait_for_selector(
+                    "input[type='checkbox']", timeout=3000, state="attached"
+                )
+                _log("wait_for_selector 找到 checkbox")
             except Exception as e:
-                _log(f"阶段2：query_selector_all('iframe') 异常: {e}")
-                all_iframes = []
+                _log(f"wait_for_selector 超时/失败: {e}")
 
-            for idx, iframe_elem in enumerate(all_iframes):
+            if el is not None:
+                # 尝试三种点击方式
                 try:
-                    f = await iframe_elem.content_frame()
-                    if f is None:
-                        _log(f"  iframe[{idx}] content_frame=None，跳过")
-                        continue
-                    if f is cf_frame:
-                        _log(f"  iframe[{idx}] 与 cf_frame 相同，跳过")
-                        continue
-                    fu = str(getattr(f, "url", "") or "")
-                    _log(f"  iframe[{idx}] url={fu}，尝试点击")
-                    if await _try_click_in_frame(f, f"iframe[{idx}]"):
-                        return True
+                    await el.click(force=True, timeout=2000)
+                    _log("策略1 click(force=True) 成功")
+                    return True
                 except Exception as e:
-                    _log(f"  iframe[{idx}] 处理异常: {e}")
+                    _log(f"策略1 click(force=True) 失败: {e}")
+                try:
+                    await el.dispatch_event("click")
+                    _log("策略1 dispatch_event 成功")
+                    return True
+                except Exception as e:
+                    _log(f"策略1 dispatch_event 失败: {e}")
+                try:
+                    await cf_frame.evaluate("el => el.click()", el)
+                    _log("策略1 JS el.click() 成功")
+                    return True
+                except Exception as e:
+                    _log(f"策略1 JS el.click() 失败: {e}")
+
+            # --- 策略2：坐标法 ---
+            # frame_element() 可绕过 shadow DOM 直接拿到 iframe 的 ElementHandle
+            # Cloudflare Turnstile checkbox 在 widget 内偏左侧，约 x+26, y+33
+            try:
+                iframe_handle = await cf_frame.frame_element()
+                box = await iframe_handle.bounding_box()
+                _log(f"iframe bounding_box: {box}")
+                if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
+                    click_x = box["x"] + 26
+                    click_y = box["y"] + box["height"] / 2
+                    _log(f"策略2 坐标点击: ({click_x:.1f}, {click_y:.1f})")
+                    await page.mouse.click(click_x, click_y)
+                    _log("策略2 坐标点击完成")
+                    return True
+                else:
+                    _log(f"策略2 bounding_box 无效: {box}")
+            except Exception as e:
+                _log(f"策略2 坐标法异常: {e}")
 
         except Exception as e:
             _log(f"顶层异常: {e}")
+
         _log("所有策略均未成功点击 checkbox")
         return False
 
