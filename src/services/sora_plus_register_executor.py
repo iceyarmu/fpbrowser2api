@@ -19,6 +19,8 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import os
+import subprocess
 import struct
 import time
 from typing import Any, Dict, Optional
@@ -115,6 +117,37 @@ def _generate_totp_code(secret: str, *, digits: int = 6, period_seconds: int = 3
     code_int = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
     code = code_int % (10**int(digits))
     return str(code).zfill(int(digits))
+
+
+def _copy_to_system_clipboard(text: str) -> bool:
+    """写入系统剪贴板；成功返回 True，失败返回 False。"""
+    v = str(text or "")
+    if not v:
+        return False
+
+    # Windows
+    if os.name == "nt":
+        try:
+            subprocess.run("clip", input=v, text=True, shell=True, check=True)
+            return True
+        except Exception:
+            return False
+
+    # macOS
+    try:
+        subprocess.run(["pbcopy"], input=v, text=True, check=True)
+        return True
+    except Exception:
+        pass
+
+    # Linux Wayland / X11
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
+        try:
+            subprocess.run(cmd, input=v, text=True, check=True)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 async def _generate_fresh_totp_code(secret: str, previous_code: str) -> str:
@@ -299,93 +332,27 @@ CHATGPT_URL = "https://chatgpt.com/"
 async def _do_chatgpt_google_login(
     page: Any,
     *,
+    platform_username: str,
     platform_efa: str,
     previous_totp_code: str,
     timeout_ms: int,
     progress_cb: ProgressCB,
 ) -> None:
-    """跳转到 ChatGPT 并通过 "Continue with Google" 登录。
-
-    流程：
-    1) goto chatgpt.com
-    2) 点击 "Sign in" (或 "Log in") 按钮
-    3) 点击 "Continue with Google" 按钮
-    4) 如果弹出 2FA 验证（input[type="tel"]），计算新的 TOTP code 并填入
-    """
+    # 你指定的节点：等 3 秒后预先生成 2FA code，并写入系统剪贴板，方便手动 Ctrl+V。
     await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
-    await asyncio.sleep(2)
-    await progress_cb(60, {"stage": "chatgpt_page_loaded", "url": str(page.url or "")})
+    await asyncio.sleep(1)
+    await progress_cb(58, {"stage": "chatgpt_page_loaded", "url": str(page.url or "")})
 
-    sign_in_selectors = [
-        'button:has-text("Sign in")',
-        'a:has-text("Sign in")',
-        'button:has-text("Log in")',
-        'a:has-text("Log in")',
-        '[data-testid="login-button"]',
-        'button:has-text("登录")',
-        'a:has-text("登录")',
-    ]
-    per_try = int(max(2000, min(8000, timeout_ms // 4)))
-    clicked_sign_in = False
-    for sel in sign_in_selectors:
-        loc = page.locator(sel).first
-        try:
-            await loc.wait_for(state="visible", timeout=per_try)
-            await loc.click(timeout=per_try)
-            clicked_sign_in = True
-            break
-        except Exception:
-            continue
-    if not clicked_sign_in:
-        raise RuntimeError(f"ChatGPT 页面未找到 Sign in 按钮（已尝试 {sign_in_selectors}）")
-    await asyncio.sleep(2)
-    await progress_cb(65, {"stage": "chatgpt_sign_in_clicked"})
-
-    google_selectors = [
-        'button:has-text("Continue with Google")',
-        '[data-provider="google"]',
-        'button:has-text("继续使用 Google")',
-        'button:has-text("使用 Google 继续")',
-        'form[action*="google"] button',
-        'button[data-action-button-secondary="true"]:has-text("Google")',
-        'button:has-text("Google")',
-    ]
-    clicked_google = False
-    for sel in google_selectors:
-        loc = page.locator(sel).first
-        try:
-            await loc.wait_for(state="visible", timeout=per_try)
-            await loc.click(timeout=per_try)
-            clicked_google = True
-            break
-        except Exception:
-            continue
-    if not clicked_google:
-        raise RuntimeError(f"未找到 Continue with Google 按钮（已尝试 {google_selectors}）")
     await asyncio.sleep(3)
-    await progress_cb(70, {"stage": "chatgpt_continue_with_google_clicked"})
-
-    # Google OAuth 可能要求再次 2FA 验证
-    try:
-        tel_input = page.locator('input[type="tel"]').first
-        await tel_input.wait_for(state="visible", timeout=min(10_000, timeout_ms))
-        totp_code = await _generate_fresh_totp_code(platform_efa, previous_totp_code)
-        await tel_input.fill(totp_code, timeout=timeout_ms)
-        await progress_cb(80, {"stage": "chatgpt_2fa_filled"})
-        await _click_next_button(page, timeout_ms=timeout_ms)
-        await progress_cb(85, {"stage": "chatgpt_2fa_next_clicked"})
-    except Exception:
-        await progress_cb(80, {"stage": "chatgpt_no_2fa_needed"})
-
-    # 等待登录完成，URL 应该回到 chatgpt.com
-    deadline = time.time() + max(15, timeout_ms / 1000)
-    while time.time() < deadline:
-        cur = str(page.url or "").strip().lower()
-        if "chatgpt.com" in cur and "auth" not in cur and "accounts.google.com" not in cur:
-            break
-        await asyncio.sleep(1)
-
-    await progress_cb(95, {"stage": "chatgpt_login_done", "url": str(page.url or "")})
+    prefetched_totp_code = await _generate_fresh_totp_code(platform_efa, previous_totp_code)
+    copied = _copy_to_system_clipboard(prefetched_totp_code)
+    await progress_cb(
+        57,
+        {
+            "stage": "prefetch_2fa_code_ready",
+            "copied_to_clipboard": copied,
+        },
+    )
 
 
 async def _navigate_to_password_page(page: Any, *, timeout_ms: int, progress_cb: ProgressCB) -> None:
@@ -498,9 +465,6 @@ async def sora_plus_register(
         page = await pick_working_page_from_context(ctx.context)
         ctx.page = page
 
-        closed_count = await _close_other_pages(ctx.context, page)
-        await progress_cb(5, {"stage": "other_tabs_closed", "closed_count": closed_count})
-
         try:
             await page.bring_to_front()
         except Exception:
@@ -528,6 +492,7 @@ async def sora_plus_register(
 
         await _do_chatgpt_google_login(
             page,
+            platform_username=platform_username,
             platform_efa=platform_efa,
             previous_totp_code=last_totp_code,
             timeout_ms=timeout_ms,
