@@ -19,6 +19,7 @@ from .models import (
     AutoRefreshErrorLog,
     BrowserSpace,
     FingerprintBrowser,
+    PlatformAccount,
     Project,
     ProxyInfo,
     RequestLog,
@@ -145,6 +146,7 @@ class Database:
                     window_name TEXT NOT NULL,
                     platform_account TEXT,
                     platform_url TEXT,
+                    platform_account_id INTEGER,
                     proxy_id INTEGER,
                     proxy_addr TEXT,
                     proxy_country TEXT,
@@ -194,6 +196,28 @@ class Database:
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     UNIQUE (space_pk, proxy_id),
+                    FOREIGN KEY (space_pk) REFERENCES spaces(id)
+                )
+                """
+            )
+
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS platform_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    space_pk INTEGER NOT NULL,
+                    account_id INTEGER NOT NULL,
+                    platform_url TEXT,
+                    platform_username TEXT,
+                    platform_password TEXT,
+                    platform_efa TEXT,
+                    platform_remarks TEXT,
+                    deleted BOOLEAN DEFAULT 0,
+                    raw_json TEXT,
+                    synced_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    UNIQUE (space_pk, account_id),
                     FOREIGN KEY (space_pk) REFERENCES spaces(id)
                 )
                 """
@@ -314,6 +338,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_space_pk ON proxies(space_pk)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_accounts_space_pk ON platform_accounts(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_created_at ON auto_refresh_error_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_mapping_id ON auto_refresh_error_logs(mapping_id)")
@@ -426,6 +451,7 @@ class Database:
             if await self._table_exists(db, "windows"):
                 columns_to_add = [
                     ("window_sort_num", "INTEGER"),
+                    ("platform_account_id", "INTEGER"),
                     ("proxy_id", "INTEGER"),
                 ]
                 for col_name, col_type in columns_to_add:
@@ -470,6 +496,20 @@ class Database:
                                 await db.execute("UPDATE windows SET proxy_id = ? WHERE id = ?", (pid, int(rid)))
                         except Exception:
                             pass
+
+                if await self._column_exists(db, "windows", "platform_account_id"):
+                    try:
+                        await db.execute(
+                            """
+                            UPDATE windows
+                            SET platform_account_id = CAST(json_extract(raw_json, '$.raw.platformAccountId') AS INTEGER)
+                            WHERE platform_account_id IS NULL
+                              AND raw_json IS NOT NULL
+                              AND json_extract(raw_json, '$.raw.platformAccountId') IS NOT NULL
+                            """
+                        )
+                    except Exception:
+                        pass
 
             # proxies: expire_at（代理过期时间，用于 UI 过滤/展示）
             if await self._table_exists(db, "proxies"):
@@ -881,6 +921,9 @@ class Database:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             for w in windows:
+                raw_obj = w.get("raw")
+                if not isinstance(raw_obj, dict):
+                    raw_obj = {}
                 window_key = str(w.get("window_key") or w.get("id") or w.get("dirId") or w.get("name") or "").strip()
                 if not window_key:
                     continue
@@ -891,9 +934,7 @@ class Database:
                     else (w.get("windowSortNum") if w.get("windowSortNum") is not None else None)
                 )
                 if window_sort_num_raw is None:
-                    raw_obj = w.get("raw")
-                    if isinstance(raw_obj, dict):
-                        window_sort_num_raw = raw_obj.get("windowSortNum")
+                    window_sort_num_raw = raw_obj.get("windowSortNum")
                 try:
                     window_sort_num = int(window_sort_num_raw) if window_sort_num_raw not in (None, "", "-") else None
                 except Exception:
@@ -902,19 +943,28 @@ class Database:
                 window_name = str(w.get("window_name") or w.get("name") or window_key).strip()
                 platform_account = (w.get("platform_account") or w.get("account") or w.get("username"))
                 platform_url = (w.get("platform_url") or w.get("url"))
+                platform_account_id_raw = (
+                    w.get("platform_account_id")
+                    if w.get("platform_account_id") is not None
+                    else w.get("platformAccountId")
+                )
+                if platform_account_id_raw is None:
+                    platform_account_id_raw = raw_obj.get("platformAccountId")
+                try:
+                    platform_account_id = int(platform_account_id_raw) if platform_account_id_raw not in (None, "", "-") else None
+                except Exception:
+                    platform_account_id = None
                 # proxy_id: 优先从 raw 中提取（Roxy: proxyInfo.moduleId -> minimal_raw.proxyModuleId）
                 proxy_id_raw = None
-                raw_obj = w.get("raw")
-                if isinstance(raw_obj, dict):
-                    proxy_id_raw = (
-                        raw_obj.get("proxyModuleId")
-                        if raw_obj.get("proxyModuleId") is not None
-                        else (raw_obj.get("proxy_module_id") if raw_obj.get("proxy_module_id") is not None else raw_obj.get("moduleId"))
-                    )
-                    if proxy_id_raw is None:
-                        proxy_info = raw_obj.get("proxyInfo")
-                        if isinstance(proxy_info, dict):
-                            proxy_id_raw = proxy_info.get("moduleId")
+                proxy_id_raw = (
+                    raw_obj.get("proxyModuleId")
+                    if raw_obj.get("proxyModuleId") is not None
+                    else (raw_obj.get("proxy_module_id") if raw_obj.get("proxy_module_id") is not None else raw_obj.get("moduleId"))
+                )
+                if proxy_id_raw is None:
+                    proxy_info = raw_obj.get("proxyInfo")
+                    if isinstance(proxy_info, dict):
+                        proxy_id_raw = proxy_info.get("moduleId")
                 if proxy_id_raw is None:
                     proxy_id_raw = w.get("proxy_id") if w.get("proxy_id") is not None else w.get("proxyModuleId")
                 try:
@@ -932,16 +982,17 @@ class Database:
                     """
                     INSERT INTO windows (
                         space_pk, window_key, window_sort_num, window_name,
-                        platform_account, platform_url,
+                        platform_account, platform_url, platform_account_id,
                         proxy_id,
                         proxy_addr, proxy_country, proxy_expire_at,
                         enabled, deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, window_key) DO UPDATE SET
                         window_sort_num=excluded.window_sort_num,
                         window_name=excluded.window_name,
                         platform_account=excluded.platform_account,
                         platform_url=excluded.platform_url,
+                        platform_account_id=COALESCE(excluded.platform_account_id, windows.platform_account_id),
                         -- 约定：同步窗口时，若新数据未解析到 proxy_id，则保留已有 proxy_id
                         proxy_id=COALESCE(excluded.proxy_id, windows.proxy_id),
                         proxy_addr=excluded.proxy_addr,
@@ -961,6 +1012,7 @@ class Database:
                         window_name,
                         platform_account,
                         platform_url,
+                        platform_account_id,
                         proxy_id,
                         proxy_addr,
                         proxy_country,
@@ -1161,6 +1213,58 @@ class Database:
             except Exception:
                 return 0
 
+    async def update_window_platform_binding(
+        self,
+        *,
+        space_pk: int,
+        window_key: str,
+        platform_account_id: Optional[int],
+        platform_account: Optional[str],
+        platform_url: Optional[str],
+    ) -> int:
+        """更新窗口绑定的平台账号信息（本地立即生效）。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE windows
+                SET platform_account_id = ?,
+                    platform_account = ?,
+                    platform_url = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND window_key = ? AND deleted = 0
+                """,
+                (
+                    platform_account_id,
+                    str(platform_account).strip() if platform_account is not None else None,
+                    str(platform_url).strip() if platform_url is not None else None,
+                    int(space_pk),
+                    str(window_key).strip(),
+                ),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
+    async def clear_window_platform_binding_by_account(self, *, space_pk: int, account_id: int) -> int:
+        """当账号被删除时，清空引用该账号的窗口绑定。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE windows
+                SET platform_account_id = NULL,
+                    updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND platform_account_id = ? AND deleted = 0
+                """,
+                (int(space_pk), int(account_id)),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
     async def resolve_space_pk_for_window(self, *, space_id: str, window_key: str) -> Optional[int]:
         """根据 (workspaceId=space_id, window_key) 解析本地 space_pk。
 
@@ -1208,6 +1312,208 @@ class Database:
                 except Exception:
                     return None
             return None
+
+    # ---------- platform accounts ----------
+    async def list_platform_accounts(self, space_pk: int) -> List[PlatformAccount]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM platform_accounts
+                WHERE deleted = 0 AND space_pk = ?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (int(space_pk),),
+            )
+            rows = await cur.fetchall()
+            result: List[PlatformAccount] = []
+            for r in rows:
+                d = dict(r)
+                if d.get("raw_json"):
+                    try:
+                        d["raw"] = json.loads(d["raw_json"])
+                    except Exception:
+                        d["raw"] = None
+                d.pop("raw_json", None)
+                result.append(PlatformAccount(**d))
+            return result
+
+    async def upsert_platform_accounts(self, space_pk: int, accounts: List[Dict[str, Any]], *, full_replace: bool = True) -> int:
+        """保存平台账号列表（按 space_pk+account_id upsert）。
+
+        参数：
+        - full_replace=True：以输入结果为准，未出现账号会标记 deleted=1（全量同步）
+        - full_replace=False：仅增量写入，不删除其他本地账号（适合导入后回填）
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys=ON")
+            affected = 0
+            incoming_ids: List[int] = []
+            for a in (accounts or []):
+                if not isinstance(a, dict):
+                    continue
+                account_id_raw = a.get("id") if a.get("id") is not None else a.get("account_id")
+                try:
+                    account_id = int(account_id_raw)
+                except Exception:
+                    continue
+                incoming_ids.append(account_id)
+
+                platform_url = a.get("platformUrl") if a.get("platformUrl") is not None else a.get("platform_url")
+                platform_username = a.get("platformUserName") if a.get("platformUserName") is not None else a.get("platform_username")
+                platform_password = a.get("platformPassword") if a.get("platformPassword") is not None else a.get("platform_password")
+                platform_efa = a.get("platformEfa") if a.get("platformEfa") is not None else a.get("platform_efa")
+                platform_remarks = a.get("platformRemarks") if a.get("platformRemarks") is not None else a.get("platform_remarks")
+
+                raw_json = json.dumps(a, ensure_ascii=False)
+                await db.execute(
+                    """
+                    INSERT INTO platform_accounts (
+                        space_pk, account_id,
+                        platform_url, platform_username, platform_password, platform_efa, platform_remarks,
+                        deleted, raw_json, synced_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now','localtime'), datetime('now','localtime'))
+                    ON CONFLICT(space_pk, account_id) DO UPDATE SET
+                        platform_url=excluded.platform_url,
+                        platform_username=excluded.platform_username,
+                        platform_password=excluded.platform_password,
+                        platform_efa=excluded.platform_efa,
+                        platform_remarks=excluded.platform_remarks,
+                        deleted=excluded.deleted,
+                        raw_json=excluded.raw_json,
+                        synced_at=datetime('now','localtime'),
+                        updated_at=datetime('now','localtime')
+                    """,
+                    (
+                        int(space_pk),
+                        int(account_id),
+                        str(platform_url).strip() if platform_url is not None else None,
+                        str(platform_username).strip() if platform_username is not None else None,
+                        str(platform_password).strip() if platform_password is not None else None,
+                        str(platform_efa).strip() if platform_efa is not None else None,
+                        str(platform_remarks).strip() if platform_remarks is not None else None,
+                        raw_json,
+                    ),
+                )
+                affected += 1
+
+            if full_replace:
+                try:
+                    uniq = sorted(set(int(x) for x in incoming_ids if isinstance(x, int)))
+                    if uniq:
+                        placeholders = ",".join(["?"] * len(uniq))
+                        await db.execute(
+                            f"""
+                            UPDATE platform_accounts
+                            SET deleted = 1, updated_at = datetime('now','localtime')
+                            WHERE space_pk = ?
+                              AND deleted = 0
+                              AND account_id NOT IN ({placeholders})
+                            """,
+                            (int(space_pk), *uniq),
+                        )
+                    else:
+                        await db.execute(
+                            """
+                            UPDATE platform_accounts
+                            SET deleted = 1, updated_at = datetime('now','localtime')
+                            WHERE space_pk = ? AND deleted = 0
+                            """,
+                            (int(space_pk),),
+                        )
+                except Exception:
+                    pass
+            await db.commit()
+            return affected
+
+    async def get_platform_account(self, *, space_pk: int, account_id: int) -> Optional[PlatformAccount]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM platform_accounts
+                WHERE deleted = 0 AND space_pk = ? AND account_id = ?
+                LIMIT 1
+                """,
+                (int(space_pk), int(account_id)),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("raw_json"):
+                try:
+                    d["raw"] = json.loads(d["raw_json"])
+                except Exception:
+                    d["raw"] = None
+            d.pop("raw_json", None)
+            return PlatformAccount(**d)
+
+    async def delete_platform_account(self, *, space_pk: int, account_id: int) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE platform_accounts
+                SET deleted = 1, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND account_id = ?
+                """,
+                (int(space_pk), int(account_id)),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
+    async def list_account_bindings(self, space_pk: int) -> Dict[int, Dict[str, Any]]:
+        """返回账号绑定信息：account_id -> {count, windows}。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  a.account_id AS account_id,
+                  COUNT(w.id) AS cnt,
+                  GROUP_CONCAT(
+                    CASE
+                      WHEN w.window_sort_num IS NOT NULL THEN ('#' || w.window_sort_num)
+                      ELSE ('#' || w.id)
+                    END,
+                    ', '
+                  ) AS windows
+                FROM platform_accounts a
+                LEFT JOIN windows w
+                  ON w.space_pk = a.space_pk
+                 AND w.deleted = 0
+                 AND (
+                      (w.platform_account_id IS NOT NULL AND w.platform_account_id = a.account_id)
+                   OR (
+                        (w.platform_account_id IS NULL OR w.platform_account_id = 0)
+                    AND TRIM(COALESCE(w.platform_account, '')) = TRIM(COALESCE(a.platform_username, ''))
+                    AND (
+                         TRIM(COALESCE(w.platform_url, '')) = ''
+                      OR TRIM(COALESCE(a.platform_url, '')) = ''
+                      OR TRIM(COALESCE(w.platform_url, '')) = TRIM(COALESCE(a.platform_url, ''))
+                    )
+                   )
+                 )
+                WHERE a.deleted = 0 AND a.space_pk = ?
+                GROUP BY a.account_id
+                """,
+                (int(space_pk),),
+            )
+            rows = await cur.fetchall()
+            out: Dict[int, Dict[str, Any]] = {}
+            for r in rows:
+                try:
+                    aid = int(r["account_id"] or 0)
+                except Exception:
+                    continue
+                out[aid] = {
+                    "count": int(r["cnt"] or 0),
+                    "windows": str(r["windows"] or "").strip(),
+                }
+            return out
 
     # ---------- proxies ----------
     async def list_proxies(self, space_pk: int) -> List[ProxyInfo]:

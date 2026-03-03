@@ -232,6 +232,38 @@
       </div>
     </div>
 
+    <!-- Accounts Modal -->
+    <div class="modal fade" id="accountsModal" tabindex="-1">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="accountsModalTitle">账号管理</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <input class="form-control form-control-sm" id="accountsFilter" placeholder="搜索：账号 / URL / EFA / account_id" style="max-width: 420px;" />
+              <button class="btn btn-outline-secondary btn-sm" id="btnRefreshAccounts">刷新</button>
+              <span class="text-muted small ms-auto" id="accountsSummary"></span>
+            </div>
+            <div class="mb-2">
+              <label class="form-label small mb-1">批量新增（格式：邮箱——密码——忽略——EFA，每行一个）</label>
+              <textarea class="form-control form-control-sm mono" id="accountsImportText" rows="6" placeholder="example@gmail.com——password——ignore——efa_token"></textarea>
+              <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-success btn-sm" id="btnImportAccounts">批量新增</button>
+                <button class="btn btn-danger btn-sm" id="btnSyncAccounts">同步该空间账号到本地</button>
+              </div>
+            </div>
+            <div id="accountsBody"></div>
+            <div class="form-text">说明：删除/新增都会同步到指纹浏览器；同步不会覆盖相同账号（按平台URL+账号去重）。</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
@@ -248,6 +280,7 @@
       const workspaceProjectsModal = new bootstrap.Modal("#workspaceProjectsModal");
       const proxiesModal = new bootstrap.Modal("#proxiesModal");
       const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
+      const accountsModal = new bootstrap.Modal("#accountsModal");
 
       let state = { projects: [], tree: [] };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
@@ -327,6 +360,9 @@
                 fillProxySelects(sp);
               })
               .catch(() => fillProxySelects(sp));
+            ensureAccountsLoaded(sp)
+              .then(() => fillAccountSelects(sp))
+              .catch(() => fillAccountSelects(sp));
           });
         }, 0);
       }
@@ -382,6 +418,7 @@
               <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_space" data-space_pk="${s.id}">删除</button>
               <button class="btn btn-primary btn-sm" type="button" data-action="sync_space" data-space_pk="${s.id}">同步窗口</button>
               <button class="btn btn-outline-primary btn-sm" type="button" data-action="proxies" data-space_pk="${s.id}">代理列表</button>
+              <button class="btn btn-outline-success btn-sm" type="button" data-action="accounts" data-space_pk="${s.id}">账号管理</button>
             </div>
             <div class="card-body">
               <div class="mb-2" data-role="syncProgress" data-space-pk="${s.id}"></div>
@@ -475,8 +512,18 @@
                       <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
                     </td>
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
-                    <td>${escapeHtml(w.platform_account || "-")}</td>
-                    <td class="mono">${renderLink(w.platform_url)}</td>
+                    <td style="min-width: 280px;">
+                      <select class="form-select form-select-sm mono" data-role="accountSelect"
+                        data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+                        data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                        data-current_account_id="${escapeHtml(String(w.platform_account_id || 0))}"
+                        data-current_account="${escapeHtml(String(w.platform_account || ""))}"
+                        data-current_url="${escapeHtml(String(w.platform_url || ""))}">
+                        <option value="">(加载账号中...)</option>
+                      </select>
+                      <div class="text-muted small" data-role="accountBindInfo">当前账号：${escapeHtml(w.platform_account || "-")}</div>
+                    </td>
+                    <td class="mono" data-role="platformUrlCell">${renderLink(w.platform_url)}</td>
                     <td style="min-width: 260px;">
                       <select class="form-select form-select-sm mono" data-role="proxySelect"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
@@ -531,6 +578,8 @@
           syncSpace(parseInt(ds.space_pk, 10), fromEl);
         } else if (action === "proxies") {
           openProxiesModal(parseInt(ds.space_pk, 10));
+        } else if (action === "accounts") {
+          openAccountsModal(parseInt(ds.space_pk, 10));
         }
       }
 
@@ -802,8 +851,18 @@
               <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
             </td>
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
-            <td>${escapeHtml(w.platform_account || "-")}</td>
-            <td class="mono">${renderLink(w.platform_url)}</td>
+            <td style="min-width: 280px;">
+              <select class="form-select form-select-sm mono" data-role="accountSelect"
+                data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
+                data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                data-current_account_id="${escapeHtml(String(w.platform_account_id || 0))}"
+                data-current_account="${escapeHtml(String(w.platform_account || ""))}"
+                data-current_url="${escapeHtml(String(w.platform_url || ""))}">
+                <option value="">(加载账号中...)</option>
+              </select>
+              <div class="text-muted small" data-role="accountBindInfo">当前账号：${escapeHtml(w.platform_account || "-")}</div>
+            </td>
+            <td class="mono" data-role="platformUrlCell">${renderLink(w.platform_url)}</td>
             <td style="min-width: 260px;">
               <select class="form-select form-select-sm mono" data-role="proxySelect"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
@@ -867,6 +926,275 @@
         ensureProxiesLoaded(spacePk)
           .then(() => fillProxySelects(spacePk))
           .catch(() => fillProxySelects(spacePk));
+        ensureAccountsLoaded(spacePk)
+          .then(() => fillAccountSelects(spacePk))
+          .catch(() => fillAccountSelects(spacePk));
+      }
+
+      // -------------------- accounts (local + sync) --------------------
+      const accountsBody = document.getElementById("accountsBody");
+      const accountsSummary = document.getElementById("accountsSummary");
+      const accountsFilter = document.getElementById("accountsFilter");
+      const btnRefreshAccounts = document.getElementById("btnRefreshAccounts");
+      const btnSyncAccounts = document.getElementById("btnSyncAccounts");
+      const btnImportAccounts = document.getElementById("btnImportAccounts");
+      const accountsImportText = document.getElementById("accountsImportText");
+
+      let accountsState = { spacePk: null, accounts: [], loading: false };
+      const accountsCache = new Map(); // spacePk -> accounts[]
+
+      function setAccountsLoading(loading) {
+        accountsState.loading = !!loading;
+        if (btnRefreshAccounts) btnRefreshAccounts.disabled = !!loading;
+        if (btnSyncAccounts) btnSyncAccounts.disabled = !!loading;
+        if (btnImportAccounts) btnImportAccounts.disabled = !!loading;
+        if (loading) {
+          accountsBody.innerHTML = `
+            <div class="d-flex align-items-center gap-2 text-muted">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span class="small">正在读取本地账号列表...</span>
+            </div>
+          `;
+        }
+      }
+
+      function normalizeAccounts(arr) {
+        const xs = Array.isArray(arr) ? arr : [];
+        return xs.filter(x => x && typeof x === "object").map(x => ({
+          account_id: x.account_id ?? x.id ?? 0,
+          platform_url: x.platform_url ?? x.platformUrl ?? "",
+          platform_username: x.platform_username ?? x.platformUserName ?? "",
+          platform_password: x.platform_password ?? x.platformPassword ?? "",
+          platform_efa: x.platform_efa ?? x.platformEfa ?? "",
+          platform_remarks: x.platform_remarks ?? x.platformRemarks ?? "",
+          binding_count: Number(x.binding_count ?? 0) || 0,
+          binding_windows: x.binding_windows ?? "",
+        }));
+      }
+
+      function accountLabel(a) {
+        const bound = Number(a.binding_count || 0) > 0 ? "[已绑定]" : "[未绑定]";
+        return `${bound} ${String(a.platform_username || "-").trim() || "-"} | ${String(a.platform_url || "-").trim() || "-"}`;
+      }
+
+      function renderAccounts() {
+        const items = normalizeAccounts(accountsState.accounts || []);
+        const q = (accountsFilter.value || "").trim().toLowerCase();
+        let filtered = items;
+        if (q) {
+          filtered = items.filter(a => {
+            const hay = `${a.account_id} ${a.platform_username} ${a.platform_url} ${a.platform_efa} ${a.binding_windows}`.toLowerCase();
+            return hay.includes(q);
+          });
+        }
+        accountsSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 条`;
+        if (!filtered.length) {
+          accountsBody.innerHTML = `<div class="text-muted small">暂无本地账号数据，请点击“同步该空间账号到本地”。</div>`;
+          return;
+        }
+        accountsBody.innerHTML = `
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr class="small2">
+                  <th>account_id</th>
+                  <th>账号</th>
+                  <th>网址</th>
+                  <th>密码</th>
+                  <th>EFA</th>
+                  <th>绑定窗口(#)</th>
+                  <th>删除</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.map(a => `
+                  <tr class="small2">
+                    <td class="mono">#${escapeHtml(String(a.account_id || "-"))}</td>
+                    <td class="mono">${escapeHtml(a.platform_username || "-")}</td>
+                    <td class="mono">${renderLink(a.platform_url)}</td>
+                    <td class="mono">${escapeHtml(a.platform_password || "-")}</td>
+                    <td class="mono">${escapeHtml(a.platform_efa || "-")}</td>
+                    <td class="mono">${escapeHtml(a.binding_windows || "-")}</td>
+                    <td>
+                      <button class="btn btn-outline-danger btn-sm" type="button"
+                        data-action="delete_account"
+                        data-space_pk="${escapeHtml(String(accountsState.spacePk ?? ""))}"
+                        data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
+                        data-binding_count="${escapeHtml(String(a.binding_count ?? 0))}">删除</button>
+                    </td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      async function loadLocalAccounts(spacePk, { force } = { force: false }) {
+        if (!force && accountsCache.has(spacePk)) return accountsCache.get(spacePk) || [];
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/accounts`);
+        if (!r) return [];
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取本地账号失败");
+        const items = Array.isArray(d.accounts) ? d.accounts : [];
+        accountsCache.set(spacePk, items);
+        return items;
+      }
+
+      async function ensureAccountsLoaded(spacePk) {
+        try {
+          await loadLocalAccounts(spacePk, { force: false });
+        } catch (_e) {
+          // ignore
+        }
+      }
+
+      function fillAccountSelects(spacePk) {
+        const items = normalizeAccounts(accountsCache.get(spacePk) || []);
+        const selects = document.querySelectorAll(`select[data-role="accountSelect"][data-space_pk="${spacePk}"]`);
+        selects.forEach(sel => {
+          const cur = String(sel.dataset.current_account_id || "").trim();
+          const curName = String(sel.dataset.current_account || "").trim();
+          const curUrl = String(sel.dataset.current_url || "").trim();
+          const curId = parseInt(cur || "0", 10) || 0;
+          const curItem = curId > 0 ? items.find(x => String(x.account_id) === String(curId)) : null;
+          const fallbackCur = (curId > 0 && !curItem)
+            ? `<option value="${escapeHtml(String(curId))}" selected disabled>[未同步] ${escapeHtml(curName || "-")} | ${escapeHtml(curUrl || "-")}</option>`
+            : "";
+          sel.innerHTML = `
+            <option value="0">(不绑定账号)</option>
+            ${fallbackCur}
+            ${items.map(a => `<option value="${escapeHtml(String(a.account_id))}">${escapeHtml(accountLabel(a))}</option>`).join("")}
+          `;
+          sel.value = String(curId || 0);
+          if (!sel.value) sel.value = "0";
+        });
+      }
+
+      async function openAccountsModal(spacePk) {
+        accountsState.spacePk = spacePk;
+        document.getElementById("accountsModalTitle").textContent = `账号管理（space_pk=${spacePk}）`;
+        if (accountsFilter) accountsFilter.value = "";
+        if (accountsImportText) accountsImportText.value = "";
+        accountsModal.show();
+        await refreshAccounts(spacePk);
+      }
+
+      async function refreshAccounts(spacePk) {
+        try {
+          setAccountsLoading(true);
+          const items = await loadLocalAccounts(spacePk, { force: true });
+          accountsState.accounts = items;
+          renderAccounts();
+          fillAccountSelects(spacePk);
+        } catch (e) {
+          toast(e.message || "读取账号失败", "error");
+          accountsState.accounts = [];
+          accountsBody.innerHTML = `<div class="text-muted small">读取失败：${escapeHtml(e.message || "")}</div>`;
+        } finally {
+          setAccountsLoading(false);
+        }
+      }
+
+      async function syncAccounts(spacePk) {
+        try {
+          setAccountsLoading(true);
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-accounts`, { method: "POST", body: JSON.stringify({}) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "同步账号失败");
+          toast(d.message || "同步完成", "success");
+          await refreshAccounts(spacePk);
+        } catch (e) {
+          toast(e.message || "同步账号失败", "error");
+        } finally {
+          setAccountsLoading(false);
+        }
+      }
+
+      async function importAccounts(spacePk, content, fromEl) {
+        const txt = String(content || "").trim();
+        if (!txt) return toast("请先粘贴导入内容", "warning");
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "导入中" });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/accounts/import`, {
+            method: "POST",
+            body: JSON.stringify({ content: txt }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "导入失败");
+          toast(d.message || "导入成功", "success");
+          if (accountsImportText) accountsImportText.value = "";
+          // 导入接口会将新增账号增量回写本地，这里直接刷新列表即可立即可见
+          await refreshAccounts(spacePk);
+        } catch (e) {
+          toast(e.message || "导入失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      async function deleteAccount(spacePk, accountId, bindingCount, fromEl) {
+        const aid = parseInt(String(accountId || "0"), 10) || 0;
+        if (!spacePk || !aid) return;
+        const bcnt = parseInt(String(bindingCount || "0"), 10) || 0;
+        const msg = bcnt > 0
+          ? `该账号当前被 ${bcnt} 个窗口绑定，确认删除并同步到指纹浏览器吗？`
+          : `确认删除该账号并同步到指纹浏览器吗？`;
+        if (!confirm(msg)) return;
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "删除中" });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/accounts/${aid}/delete`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "删除失败");
+          toast(d.message || "已删除", "success");
+          await refreshAccounts(spacePk);
+          fillAccountSelects(spacePk);
+        } catch (e) {
+          toast(e.message || "删除失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      if (btnRefreshAccounts) {
+        btnRefreshAccounts.addEventListener("click", async () => {
+          if (!accountsState.spacePk) return;
+          await refreshAccounts(accountsState.spacePk);
+        });
+      }
+      if (btnSyncAccounts) {
+        btnSyncAccounts.addEventListener("click", async () => {
+          if (!accountsState.spacePk) return;
+          await syncAccounts(accountsState.spacePk);
+        });
+      }
+      if (btnImportAccounts) {
+        btnImportAccounts.addEventListener("click", async () => {
+          if (!accountsState.spacePk) return;
+          await importAccounts(accountsState.spacePk, accountsImportText?.value || "", btnImportAccounts);
+        });
+      }
+      if (accountsFilter) accountsFilter.addEventListener("input", () => renderAccounts());
+      if (accountsBody) {
+        accountsBody.addEventListener("click", async (ev) => {
+          const t = ev.target;
+          const btn = t && typeof t.closest === "function" ? t.closest("[data-action]") : null;
+          if (!btn) return;
+          const action = btn.getAttribute("data-action");
+          if (action !== "delete_account") return;
+          const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
+          const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
+          const bindingCount = parseInt(btn.getAttribute("data-binding_count") || "0", 10) || 0;
+          await deleteAccount(spacePk, accountId, bindingCount, btn);
+        });
       }
 
       // -------------------- proxies (local + sync) --------------------
@@ -1579,10 +1907,64 @@
         }
       });
 
-      // 代理下拉改动：立即调用后端 /browser/mdf
+      // 窗口下拉改动（代理/账号）：立即调用后端 /browser/mdf
       treeContainer.addEventListener("change", async (ev) => {
         const el = ev.target;
         if (!el || !(el instanceof HTMLSelectElement)) return;
+        if (el.dataset.role === "accountSelect") {
+          const spacePk = parseInt(el.dataset.space_pk || "", 10);
+          const wk = String(el.dataset.window_key || "").trim();
+          const accountId = parseInt(String(el.value || "0"), 10) || 0;
+          if (!spacePk || !wk) return;
+          try {
+            el.disabled = true;
+            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-account`, {
+              method: "POST",
+              body: JSON.stringify({ account_id: accountId }),
+            });
+            if (!r) return;
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "修改账号失败");
+            toast("已提交窗口账号修改", "success");
+            el.dataset.current_account_id = String(accountId);
+
+            const td = el.closest("td");
+            const row = el.closest("tr");
+            const infoEl = td ? td.querySelector(`[data-role="accountBindInfo"]`) : null;
+            const urlCell = row ? row.querySelector(`[data-role="platformUrlCell"]`) : null;
+            const arr = normalizeAccounts(accountsCache.get(spacePk) || []);
+            const picked = accountId > 0 ? arr.find(x => String(x.account_id) === String(accountId)) : null;
+
+            if (picked) {
+              el.dataset.current_account = String(picked.platform_username || "").trim();
+              el.dataset.current_url = String(picked.platform_url || "").trim();
+              if (infoEl) infoEl.textContent = `当前账号：${picked.platform_username || "-"}`;
+              if (urlCell) urlCell.innerHTML = renderLink(String(picked.platform_url || "").trim());
+            } else {
+              el.dataset.current_account = "";
+              el.dataset.current_url = "";
+              if (infoEl) infoEl.textContent = "当前账号：-";
+              if (urlCell) urlCell.textContent = "-";
+            }
+
+            try {
+              await loadLocalAccounts(spacePk, { force: true });
+              fillAccountSelects(spacePk);
+              if (accountsState.spacePk === spacePk) {
+                accountsState.accounts = accountsCache.get(spacePk) || [];
+                renderAccounts();
+              }
+            } catch (_e) {
+              // ignore
+            }
+          } catch (e) {
+            toast(e.message || "修改账号失败", "error");
+          } finally {
+            el.disabled = false;
+          }
+          return;
+        }
+
         if (el.dataset.role !== "proxySelect") return;
         const spacePk = parseInt(el.dataset.space_pk || "", 10);
         const wk = String(el.dataset.window_key || "").trim();
@@ -1816,7 +2198,7 @@
         if (!btn) btn = document.querySelector(`button[data-action="sync_space"][data-space_pk="${spacePk}"]`);
         try {
           setBtnBusy(btn, true, { loadingText: "同步中" });
-          setSpaceProgress(spacePk, { current: 0, total: 2, text: "正在同步代理列表..." });
+          setSpaceProgress(spacePk, { current: 0, total: 3, text: "正在同步代理列表..." });
 
           // 先同步代理列表：避免指纹浏览器新增代理/修改绑定后，这里还拿旧的本地代理列表
           try {
@@ -1836,14 +2218,30 @@
             // ignore
           }
 
-          setSpaceProgress(spacePk, { current: 1, total: 2, text: "正在同步窗口（可能较慢）..." });
+          // 同步账号列表：用于窗口账号下拉和绑定关系展示
+          try {
+            const ra = await adminFetch(`/api/admin/spaces/${spacePk}/sync-accounts`, { method: "POST", body: JSON.stringify({}) });
+            if (ra) {
+              const da = await ra.json();
+              if (!ra.ok) throw new Error(da.detail || "同步账号失败");
+            }
+          } catch (e) {
+            toast(`同步账号失败（将继续同步窗口）：${e.message || "未知错误"}`, "warn");
+          }
+          try {
+            await loadLocalAccounts(spacePk, { force: true });
+          } catch (_e) {
+            // ignore
+          }
+
+          setSpaceProgress(spacePk, { current: 2, total: 3, text: "正在同步窗口（可能较慢）..." });
 
           const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-windows`, { method: "POST" });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "同步失败");
 
-          setSpaceProgress(spacePk, { current: 1, total: 2, text: "同步完成，正在加载窗口列表..." });
+          setSpaceProgress(spacePk, { current: 2, total: 3, text: "同步完成，正在加载窗口列表..." });
 
           const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
           if (!r2) return;
@@ -1861,12 +2259,13 @@
           fillProxySelects(spacePk);
           recomputeProxyBindingsFromUi(spacePk);
           fillProxySelects(spacePk);
+          fillAccountSelects(spacePk);
 
           toast(d.message || "同步完成", "success");
-          setSpaceProgress(spacePk, { current: 2, total: 2, text: `完成：${(d2.windows || []).length} 条窗口` });
+          setSpaceProgress(spacePk, { current: 3, total: 3, text: `完成：${(d2.windows || []).length} 条窗口` });
           window.setTimeout(() => setSpaceProgress(spacePk, { text: "" }), 1500);
         } catch (e) {
-          setSpaceProgress(spacePk, { current: 0, total: 2, text: `同步失败：${e.message || "未知错误"}` });
+          setSpaceProgress(spacePk, { current: 0, total: 3, text: `同步失败：${e.message || "未知错误"}` });
           toast(e.message, "error");
         } finally {
           setBtnBusy(btn, false);

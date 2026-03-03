@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import secrets
 from typing import Any, Dict, List, Optional
 
@@ -140,7 +141,132 @@ class UpdateWindowProxyRequest(BaseModel):
     proxy_id: int = Field(ge=0, description="本地代理列表中的 proxy_id；0 表示不使用代理")
 
 
+class UpdateWindowAccountRequest(BaseModel):
+    """在指纹浏览器侧修改某个窗口的平台账号（通过本地 account_id 选择）。"""
+
+    account_id: int = Field(ge=0, description="本地账号列表中的 account_id；0 表示清空窗口账号")
+
+
+class ImportAccountsRequest(BaseModel):
+    content: str = Field(min_length=1, description="批量导入文本")
+
+
 # -------------------- auth helper --------------------
+def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
+    """解析批量账号文本：邮箱——密码——忽略——EFA。"""
+    out: List[Dict[str, Any]] = []
+    lines = [str(x or "").strip() for x in str(content or "").splitlines()]
+    for ln in lines:
+        if not ln:
+            continue
+        # 兼容：中文长横线/英文连字符
+        parts = [x.strip() for x in re.split(r"(?:——|--|—| - )", ln) if str(x or "").strip()]
+        if len(parts) < 4:
+            continue
+        email = str(parts[0] or "").strip()
+        password = str(parts[1] or "").strip()
+        efa = str(parts[3] or "").strip()
+        if not email:
+            continue
+        out.append(
+            {
+                "platformUrl": "https://accounts.google.com/",
+                "platformUserName": email,
+                "platformPassword": password,
+                "platformEfa": efa,
+                "platformRemarks": "batch-import",
+            }
+        )
+    return out
+
+
+def _extract_accounts_from_batch_create_response(
+    rsp: Dict[str, Any], requested_accounts: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """从 batch_create 返回体中提取可直接入库的账号数据（不再额外回查 account/list）。"""
+
+    req_key_map: Dict[str, Dict[str, Any]] = {}
+    for a in (requested_accounts or []):
+        if not isinstance(a, dict):
+            continue
+        k = f"{str(a.get('platformUrl') or '').strip().lower()}||{str(a.get('platformUserName') or '').strip().lower()}"
+        if k and k not in req_key_map:
+            req_key_map[k] = a
+
+    def _to_int(v: Any) -> Optional[int]:
+        try:
+            i = int(v)
+            return i if i > 0 else None
+        except Exception:
+            return None
+
+    extracted: List[Dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    id_keys = {"ids", "accountids", "idlist"}
+    id_pool: List[int] = []
+
+    def walk(obj: Any):
+        if isinstance(obj, dict):
+            # 先尝试“完整账号对象”提取
+            aid = _to_int(obj.get("id") if obj.get("id") is not None else (obj.get("accountId") if obj.get("accountId") is not None else obj.get("account_id")))
+            if aid:
+                url = obj.get("platformUrl") if obj.get("platformUrl") is not None else obj.get("platform_url")
+                user = obj.get("platformUserName") if obj.get("platformUserName") is not None else obj.get("platform_username")
+                pwd = obj.get("platformPassword") if obj.get("platformPassword") is not None else obj.get("platform_password")
+                efa = obj.get("platformEfa") if obj.get("platformEfa") is not None else obj.get("platform_efa")
+                remarks = obj.get("platformRemarks") if obj.get("platformRemarks") is not None else obj.get("platform_remarks")
+                key = f"{str(url or '').strip().lower()}||{str(user or '').strip().lower()}"
+                base = req_key_map.get(key) or {}
+                if aid not in seen_ids:
+                    extracted.append(
+                        {
+                            "id": int(aid),
+                            "platformUrl": str(url).strip() if url is not None else (str(base.get("platformUrl") or "").strip() or None),
+                            "platformUserName": str(user).strip() if user is not None else (str(base.get("platformUserName") or "").strip() or None),
+                            "platformPassword": str(pwd).strip() if pwd is not None else (str(base.get("platformPassword") or "").strip() or None),
+                            "platformEfa": str(efa).strip() if efa is not None else (str(base.get("platformEfa") or "").strip() or None),
+                            "platformRemarks": str(remarks).strip() if remarks is not None else (str(base.get("platformRemarks") or "").strip() or None),
+                        }
+                    )
+                    seen_ids.add(aid)
+
+            # 再提取“仅 ID 列表”
+            for k, v in obj.items():
+                kl = str(k or "").strip().lower()
+                if kl in id_keys and isinstance(v, list):
+                    for item in v:
+                        iid = _to_int(item)
+                        if iid and iid not in seen_ids and iid not in id_pool:
+                            id_pool.append(iid)
+                walk(v)
+            return
+
+        if isinstance(obj, list):
+            for it in obj:
+                walk(it)
+
+    walk(rsp or {})
+
+    # 如果返回体只给了 ids，则按请求顺序与 ids 对齐回写本地
+    if (not extracted) and id_pool:
+        for idx, aid in enumerate(id_pool):
+            if idx >= len(requested_accounts):
+                break
+            a = requested_accounts[idx] if isinstance(requested_accounts[idx], dict) else {}
+            extracted.append(
+                {
+                    "id": int(aid),
+                    "platformUrl": str(a.get("platformUrl") or "").strip() or None,
+                    "platformUserName": str(a.get("platformUserName") or "").strip() or None,
+                    "platformPassword": str(a.get("platformPassword") or "").strip() or None,
+                    "platformEfa": str(a.get("platformEfa") or "").strip() or None,
+                    "platformRemarks": str(a.get("platformRemarks") or "").strip() or None,
+                }
+            )
+
+    return extracted
+
+
 async def verify_admin_token(authorization: str = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing authorization")
@@ -561,6 +687,252 @@ async def sync_space_proxies(space_pk: int, token: str = Depends(verify_admin_to
 
     affected = await db.upsert_proxies(space_pk=space_pk, proxies=proxies)
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条代理记录", "affected": affected}
+
+
+@router.get("/api/admin/spaces/{space_pk}/accounts")
+async def list_local_accounts(space_pk: int, token: str = Depends(verify_admin_token)):
+    """查看本地 DB 保存的平台账号列表（按空间维度）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    rows = [a.model_dump(exclude={"raw"}) for a in await db.list_platform_accounts(space_pk)]
+    bindings = await db.list_account_bindings(space_pk)
+    merged: List[Dict[str, Any]] = []
+    for x in rows:
+        aid = int(x.get("account_id") or 0)
+        b = bindings.get(aid) or {}
+        merged.append(
+            {
+                **x,
+                "binding_count": int(b.get("count") or 0),
+                "binding_windows": str(b.get("windows") or "").strip(),
+            }
+        )
+    return {"success": True, "accounts": merged}
+
+
+@router.post("/api/admin/spaces/{space_pk}/sync-accounts")
+async def sync_space_accounts(space_pk: int, token: str = Depends(verify_admin_token)):
+    """同步某个空间的平台账号列表（从指纹浏览器拉取后写入本地 DB）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        accounts = await client.list_accounts(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    affected = await db.upsert_platform_accounts(space_pk=space_pk, accounts=accounts)
+    return {"success": True, "message": f"同步完成，写入/更新 {affected} 条账号记录", "affected": affected}
+
+
+@router.post("/api/admin/spaces/{space_pk}/accounts/import")
+async def import_space_accounts(space_pk: int, req: ImportAccountsRequest, token: str = Depends(verify_admin_token)):
+    """批量导入账号到指纹浏览器，并回写本地 DB。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    parsed = _parse_batch_account_lines(req.content)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="未解析到有效账号，请检查格式：邮箱——密码——忽略——EFA")
+
+    # 避免覆盖/重复：按 (platformUrl, platformUserName) 去重
+    dedup_map: Dict[str, Dict[str, Any]] = {}
+    for a in parsed:
+        k = f"{str(a.get('platformUrl') or '').strip().lower()}||{str(a.get('platformUserName') or '').strip().lower()}"
+        if k and k not in dedup_map:
+            dedup_map[k] = a
+    parsed_unique = list(dedup_map.values())
+
+    local_accounts = await db.list_platform_accounts(space_pk)
+    existing_keys = {
+        f"{str(x.platform_url or '').strip().lower()}||{str(x.platform_username or '').strip().lower()}"
+        for x in local_accounts
+    }
+    to_create = []
+    for a in parsed_unique:
+        k = f"{str(a.get('platformUrl') or '').strip().lower()}||{str(a.get('platformUserName') or '').strip().lower()}"
+        if k in existing_keys:
+            continue
+        to_create.append(a)
+
+    if to_create:
+        syscfg = await db.get_system_config()
+        client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+        try:
+            rsp = await client.create_accounts_batch(
+                vendor=browser.vendor,
+                base_url=browser.lan_addr,
+                access_key=browser.access_key,
+                space_id=space.space_id,
+                account_list=to_create,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if int((rsp or {}).get("code") or -1) != 0:
+            raise HTTPException(status_code=400, detail=str((rsp or {}).get("msg") or "批量创建账号失败"))
+
+    # 不再额外回查 account/list，直接使用 batch_create 返回结果落本地。
+    affected = 0
+    found_count = 0
+    if to_create:
+        created_rows = _extract_accounts_from_batch_create_response(rsp or {}, to_create)
+        found_count = len(created_rows or [])
+        # 仅增量写入，不做 full_replace（避免清空本地其他账号）
+        affected = await db.upsert_platform_accounts(space_pk=space_pk, accounts=created_rows or [], full_replace=False)
+
+    missing_count = max(0, len(to_create) - int(found_count or 0))
+    tip = f"，本地写入 {found_count} 条"
+    if missing_count > 0:
+        tip += f"（{missing_count} 条未从创建响应中拿到ID，可稍后手动同步补齐）"
+    return {
+        "success": True,
+        "message": f"导入完成：新增 {len(to_create)} 条，跳过 {len(parsed_unique) - len(to_create)} 条（重复账号）{tip}",
+        "parsed": len(parsed_unique),
+        "created": len(to_create),
+        "skipped": len(parsed_unique) - len(to_create),
+        "synced": int(affected or 0),
+        "found": int(found_count or 0),
+    }
+
+
+@router.post("/api/admin/spaces/{space_pk}/accounts/{account_id}/delete")
+async def delete_space_account(space_pk: int, account_id: int, token: str = Depends(verify_admin_token)):
+    """删除平台账号（远端 + 本地）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    if int(account_id) <= 0:
+        raise HTTPException(status_code=400, detail="invalid account_id")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        rsp = await client.delete_accounts(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            account_ids=[int(account_id)],
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if int((rsp or {}).get("code") or -1) != 0:
+        raise HTTPException(status_code=400, detail=str((rsp or {}).get("msg") or "删除账号失败"))
+
+    await db.delete_platform_account(space_pk=space_pk, account_id=int(account_id))
+    await db.clear_window_platform_binding_by_account(space_pk=space_pk, account_id=int(account_id))
+    return {"success": True, "message": "账号已删除并同步到指纹浏览器"}
+
+
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-account")
+async def set_window_account(
+    space_pk: int,
+    window_key: str,
+    req: UpdateWindowAccountRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """将窗口账号改为本地账号列表中的某个 account_id（实际调用 /browser/mdf）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    account_id = int(req.account_id or 0)
+    selected = None
+    if account_id > 0:
+        selected = await db.get_platform_account(space_pk=space_pk, account_id=account_id)
+        if not selected:
+            raise HTTPException(status_code=404, detail="account not found")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        detail = {}
+        try:
+            detail = await client.get_browser_detail(
+                vendor=browser.vendor,
+                base_url=browser.lan_addr,
+                access_key=browser.access_key,
+                space_id=space.space_id,
+                window_key=wk,
+            )
+        except Exception:
+            detail = {}
+
+        mdf_payload: Dict[str, Any] = {}
+        if isinstance((detail or {}).get("proxyInfo"), dict):
+            # 保留代理配置，避免只改账号时把代理清掉
+            mdf_payload["proxyInfo"] = detail.get("proxyInfo")
+
+        if selected and account_id > 0:
+            mdf_payload["windowPlatformList"] = [
+                {
+                    "id": int(selected.account_id),
+                    "platformUrl": str(selected.platform_url or "").strip(),
+                    "platformUserName": str(selected.platform_username or "").strip(),
+                    "platformPassword": str(selected.platform_password or "").strip(),
+                    "platformEfa": str(selected.platform_efa or "").strip(),
+                    "platformRemarks": str(selected.platform_remarks or "").strip(),
+                }
+            ]
+        else:
+            mdf_payload["windowPlatformList"] = []
+
+        rsp = await client.browser_mdf(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            window_key=wk,
+            data=mdf_payload,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await db.update_window_platform_binding(
+        space_pk=space_pk,
+        window_key=wk,
+        platform_account_id=(int(selected.account_id) if selected else None),
+        platform_account=(selected.platform_username if selected else None),
+        platform_url=(selected.platform_url if selected else None),
+    )
+    return {"success": True, "message": "已提交修改窗口账号请求", "roxy_response": rsp}
 
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-proxy")

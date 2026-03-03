@@ -341,6 +341,148 @@ class FPBrowserClient:
 
         return await self._roxy_list_proxies(base_url=base_url, token=access_key, workspace_id=workspace_id)
 
+    async def list_accounts(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+    ) -> List[Dict[str, Any]]:
+        """读取平台账号列表（RoxyBrowser：GET /account/list，分页拉全量）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            return []
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 list_accounts，请设置为 roxy")
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+        return await self._roxy_list_accounts(base_url=base_url, token=access_key, workspace_id=workspace_id)
+
+    async def create_accounts_batch(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        account_list: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """批量创建平台账号（RoxyBrowser：POST /account/batch_create）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            raise RuntimeError("create_accounts_batch 参数不足：base_url/space_id 不能为空")
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 create_accounts_batch，请设置为 roxy")
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+        payload = {
+            "workspaceId": int(workspace_id),
+            "accountList": account_list or [],
+        }
+        return await self._roxy_account_batch_create(base_url=base_url, token=access_key, data=payload)
+
+    async def delete_accounts(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        account_ids: List[int],
+    ) -> Dict[str, Any]:
+        """删除平台账号（RoxyBrowser：POST /account/delete，支持批量）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            raise RuntimeError("delete_accounts 参数不足：base_url/space_id 不能为空")
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 delete_accounts，请设置为 roxy")
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+        ids = [int(x) for x in (account_ids or []) if str(x).strip().isdigit()]
+        payload = {
+            "workspaceId": int(workspace_id),
+            "ids": ids,
+        }
+        return await self._roxy_account_delete(base_url=base_url, token=access_key, data=payload)
+
+    async def find_accounts_by_keys(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        keys: List[str],
+        max_pages: int = 20,
+        page_size: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """按 (platformUrl||platformUserName) 键增量查找账号，避免全量同步。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            return []
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 find_accounts_by_keys，请设置为 roxy")
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+        key_set = {str(k or "").strip().lower() for k in (keys or []) if str(k or "").strip()}
+        if not key_set:
+            return []
+
+        path = "/account/list"
+        fallback_used = False
+        page_index = 1
+        found: Dict[str, Dict[str, Any]] = {}
+        max_pages = max(1, int(max_pages or 1))
+        page_size = max(1, int(page_size or 200))
+
+        while page_index <= max_pages:
+            try:
+                _total, rows = await self._roxy_get_account_list_page(
+                    base_url=base_url,
+                    token=access_key,
+                    workspace_id=workspace_id,
+                    page_index=page_index,
+                    page_size=page_size,
+                    path=path,
+                )
+            except Exception:
+                if (not fallback_used) and path == "/account/list":
+                    path = "/browser/account"
+                    fallback_used = True
+                    continue
+                raise
+
+            if not rows:
+                break
+            for it in rows:
+                if not isinstance(it, dict):
+                    continue
+                k = f"{str(it.get('platformUrl') or it.get('platform_url') or '').strip().lower()}||{str(it.get('platformUserName') or it.get('platform_username') or '').strip().lower()}"
+                if k in key_set and k not in found:
+                    found[k] = it
+            if len(found) >= len(key_set):
+                break
+            page_index += 1
+
+        return list(found.values())
+
     async def is_window_open(
         self,
         *,
@@ -643,6 +785,34 @@ class FPBrowserClient:
         rows = [x for x in rows if isinstance(x, dict)]
         return total, rows
 
+    async def _roxy_get_account_list_page(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        workspace_id: int,
+        page_index: int,
+        page_size: int,
+        path: str = "/account/list",
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        rsp = await self._roxy_get(
+            base_url,
+            token,
+            path,
+            {
+                "workspaceId": int(workspace_id),
+                "page_index": int(page_index),
+                "page_size": int(page_size),
+            },
+        )
+        if (rsp or {}).get("code") != 0:
+            raise RuntimeError(f"Roxy {path} 失败：{(rsp or {}).get('msg')}")
+        data = (rsp or {}).get("data") or {}
+        total = int(data.get("total") or 0)
+        rows = data.get("rows") or []
+        rows = [x for x in rows if isinstance(x, dict)]
+        return total, rows
+
     async def _roxy_list_proxies(self, *, base_url: str, token: Optional[str], workspace_id: int) -> List[Dict[str, Any]]:
         base_url = (base_url or "").strip().rstrip("/")
         page_size = 100
@@ -669,6 +839,53 @@ class FPBrowserClient:
             if page_index > 200:
                 break
         return all_rows
+
+    async def _roxy_list_accounts(self, *, base_url: str, token: Optional[str], workspace_id: int) -> List[Dict[str, Any]]:
+        """兼容两套接口：
+        - 新版：GET /account/list
+        - 旧版：GET /browser/account
+        """
+        base_url = (base_url or "").strip().rstrip("/")
+        page_size = 200
+        page_index = 1
+        total = 0
+        all_rows: List[Dict[str, Any]] = []
+        path = "/account/list"
+        fallback_used = False
+        while True:
+            try:
+                t, rows = await self._roxy_get_account_list_page(
+                    base_url=base_url,
+                    token=token,
+                    workspace_id=workspace_id,
+                    page_index=page_index,
+                    page_size=page_size,
+                    path=path,
+                )
+            except Exception:
+                # 首次失败时自动回退到旧接口
+                if (not fallback_used) and path == "/account/list":
+                    path = "/browser/account"
+                    fallback_used = True
+                    continue
+                raise
+            if total <= 0:
+                total = t
+            if not rows:
+                break
+            all_rows.extend(rows)
+            if total > 0 and len(all_rows) >= total:
+                break
+            page_index += 1
+            if page_index > 200:
+                break
+        return all_rows
+
+    async def _roxy_account_batch_create(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._roxy_post(base_url, token, "/account/batch_create", data or {})
+
+    async def _roxy_account_delete(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._roxy_post(base_url, token, "/account/delete", data or {})
 
     async def _roxy_get_workspace_projects_page(
         self,
@@ -751,17 +968,26 @@ class FPBrowserClient:
             return data
         return {}
 
-    def _pick_platform(self, detail: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    def _pick_platform(self, detail: Dict[str, Any]) -> Tuple[Optional[int], Optional[str], Optional[str]]:
         lst = detail.get("windowPlatformList") or []
         if isinstance(lst, list):
             for it in lst:
                 if not isinstance(it, dict):
                     continue
+                aid = it.get("id")
                 u = it.get("platformUserName")
                 url = it.get("platformUrl")
                 if u or url:
-                    return (str(u).strip() if u is not None else None, str(url).strip() if url is not None else None)
-        return (None, None)
+                    try:
+                        account_id = int(aid) if aid not in (None, "", "-") else None
+                    except Exception:
+                        account_id = None
+                    return (
+                        account_id,
+                        str(u).strip() if u is not None else None,
+                        str(url).strip() if url is not None else None,
+                    )
+        return (None, None, None)
 
     async def _roxy_list_windows(
         self,
@@ -817,7 +1043,7 @@ class FPBrowserClient:
             )
             window_name = (detail.get("windowName") or r.get("windowName") or "").strip() or dir_id
 
-            platform_user, platform_url = self._pick_platform(detail)
+            platform_account_id, platform_user, platform_url = self._pick_platform(detail)
             proxy_info = detail.get("proxyInfo") or {}
             if not isinstance(proxy_info, dict):
                 proxy_info = {}
@@ -847,6 +1073,7 @@ class FPBrowserClient:
                 "dirId": dir_id,
                 "windowSortNum": window_sort_num,
                 "windowName": window_name,
+                "platformAccountId": platform_account_id,
                 "platformUserName": platform_user,
                 "platformUrl": platform_url,
                 "lastIp": str(last_ip).strip() if last_ip is not None else None,
@@ -875,6 +1102,7 @@ class FPBrowserClient:
                     "window_key": dir_id,
                     "window_sort_num": window_sort_num,
                     "window_name": window_name,
+                    "platform_account_id": platform_account_id,
                     "platform_account": platform_user,
                     "platform_url": platform_url,
                     "proxy_addr": proxy_addr,

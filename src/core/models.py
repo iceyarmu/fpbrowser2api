@@ -79,6 +79,8 @@ class WindowInfo(BaseModel):
     window_name: str
     platform_account: Optional[str] = None
     platform_url: Optional[str] = None
+    # 本地平台账号库的 account_id（Roxy /account/list rows.id）
+    platform_account_id: Optional[int] = None
 
     # 指纹浏览器侧绑定的代理库 id（RoxyBrowser: proxyInfo.moduleId）
     # 说明：用于 UI 默认选中当前代理、以及统计“代理绑定数”
@@ -128,6 +130,26 @@ class ProxyInfo(BaseModel):
     check_time: Optional[str] = None
     create_time: Optional[str] = None
     update_time: Optional[str] = None
+
+    raw: Optional[Dict[str, Any]] = None
+    synced_at: Optional[datetime] = None
+    deleted: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class PlatformAccount(BaseModel):
+    """平台账号信息（从指纹浏览器同步而来，存本地 DB 便于绑定窗口）。"""
+
+    id: Optional[int] = None  # 本地 DB PK
+    space_pk: int  # BrowserSpace.id
+
+    account_id: int  # 指纹浏览器平台账号 id（Roxy /account/list rows.id）
+    platform_url: Optional[str] = None
+    platform_username: Optional[str] = None
+    platform_password: Optional[str] = None
+    platform_efa: Optional[str] = None
+    platform_remarks: Optional[str] = None
 
     raw: Optional[Dict[str, Any]] = None
     synced_at: Optional[datetime] = None
