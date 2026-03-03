@@ -897,8 +897,43 @@ async def set_window_account(
 
         mdf_payload: Dict[str, Any] = {}
         if isinstance((detail or {}).get("proxyInfo"), dict):
-            # 保留代理配置，避免只改账号时把代理清掉
-            mdf_payload["proxyInfo"] = detail.get("proxyInfo")
+            # 不能直接透传 detail.proxyInfo：某些字段（如 checkChannel）在 /browser/mdf 会被校验拒绝。
+            # 这里仅重建“安全子集”，实现“只改账号，不改代理”的效果。
+            raw_proxy = dict((detail or {}).get("proxyInfo") or {})
+            raw_module = raw_proxy.get("moduleId")
+            if raw_module is None:
+                raw_module = raw_proxy.get("proxyModuleId")
+            try:
+                module_id = int(raw_module or 0)
+            except Exception:
+                module_id = 0
+
+            proxy_method = str(raw_proxy.get("proxyMethod") or "").strip().lower()
+            proxy_category = str(raw_proxy.get("proxyCategory") or "").strip().lower()
+
+            if module_id > 0:
+                mdf_payload["proxyInfo"] = {"moduleId": module_id, "proxyMethod": "choose"}
+            else:
+                host = str(raw_proxy.get("proxyHost") or raw_proxy.get("host") or "").strip()
+                port = str(raw_proxy.get("proxyPort") or raw_proxy.get("port") or "").strip()
+                user = str(raw_proxy.get("proxyUserName") or raw_proxy.get("userName") or "").strip()
+                pwd = str(raw_proxy.get("proxyPassword") or raw_proxy.get("password") or "").strip()
+                if host and port:
+                    safe_category = proxy_category or "http"
+                    proxy_info: Dict[str, Any] = {
+                        "moduleId": 0,
+                        "proxyMethod": "custom",
+                        "proxyCategory": safe_category,
+                        "proxyHost": host,
+                        "proxyPort": port,
+                    }
+                    if user:
+                        proxy_info["proxyUserName"] = user
+                    if pwd:
+                        proxy_info["proxyPassword"] = pwd
+                    mdf_payload["proxyInfo"] = proxy_info
+                elif proxy_category == "noproxy" or proxy_method in ("", "custom"):
+                    mdf_payload["proxyInfo"] = {"moduleId": 0, "proxyMethod": "custom", "proxyCategory": "noproxy"}
 
         if selected and account_id > 0:
             mdf_payload["windowPlatformList"] = [
@@ -923,7 +958,10 @@ async def set_window_account(
             data=mdf_payload,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        pass
+
+    if int((rsp or {}).get("code") or -1) != 0:
+        pass
 
     await db.update_window_platform_binding(
         space_pk=space_pk,

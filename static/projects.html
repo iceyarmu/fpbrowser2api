@@ -1310,7 +1310,7 @@
         const risk = String(p.risk_level || "-").trim() || "-";
         const asnType = String(p.asn_type || "-").trim() || "-";
         const bind = Number(p.binding_count || 0) || 0;
-        return `${ip} / ${country} / 安全:${risk} / 类型:${asnType} / 绑定:${bind}`;
+        return `${ip}|${country}|安全:${risk}-${asnType}|绑定:${bind}`;
       }
 
       function resolveProxyTaskIp(p) {
