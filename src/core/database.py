@@ -2005,7 +2005,14 @@ class Database:
                   s.space_id AS space_id,
                   s.name AS space_name,
                   b.name AS browser_name,
-                  (SELECT COUNT(*) FROM tasks WHERE window_pk = m.window_pk AND status = 'completed') AS success_count
+                  (SELECT COUNT(*) FROM tasks WHERE window_pk = m.window_pk AND status = 'completed') AS success_count,
+                  (
+                    SELECT COUNT(*)
+                    FROM tasks
+                    WHERE window_pk = m.window_pk
+                      AND status = 'completed'
+                      AND datetime(created_at) >= datetime('now', '-24 hours', 'localtime')
+                  ) AS success_count_24h
                 FROM task_type_windows m
                 JOIN windows w ON m.window_pk = w.id
                 JOIN spaces s ON w.space_pk = s.id

@@ -221,11 +221,10 @@
                       <th>空间</th>
                       <th>代理</th>
                       <th>检测代理</th>
-                      <th title="该窗口已完成的任务数">成功任务</th>
+                      <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted" id="statusSortHint">↕</span></th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th>邀请码</th>
-                      <th class="sort-head" id="thStatus" title="点击按连续错误排序">状态 <span class="text-muted" id="statusSortHint">↕</span></th>
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
                       <th>占用</th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
@@ -936,52 +935,43 @@
 
       async function openWindowSuccessModal(windowPk, { windowName = "-", platformAccount = "-" } = {}) {
         if (!windowPk) {
-          toast("window_pk 无效，无法查询成功列表", "error");
+          toast("window_pk 无效，无法查询任务列表", "error");
           return;
         }
-        errorModalTitle.textContent = `成功任务列表 · ${platformAccount || "-"} · ${windowName || "-"} · window_pk=${String(windowPk)}`;
+        errorModalTitle.textContent = `任务列表 · ${platformAccount || "-"} · ${windowName || "-"} · window_pk=${String(windowPk)}`;
         errorModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
         errorModal.show();
 
         try {
-          const params = new URLSearchParams();
-          params.set("limit", "200");
-          params.set("offset", "0");
-          params.set("window_pk", String(windowPk));
-          params.set("status", "completed");
+          const limit = 200;
+          let offset = 0;
+          const items = [];
+          for (let i = 0; i < 100; i++) {
+            const params = new URLSearchParams();
+            params.set("limit", String(limit));
+            params.set("offset", String(offset));
+            params.set("window_pk", String(windowPk));
 
-          const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "加载成功任务列表失败");
+            const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
+            if (!r) return;
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "加载任务列表失败");
 
-          const items = d.items || [];
+            const batch = Array.isArray(d.items) ? d.items : [];
+            if (!batch.length) break;
+            items.push(...batch);
+            offset += batch.length;
+            const total = parseInt(String(d.total || "0"), 10) || 0;
+            if ((total > 0 && items.length >= total) || batch.length < limit) break;
+          }
           if (!items.length) {
-            errorModalBody.innerHTML = `<div class="text-muted small">暂无成功任务</div>`;
+            errorModalBody.innerHTML = `<div class="text-muted small">暂无任务</div>`;
             return;
           }
-          const renderSuccessList = () => {
-            const sorted = sortTasksByCreatedAt(items, ui.successTaskSortDir || "desc");
-            errorModalBody.innerHTML = `
-              <div class="d-flex align-items-center gap-2 mb-2">
-                <span class="text-muted small">排序：</span>
-                <button type="button" class="btn btn-outline-secondary btn-sm" id="btnSuccessSortByCreatedAt">
-                  按时间 ${ui.successTaskSortDir === "asc" ? "↑" : "↓"}
-                </button>
-              </div>
-              ${renderWindowTaskList(sorted, { includeError: false, includePrompt: true })}
-            `;
-            const btn = document.getElementById("btnSuccessSortByCreatedAt");
-            if (btn) {
-              btn.addEventListener("click", () => {
-                ui.successTaskSortDir = ui.successTaskSortDir === "desc" ? "asc" : "desc";
-                renderSuccessList();
-              });
-            }
-          };
-          renderSuccessList();
+          const sorted = sortTasksByCreatedAt(items, "desc");
+          errorModalBody.innerHTML = renderWindowTaskList(sorted, { includeError: true, includePrompt: true });
         } catch (e) {
-          errorModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载成功任务列表失败")}</div>`;
+          errorModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载任务列表失败")}</div>`;
         }
       }
 
@@ -1404,7 +1394,7 @@
       async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -1534,7 +1524,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="14" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="13" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -1542,6 +1532,10 @@
         const items = getSortedMappings();
         body.innerHTML = items.map(m => {
           const cooling = coolingFlagForMapping(m);
+          const success24h = Number(m.success_count_24h ?? m.success_24h_count ?? m.success_24h ?? 0) || 0;
+          const successTotal = Number(m.success_count ?? 0) || 0;
+          const failConsecutive = Number(m.consecutive_errors ?? 0) || 0;
+          const failTotal = Number(m.total_errors ?? 0) || 0;
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -1588,11 +1582,12 @@
             </td>
             <td class="mono">
               <button
-                class="btn btn-link p-0 fw-semibold text-decoration-none mono"
-                title="点击查看该窗口成功任务列表"
-                data-role="successCount"
+                class="btn btn-link p-0 fw-semibold text-decoration-none mono text-start"
+                title="点击查看该窗口任务列表（按时间倒序）"
+                data-role="taskStats"
                 data-mid="${m.id}"
-              >${m.success_count ?? 0}</button>
+              ><span class="text-primary fw-semibold">${success24h}</span>/<span class="text-primary fw-semibold">${successTotal}</span>/<span class="text-danger fw-semibold">${failConsecutive}</span>/<span class="text-danger fw-semibold">${failTotal}</span></button>
+              <div class="small2 text-muted">24h成功/总成功/连续失败/总失败</div>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -1624,26 +1619,6 @@
                 <div class="fw-semibold invite-click" title="点击复制邀请链接" data-role="inviteCode" data-mid="${m.id}">${escapeHtml(m.sora_invite_code || "-")}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新邀请码" data-act="refreshInvite" data-mid="${m.id}">⟳</button>
               </div>
-            </td>
-            <td class="mono cell-stack">
-              <div class="d-flex flex-wrap gap-2 align-items-center">
-                <div>
-                  <button
-                    class="btn btn-link p-0 mono text-start ${((m.total_errors || 0) > 0 || (m.consecutive_errors || 0) > 0) ? "text-danger" : "text-muted"}"
-                    style="text-decoration: none;"
-                    title="点击查看该窗口错误列表"
-                    data-act="viewErrors"
-                    data-mid="${m.id}"
-                >错误：<span class="fw-semibold" data-role="consecutiveErrors" data-mid="${m.id}">${m.consecutive_errors}</span>/<span class="fw-semibold" data-role="totalErrors" data-mid="${m.id}">${m.total_errors}</span></button>
-                </div>
-                <button
-                  class="btn btn-outline-secondary btn-sm py-0 px-1"
-                  title="清空连续错误（重置为 0）"
-                  data-act="resetConsecutiveErrors"
-                  data-mid="${m.id}"
-                >⟲</button>
-              </div>
-              <div>冷却：<span class="fw-semibold" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></div>
             </td>
             <td class="mono">
               <span class="fw-semibold ${cooling ? "text-danger" : "text-success"}" data-role="coolingFlag" data-mid="${m.id}">${cooling}</span>
@@ -1695,8 +1670,8 @@
           });
         });
 
-        // 点击成功任务数：打开单窗口成功列表
-        body.querySelectorAll('[data-role="successCount"]').forEach(el => {
+        // 点击任务统计：打开单窗口任务列表（时间倒序）
+        body.querySelectorAll('[data-role="taskStats"]').forEach(el => {
           el.addEventListener("click", () => {
             const mid = parseInt(el.dataset.mid, 10);
             if (Number.isNaN(mid)) return;
@@ -2249,7 +2224,7 @@
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -2264,7 +2239,7 @@
           state.current = null;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));

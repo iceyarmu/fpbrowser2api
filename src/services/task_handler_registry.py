@@ -94,6 +94,7 @@ CREATE_TASK_HANDLERS: Dict[str, Tuple[str, CreateTaskHandler]] = {
     "force_gen_image": ("示例：强制 gen_image", create_task__force_gen_image),
     "sora_gen_video": ("Sora：生成视频（prompt + first_image_url + duration）", create_task__sora_gen_video),
     "sora_wm_remove": ("Sora：视频去水印（输入 soraUrl 返回 videoUrl）", create_task__sora_gen_video),
+    "sora_plus_register": ("Sora注册Plus）", create_task__sora_gen_video),
 }
 
 
