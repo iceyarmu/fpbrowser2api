@@ -1500,7 +1500,7 @@ async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verif
         await sora_ctx._bring_sora_drafts_to_front(refresh_target=False)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
-
+    print("打开窗口成功")
     return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": True}
 
 

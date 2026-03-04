@@ -1995,7 +1995,7 @@ class SoraSession:
                                         await drafts_page.bring_to_front()
                                     except Exception:
                                         pass
-                                drafts_page = await _keep_only_one_drafts_page(drafts_page)
+                                # drafts_page = await _keep_only_one_drafts_page(drafts_page)
                                 try:
                                     self.pw_ctx.page = drafts_page
                                 except Exception:
