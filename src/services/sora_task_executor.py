@@ -1442,7 +1442,7 @@ class SoraSession:
                 return True
 
             try:
-                still_cf = await self._is_cloudflare_page(page, deep=False)
+                still_cf = await self._is_cloudflare_page(page, deep=True)
             except Exception:
                 still_cf = True
             if not still_cf:
