@@ -1582,7 +1582,7 @@ class SoraSession:
                     if self.pw_ctx.playwright is None:
                         from playwright.async_api import async_playwright  # type: ignore
                         self.pw_ctx.playwright = await async_playwright().start()
-                    self.pw_ctx.browser = await self.pw_ctx.playwright.chromium.connect_over_cdp(raw_ep)
+                    #self.pw_ctx.browser = await self.pw_ctx.playwright.chromium.connect_over_cdp(raw_ep)
                     append_log(log_file, f"[sora][drafts] CDP connected: {raw_ep}")
             except Exception as e:
                 try:
