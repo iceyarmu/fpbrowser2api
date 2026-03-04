@@ -137,7 +137,7 @@ def _build_debug_progress_panel_script() -> str:
       style.id = STYLE_ID;
       style.textContent = `
 #${PANEL_ID}{
-position:fixed;top:16px;left:16px;z-index:2147483647;width:420px;
+position:fixed;top:16px;right:16px;z-index:2147483647;width:420px;
 background:rgba(15,23,42,.95);color:#e5e7eb;border:1px solid rgba(148,163,184,.35);
 border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:12px;font-family:Arial,sans-serif;
 }
@@ -669,97 +669,112 @@ async def _sora_api_upload_file_via_input_fetch_pw(
     if not p.exists():
         raise RuntimeError(f"本地文件不存在：{p}")
 
-    # 关键：必须让页面处于与 upload_url 同源的站点上下文，否则 fetch 可能被 CORS 以 “Failed to fetch” 拦截。
     try:
-        up = urlparse(str(upload_url))
-        up_host = str(up.netloc or "").strip().lower()
-        up_scheme = str(up.scheme or "https").strip().lower() or "https"
+        ctx = page.context
     except Exception:
-        up_host = ""
-        up_scheme = "https"
-    try:
-        cur = urlparse(str(getattr(page, "url", "") or ""))
-        cur_host = str(cur.netloc or "").strip().lower()
-    except Exception:
-        cur_host = ""
+        ctx = None
+    if ctx is None:
+        append_log(log_file, "[sora][upload] page.context unavailable")
+        raise RuntimeError("page.context unavailable")
 
-    if up_host and cur_host != up_host:
+    try:
+        upload_page = await ctx.new_page()
+    except Exception as e:
+        append_log(log_file, f"[sora][upload] new_page failed: {e}")
+        raise RuntimeError(f"new_page 失败：{e}")
+
+    try:
+        # 关键：必须让上传发生在与 upload_url 同源的站点上下文，否则 fetch 可能被 CORS 以 “Failed to fetch” 拦截。
         try:
-            await page.goto(f"{up_scheme}://{up_host}/drafts", wait_until="domcontentloaded")
-        except Exception as e:
-            append_log(log_file, f"[sora][upload] goto same-origin failed: {e}")
+            up = urlparse(str(upload_url))
+            up_host = str(up.netloc or "").strip().lower()
+            up_scheme = str(up.scheme or "https").strip().lower() or "https"
+        except Exception:
+            up_host = ""
+            up_scheme = "https"
 
-    # 注入一个隐藏 input，供 set_input_files 使用
-    input_id = "fp_upload_input"
-    try:
-        await page.evaluate(
-            """(args) => {
-              const { inputId } = args;
-              let el = document.getElementById(inputId);
-              if (!el) {
-                el = document.createElement('input');
-                el.type = 'file';
-                el.id = inputId;
-                el.style.position = 'fixed';
-                el.style.left = '-9999px';
-                el.style.top = '-9999px';
-                document.body.appendChild(el);
+        if up_host:
+            try:
+                await upload_page.goto(f"{up_scheme}://{up_host}/drafts", wait_until="domcontentloaded")
+            except Exception as e:
+                append_log(log_file, f"[sora][upload] goto same-origin failed: {e}")
+
+        # 注入一个隐藏 input，供 set_input_files 使用
+        input_id = "fp_upload_input"
+        try:
+            await upload_page.evaluate(
+                """(args) => {
+                  const { inputId } = args;
+                  let el = document.getElementById(inputId);
+                  if (!el) {
+                    el = document.createElement('input');
+                    el.type = 'file';
+                    el.id = inputId;
+                    el.style.position = 'fixed';
+                    el.style.left = '-9999px';
+                    el.style.top = '-9999px';
+                    document.body.appendChild(el);
+                  }
+                }""",
+                {"inputId": input_id},
+            )
+        except Exception as e:
+            raise RuntimeError(f"注入 file input 失败：{e}")
+
+        try:
+            loc = upload_page.locator(f"#{input_id}")
+            await loc.wait_for(state="attached", timeout=5_000)
+            await loc.set_input_files(str(p), timeout=timeout_ms)
+        except Exception as e:
+            raise RuntimeError(f"set_input_files 失败：{e}")
+
+        ef = extra_fields or {}
+        res = await upload_page.evaluate(
+            """async (args) => {
+              const { uploadUrl, bearer, fieldName, extraFields, inputId } = args;
+              try {
+                const input = document.getElementById(inputId);
+                const file = input && input.files && input.files[0];
+                if (!file) return { status: 0, text: 'missing file' };
+                const fd = new FormData();
+                fd.append(fieldName || 'file', file, file.name || 'file.bin');
+                const extras = extraFields || {};
+                for (const k of Object.keys(extras)) {
+                  try { fd.append(k, String(extras[k])); } catch (e) {}
+                }
+                try {
+                  const resp = await fetch(uploadUrl, {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + bearer },
+                    body: fd,
+                    credentials: 'include',
+                  });
+                  const text = await resp.text();
+                  return { status: resp.status, text };
+                } catch (e) {
+                  return { status: 0, text: 'fetch_error: ' + (e && e.message ? e.message : String(e)) };
+                }
+              } catch (e) {
+                return { status: 0, text: 'js_error: ' + (e && e.message ? e.message : String(e)) };
               }
             }""",
-            {"inputId": input_id},
+            {
+                "uploadUrl": str(upload_url),
+                "bearer": str(bearer_token),
+                "fieldName": str(file_field_name),
+                "extraFields": dict(ef),
+                "inputId": input_id,
+            },
         )
-    except Exception as e:
-        raise RuntimeError(f"注入 file input 失败：{e}")
-
-    try:
-        loc = page.locator(f"#{input_id}")
-        await loc.wait_for(state="attached", timeout=5_000)
-        await loc.set_input_files(str(p), timeout=timeout_ms)
-    except Exception as e:
-        raise RuntimeError(f"set_input_files 失败：{e}")
-
-    ef = extra_fields or {}
-    res = await page.evaluate(
-        """async (args) => {
-          const { uploadUrl, bearer, fieldName, extraFields, inputId } = args;
-          try {
-            const input = document.getElementById(inputId);
-            const file = input && input.files && input.files[0];
-            if (!file) return { status: 0, text: 'missing file' };
-            const fd = new FormData();
-            fd.append(fieldName || 'file', file, file.name || 'file.bin');
-            const extras = extraFields || {};
-            for (const k of Object.keys(extras)) {
-              try { fd.append(k, String(extras[k])); } catch (e) {}
-            }
-            try {
-              const resp = await fetch(uploadUrl, {
-                method: 'POST',
-                headers: { 'Authorization': 'Bearer ' + bearer },
-                body: fd,
-                credentials: 'include',
-              });
-              const text = await resp.text();
-              return { status: resp.status, text };
-            } catch (e) {
-              return { status: 0, text: 'fetch_error: ' + (e && e.message ? e.message : String(e)) };
-            }
-          } catch (e) {
-            return { status: 0, text: 'js_error: ' + (e && e.message ? e.message : String(e)) };
-          }
-        }""",
-        {
-            "uploadUrl": str(upload_url),
-            "bearer": str(bearer_token),
-            "fieldName": str(file_field_name),
-            "extraFields": dict(ef),
-            "inputId": input_id,
-        },
-    )
-    status = int((res or {}).get("status") or 0)
-    text = str((res or {}).get("text") or "")
-    append_log(log_file, f"[sora][upload] url={str(upload_url)!r} status={status} body={safe_trim(text, 600)!r}")
-    return status, text
+        status = int((res or {}).get("status") or 0)
+        text = str((res or {}).get("text") or "")
+        append_log(log_file, f"[sora][upload] url={str(upload_url)!r} status={status} body={safe_trim(text, 600)!r}")
+        return status, text
+    finally:
+        try:
+            await upload_page.close()
+        except Exception:
+            pass
 
 
 async def _sora_api_upload_image_bytes_pw(
@@ -1932,7 +1947,7 @@ class SoraSession:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
                     await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
-                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=60.0)
+                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=45.0)
                     if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
                         await self._push_debug_progress(drafts_page, "Cloudflare 持续存在，准备重启窗口", level="warn")
                         new_page = await self._restart_window_and_restore_single_drafts(
@@ -1946,7 +1961,7 @@ class SoraSession:
                                 u3 = _safe_page_url(drafts_page)
                                 if not u3.startswith(drafts_url):
                                     try:
-                                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                                        await drafts_page.bring_to_front()
                                     except Exception:
                                         pass
                                 drafts_page = await _keep_only_one_drafts_page(drafts_page)
