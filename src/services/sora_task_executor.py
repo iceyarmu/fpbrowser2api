@@ -1578,6 +1578,17 @@ class SoraSession:
             self.pw_ctx.cdp_endpoint = None
         except Exception:
             pass
+
+        try:
+            await asyncio.sleep(15.0)
+        except Exception:
+            pass
+
+        try:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+            await self._bring_sora_drafts_to_front(refresh_target=False)
+        except Exception:
+            pass
         return None
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
