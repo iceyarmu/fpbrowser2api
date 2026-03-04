@@ -1587,7 +1587,8 @@ class SoraSession:
         try:
             await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
             await self._bring_sora_drafts_to_front(refresh_target=False)
-        except Exception:
+        except Exception as e:
+            print(f"ensure_open failed: {e}")
             pass
         return None
 
