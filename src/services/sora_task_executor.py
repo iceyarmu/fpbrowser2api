@@ -1433,6 +1433,7 @@ class SoraSession:
         poll_idle = 1.0
         await self._push_debug_progress(page, "检测到 Cloudflare，开始等待自动放行并尝试点击 checkbox", level="warn")
         reported_click_fail = False
+        consecutive_not_cf = 0
         while time.time() < deadline:
             try:
                 is_closed = bool(getattr(page, "is_closed", lambda: False)())
@@ -1446,8 +1447,20 @@ class SoraSession:
             except Exception:
                 still_cf = True
             if not still_cf:
-                await self._push_debug_progress(page, "Cloudflare 已放行", level="ok")
-                return False
+                consecutive_not_cf += 1
+                if consecutive_not_cf >= 2:
+                    await self._push_debug_progress(page, "Cloudflare 已放行", level="ok")
+                    return False
+                await self._push_debug_progress(page, "Cloudflare 疑似已放行，进行二次确认", level="info")
+                remain = deadline - time.time()
+                if remain <= 0:
+                    break
+                try:
+                    await asyncio.sleep(min(poll_idle, max(0.1, remain)))
+                except Exception:
+                    break
+                continue
+            consecutive_not_cf = 0
 
             # 尝试点击 Cloudflare Turnstile checkbox
             clicked = False
