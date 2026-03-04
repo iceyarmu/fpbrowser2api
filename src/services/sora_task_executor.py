@@ -1973,7 +1973,7 @@ class SoraSession:
                         )
                         if new_page is not None:
                             drafts_page = new_page
-                            await self._push_debug_progress(drafts_page, "窗口重启完成，恢复 drafts 页面", level="ok")
+                            # await self._push_debug_progress(drafts_page, "窗口重启完成，恢复 drafts 页面", level="ok")
                             # 重启窗口后再做一次“全浏览器只保留 drafts”清理，避免残留其它窗口/页面
                             try:
                                 u3 = _safe_page_url(drafts_page)
