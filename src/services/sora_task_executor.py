@@ -1584,10 +1584,12 @@ class SoraSession:
             await drafts_page2.bring_to_front()
         except Exception:
             pass
+        '''
         try:
             await drafts_page2.evaluate("() => { try { window.focus(); } catch(e) {} }")
         except Exception:
             pass
+        '''
         return drafts_page2
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
