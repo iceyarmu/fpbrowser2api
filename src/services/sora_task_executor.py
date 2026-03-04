@@ -1970,6 +1970,11 @@ class SoraSession:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
                     await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
+                    try:
+                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
+                        pass
                     still_cf_after_wait = await self._wait_cloudflare_auto_pass(
                         drafts_page,
                         max_wait_seconds=45.0,
