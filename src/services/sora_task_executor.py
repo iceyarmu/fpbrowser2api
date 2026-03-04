@@ -1983,25 +1983,7 @@ class SoraSession:
                         await self._push_debug_progress(drafts_page, "Cloudflare 持续存在，准备重启窗口", level="warn")
                         new_page = await self._restart_window_and_restore_single_drafts(
                             drafts_url=drafts_url, sora_host=sora_host
-                        )
-                        if new_page is not None:
-                            drafts_page = new_page
-                            # await self._push_debug_progress(drafts_page, "窗口重启完成，恢复 drafts 页面", level="ok")
-                            # 重启窗口后再做一次“全浏览器只保留 drafts”清理，避免残留其它窗口/页面
-                            try:
-                                u3 = _safe_page_url(drafts_page)
-                                if not u3.startswith(drafts_url):
-                                    try:
-                                        await drafts_page.bring_to_front()
-                                    except Exception:
-                                        pass
-                                # drafts_page = await _keep_only_one_drafts_page(drafts_page)
-                                try:
-                                    self.pw_ctx.page = drafts_page
-                                except Exception:
-                                    pass
-                            except Exception:
-                                pass
+                        )   
             except Exception:
                 pass
 
