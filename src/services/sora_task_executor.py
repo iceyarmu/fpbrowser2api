@@ -1564,37 +1564,20 @@ class SoraSession:
                 append_log(log_file, f"[sora][drafts] browser_open result code={code}")
             except Exception:
                 pass
-
-            # 等浏览器完成 Cloudflare 验证并稳定
-            try:
-                await asyncio.sleep(2.0)
-            except Exception:
-                pass
-
-            # 从 browser_open 响应里取 CDP endpoint，直接连接，不走 ensure_open
-            try:
-                data = (rsp or {}).get("data") or {}
-                raw_ep = str(data.get("http") or data.get("ws") or "").strip()
-                if raw_ep:
-                    if not raw_ep.startswith(("http://", "https://", "ws://", "wss://")):
-                        raw_ep = "http://" + raw_ep
-                    self.pw_ctx.cdp_endpoint = raw_ep
-                    if self.pw_ctx.playwright is None:
-                        from playwright.async_api import async_playwright  # type: ignore
-                        # self.pw_ctx.playwright = await async_playwright().start()
-                    #self.pw_ctx.browser = await self.pw_ctx.playwright.chromium.connect_over_cdp(raw_ep)
-                    append_log(log_file, f"[sora][drafts] CDP connected: {raw_ep}")
-            except Exception as e:
-                try:
-                    append_log(log_file, f"[sora][drafts] CDP connect failed: {e}")
-                except Exception:
-                    pass
-
         except Exception as e:
             try:
                 append_log(log_file, f"[sora][drafts] browser_open failed: {e}")
             except Exception:
                 pass
+
+        # 仅重开窗口，不建立 CDP 连接；显式清理句柄，避免误复用旧连接。
+        try:
+            self.pw_ctx.browser = None
+            self.pw_ctx.context = None
+            self.pw_ctx.page = None
+            self.pw_ctx.cdp_endpoint = None
+        except Exception:
+            pass
         return None
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
@@ -1969,12 +1952,6 @@ class SoraSession:
             try:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
-                    try:
-                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-                    except Exception:
-                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
-                        pass
-                    await asyncio.sleep(2.0)
                     await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
                     still_cf_after_wait = await self._wait_cloudflare_auto_pass(
                         drafts_page,
