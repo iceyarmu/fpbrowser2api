@@ -2597,17 +2597,18 @@ class SoraSession:
 
                 log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
+                sentinel_token = None
                 # 先生成 sentinel_token，并填充/更新 oai_device_id
                 async with self._bring_drafts_lock:
                     if self.pw_ctx.page is None:
                         raise RuntimeError("无法获取可用 page（context/pages 不可用或 drafts 打开失败）")
-                    self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
+                    sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
                         self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file
                     )
-                    if not self.sentinel_token:
+                    if not sentinel_token:
                         raise RuntimeError("未能生成 SentinelToken，触发了429")
                     try:
-                        sentinel_data = json.loads(str(self.sentinel_token))
+                        sentinel_data = json.loads(str(sentinel_token))
                         if isinstance(sentinel_data, dict):
                             did = str(sentinel_data.get("id") or "").strip() or None
                             if did:
@@ -2655,13 +2656,13 @@ class SoraSession:
                         orientation=orientation,
                         n_frames=n_frames,
                         bearer_token=str(self.bearer_token or "") or None,
-                        sentinel_token=str(self.sentinel_token or "") or None,
+                        sentinel_token=str(sentinel_token or "") or None,
                         user_agent=str(self.user_agent or "") or None,
                         oai_device_id=str(self.oai_device_id or "") or None,
                     )
                     try:
                         self.bearer_token = auth_state.get("bearer_token") or self.bearer_token
-                        self.sentinel_token = auth_state.get("sentinel_token") or self.sentinel_token
+                        self.sentinel_token = auth_state.get("sentinel_token") or sentinel_token
                         self.user_agent = auth_state.get("user_agent") or self.user_agent
                         self.oai_device_id = auth_state.get("oai_device_id") or self.oai_device_id
                     except Exception:
@@ -2875,7 +2876,7 @@ class SoraSession:
         self._cancel_idle_close()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await asyncio.sleep(5)
-        await self._bring_sora_drafts_to_front()
+        await self._bring_sora_drafts_to_front(refresh_target=False)
         
         log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
         token = self._get_bearer_token_required()
@@ -2964,16 +2965,17 @@ class SoraSession:
         generation_id = str(draft_item.get("id") or "").strip()
         if not generation_id:
             raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
-
+            
+        await self._bring_sora_drafts_to_front()
         async with self._bring_drafts_lock:
-            self.sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file)
-            if not self.sentinel_token:
+            sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file)
+            if not sentinel_token:
                 raise RuntimeError("缺少 sentinel_token，无法发布草稿")
             post_resp = await _sora_api_post_project_y_post_pw(
                 self.pw_ctx.page,
                 target_url=target_url,
                 bearer_token=str(self.bearer_token),
-                sentinel_token=str(self.sentinel_token),
+                sentinel_token=str(sentinel_token),
                 generation_id=generation_id,
                 log_file=log_file,
             )
