@@ -101,6 +101,125 @@ def _normalize_progress(v: Any) -> Optional[float]:
     return fv
 
 
+def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
+    try:
+        s = str(err or "").strip()
+    except Exception:
+        s = ""
+    if not s:
+        return ""
+    if len(s) <= max_len:
+        return s
+    return s[: max(10, max_len - 3)] + "..."
+
+
+def _build_debug_progress_panel_script() -> str:
+    """返回调试进度面板注入脚本（单实例，重复调用只更新内容）。"""
+    return r"""
+(payload) => {
+  try {
+    const PANEL_ID = "__sora_debug_progress_panel__";
+    const STYLE_ID = "__sora_debug_progress_panel_style__";
+    const safe = (v) => (v === null || v === undefined) ? "" : String(v);
+    const data = {
+      title: safe(payload && payload.title),
+      updatedAt: safe(payload && payload.updatedAt),
+      entries: Array.isArray(payload && payload.entries) ? payload.entries.map((x) => ({
+        idx: safe(x && x.idx),
+        ts: safe(x && x.ts),
+        level: safe(x && x.level),
+        text: safe(x && x.text),
+      })) : [],
+    };
+
+    if (!document.getElementById(STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent = `
+#${PANEL_ID}{
+position:fixed;top:16px;left:16px;z-index:2147483647;width:420px;
+background:rgba(15,23,42,.95);color:#e5e7eb;border:1px solid rgba(148,163,184,.35);
+border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:12px;font-family:Arial,sans-serif;
+}
+#${PANEL_ID}.min{width:220px}
+#${PANEL_ID} .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.25)}
+#${PANEL_ID} .ttl{font-weight:700;color:#f8fafc}
+#${PANEL_ID} .btn{background:#334155;color:#f8fafc;border:0;border-radius:8px;padding:4px 8px;cursor:pointer}
+#${PANEL_ID} .bd{padding:10px 12px;max-height:55vh;overflow:auto}
+#${PANEL_ID} .it{padding:7px 8px;margin-bottom:6px;border-radius:8px;background:rgba(30,41,59,.75)}
+#${PANEL_ID} .it.ok{border-left:3px solid #22c55e}
+#${PANEL_ID} .it.warn{border-left:3px solid #f59e0b}
+#${PANEL_ID} .it.err{border-left:3px solid #ef4444}
+#${PANEL_ID} .meta{font-size:11px;color:#94a3b8;margin-bottom:3px}
+#${PANEL_ID} .txt{white-space:pre-wrap;word-break:break-word;line-height:1.4}
+#${PANEL_ID} .fts{padding:8px 12px;border-top:1px solid rgba(148,163,184,.2);color:#94a3b8}
+      `.trim();
+      document.documentElement.appendChild(style);
+    }
+
+    let panel = document.getElementById(PANEL_ID);
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = PANEL_ID;
+      panel.innerHTML = `
+        <div class="hdr">
+          <span class="ttl"></span>
+          <button class="btn tg" type="button">收起</button>
+        </div>
+        <div class="bd"></div>
+        <div class="fts"></div>
+      `;
+      document.documentElement.appendChild(panel);
+    }
+
+    const ttl = panel.querySelector(".ttl");
+    const bd = panel.querySelector(".bd");
+    const fts = panel.querySelector(".fts");
+    const tg = panel.querySelector(".tg");
+    if (!ttl || !bd || !fts || !tg) return;
+
+    ttl.textContent = data.title || "Sora 调试进度";
+    bd.innerHTML = "";
+    for (const e of data.entries) {
+      const item = document.createElement("div");
+      const lv = (e.level || "info").toLowerCase();
+      let cls = "it";
+      if (lv === "ok" || lv === "success") cls += " ok";
+      else if (lv === "warn" || lv === "warning") cls += " warn";
+      else if (lv === "err" || lv === "error" || lv === "fail") cls += " err";
+      item.className = cls;
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `#${safe(e.idx)}  ${safe(e.ts)}  [${lv || "info"}]`;
+
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = safe(e.text);
+
+      item.appendChild(meta);
+      item.appendChild(txt);
+      bd.appendChild(item);
+    }
+
+    fts.textContent = data.updatedAt ? `更新时间: ${data.updatedAt}` : "";
+    try {
+      bd.scrollTop = bd.scrollHeight;
+    } catch (_e1) {}
+
+    tg.onclick = () => {
+      const min = panel.classList.toggle("min");
+      bd.style.display = min ? "none" : "block";
+      fts.style.display = min ? "none" : "block";
+      tg.textContent = min ? "展开" : "收起";
+    };
+  } catch (_e) {
+    // 忽略注入失败，避免影响主流程。
+  }
+}
+"""
+
+
 def _extract_task_obj(payload: Any, task_id: str) -> Optional[Dict[str, Any]]:
     if isinstance(payload, list):
         for it in payload:
@@ -1102,6 +1221,8 @@ class SoraSession:
     oai_device_id: Optional[str] = None
     sentinel_token: Optional[str] = None
     invite_code: Optional[str] = None
+    debug_panel_seq: int = 0
+    debug_panel_entries: list[Dict[str, str]] = field(default_factory=list)
 
     def set_access_token(self, access_token: Optional[str], expires: Optional[str] = None) -> None:
         tok = str(access_token or "").strip() or None
@@ -1117,6 +1238,40 @@ class SoraSession:
         if not tok:
             raise RuntimeError("缺少 access_token（请在任务类型管理页为该窗口转换并保存 access_token）")
         return tok
+
+    async def _push_debug_progress(self, page: Any, text: str, *, level: str = "info") -> None:
+        """向页面插件弹窗写入调试步骤；同一页面始终复用单个面板。"""
+        if page is None:
+            return
+        try:
+            msg = str(text or "").strip()
+        except Exception:
+            msg = ""
+        if not msg:
+            return
+        self.debug_panel_seq += 1
+        now_str = time.strftime("%H:%M:%S")
+        self.debug_panel_entries.append(
+            {
+                "idx": str(self.debug_panel_seq),
+                "ts": now_str,
+                "level": str(level or "info"),
+                "text": msg,
+            }
+        )
+        # 仅保留最近 80 条，避免面板无限增长影响页面性能。
+        if len(self.debug_panel_entries) > 80:
+            self.debug_panel_entries = self.debug_panel_entries[-80:]
+        payload = {
+            "title": "Sora 调试进度",
+            "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "entries": list(self.debug_panel_entries),
+        }
+        script = _build_debug_progress_panel_script()
+        try:
+            await page.evaluate(script, payload)
+        except Exception:
+            pass
 
     async def _is_cloudflare_page(self, page, *, deep: bool = False) -> bool:
         """判断当前页面是否为 Cloudflare 拦截/挑战页。"""
@@ -1191,6 +1346,7 @@ class SoraSession:
                 _log(f"遍历 page.frames 异常: {e}")
 
             if cf_frame is None:
+                await self._push_debug_progress(page, "未发现 Cloudflare checkbox iframe", level="warn")
                 return False
 
             # --- 策略1：frame.locator()（CDP 可穿 closed shadow-root）---
@@ -1199,11 +1355,14 @@ class SoraSession:
                 cnt = await loc.count()
                 _log(f"策略1 locator count={cnt}")
                 if cnt > 0:
+                    await self._push_debug_progress(page, "发现了 checkbox（locator）", level="info")
                     await loc.first.click(force=True, timeout=1500)
                     _log("策略1 locator click 成功")
+                    await self._push_debug_progress(page, "点击 checkbox 成功（locator）", level="ok")
                     return True
             except Exception as e:
                 _log(f"策略1 locator 失败: {e}")
+                await self._push_debug_progress(page, f"点击 checkbox 失败（locator）：{_short_err_msg(e)}", level="warn")
 
             # --- 策略2：坐标法 + 拟人化鼠标移动 ---
             # Cloudflare Turnstile widget 固定为 300×65px
@@ -1218,6 +1377,7 @@ class SoraSession:
                 target_x = box["x"] + 26.0
                 target_y = box["y"] + box["height"] / 2.0
                 _log(f"策略2 目标坐标: ({target_x:.1f}, {target_y:.1f})")
+                await self._push_debug_progress(page, "发现了 checkbox（坐标法）", level="info")
 
                 # 从随机偏移位置平滑移入，模拟人手移动
                 start_x = target_x + random.uniform(-80, 120)
@@ -1228,14 +1388,17 @@ class SoraSession:
                 await asyncio.sleep(random.uniform(0.04, 0.12))
                 await page.mouse.click(target_x, target_y)
                 _log("策略2 坐标点击完成")
+                await self._push_debug_progress(page, "点击 checkbox 成功（坐标法）", level="ok")
                 return True
             except Exception as e:
                 _log(f"策略2 坐标法异常: {e}")
+                await self._push_debug_progress(page, f"点击 checkbox 失败（坐标法）：{_short_err_msg(e)}", level="warn")
 
         except Exception as e:
             _log(f"顶层异常: {e}")
 
         _log("所有策略均未成功点击 checkbox")
+        await self._push_debug_progress(page, "checkbox 点击失败：所有策略已尝试", level="error")
         return False
 
     async def _wait_cloudflare_auto_pass(self, page, *, max_wait_seconds: float = 10.0) -> bool:
@@ -1253,6 +1416,8 @@ class SoraSession:
         # 两档等待：点击后给 Cloudflare 3s 处理时间；未点击时 1s 轮询
         poll_after_click = 6.0
         poll_idle = 1.0
+        await self._push_debug_progress(page, "检测到 Cloudflare，开始等待自动放行并尝试点击 checkbox", level="warn")
+        reported_click_fail = False
         while time.time() < deadline:
             try:
                 is_closed = bool(getattr(page, "is_closed", lambda: False)())
@@ -1266,6 +1431,7 @@ class SoraSession:
             except Exception:
                 still_cf = True
             if not still_cf:
+                await self._push_debug_progress(page, "Cloudflare 已放行", level="ok")
                 return False
 
             # 尝试点击 Cloudflare Turnstile checkbox
@@ -1274,6 +1440,11 @@ class SoraSession:
                 clicked = await self._try_click_cloudflare_checkbox(page)
             except Exception:
                 pass
+            if clicked:
+                await self._push_debug_progress(page, "checkbox 已点击，等待 Cloudflare 验证结果", level="info")
+            elif not reported_click_fail:
+                await self._push_debug_progress(page, "尚未成功点击 checkbox，继续重试", level="warn")
+                reported_click_fail = True
 
             remain = deadline - time.time()
             if remain <= 0:
@@ -1541,7 +1712,9 @@ class SoraSession:
                 has_prompt = False
 
         if not has_prompt:
+            await self._push_debug_progress(page, "未发现 Log in 提示", level="info")
             return False
+        await self._push_debug_progress(page, "发现了 Log in 提示", level="info")
 
         # 点击 Log in（按钮优先，其次链接；最后 CSS 兜底）
         try:
@@ -1549,14 +1722,18 @@ class SoraSession:
                 try:
                     btn = page.get_by_role("button", name="Log in")
                     await btn.first.click(timeout=3000)
+                    await self._push_debug_progress(page, "点击 Log in 成功（button）", level="ok")
                     return True
-                except Exception:
+                except Exception as e:
+                    await self._push_debug_progress(page, f"点击 Log in 失败（button）：{_short_err_msg(e)}", level="warn")
                     pass
                 try:
                     link = page.get_by_role("link", name="Log in")
                     await link.first.click(timeout=3000)
+                    await self._push_debug_progress(page, "点击 Log in 成功（link）", level="ok")
                     return True
-                except Exception:
+                except Exception as e:
+                    await self._push_debug_progress(page, f"点击 Log in 失败（link）：{_short_err_msg(e)}", level="warn")
                     pass
         except Exception:
             pass
@@ -1564,8 +1741,10 @@ class SoraSession:
         try:
             loc2 = page.locator('button:has-text("Log in"), a:has-text("Log in")')
             await loc2.first.click(timeout=3000)
+            await self._push_debug_progress(page, "点击 Log in 成功（css fallback）", level="ok")
             return True
-        except Exception:
+        except Exception as e:
+            await self._push_debug_progress(page, f"点击 Log in 失败（css fallback）：{_short_err_msg(e)}", level="error")
             return False
 
     async def _bring_sora_drafts_to_front(self, refresh_target=True) -> None:
@@ -1696,6 +1875,8 @@ class SoraSession:
                     # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
                     pass
 
+            await self._push_debug_progress(drafts_page, "已选定 drafts 页面，准备清理其它页面", level="info")
+
             # 关键需求：确保整个指纹浏览器实例只保留 drafts_page
             drafts_page = await _keep_only_one_drafts_page(drafts_page)
 
@@ -1716,7 +1897,9 @@ class SoraSession:
             if refresh_target:
                 try:
                     await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    await self._push_debug_progress(drafts_page, "drafts 页面刷新完成", level="ok")
                 except Exception:
+                    await self._push_debug_progress(drafts_page, "drafts 页面刷新失败（将继续流程）", level="warn")
                     pass
 
                 try:
@@ -1731,8 +1914,15 @@ class SoraSession:
                 clicked = await self._maybe_click_login_button_if_prompted(drafts_page)
                 if clicked:
                     try:
-                        await asyncio.sleep(0.8)
+                        await asyncio.sleep(3.0)
+                        
                     except Exception:
+                        pass
+
+                    try:
+                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
                         pass
             except Exception:
                 pass
@@ -1741,13 +1931,16 @@ class SoraSession:
             try:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
+                    await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
                     still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=60.0)
                     if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
+                        await self._push_debug_progress(drafts_page, "Cloudflare 持续存在，准备重启窗口", level="warn")
                         new_page = await self._restart_window_and_restore_single_drafts(
                             drafts_url=drafts_url, sora_host=sora_host
                         )
                         if new_page is not None:
                             drafts_page = new_page
+                            await self._push_debug_progress(drafts_page, "窗口重启完成，恢复 drafts 页面", level="ok")
                             # 重启窗口后再做一次“全浏览器只保留 drafts”清理，避免残留其它窗口/页面
                             try:
                                 u3 = _safe_page_url(drafts_page)
