@@ -413,7 +413,6 @@ async def _do_chatgpt_google_login(
     await asyncio.sleep(1)
     await progress_cb(58, {"stage": "chatgpt_page_loaded", "url": str(page.url or "")})
 
-    await asyncio.sleep(3)
     prefetched_totp_code = await _generate_fresh_totp_code(platform_efa, previous_totp_code)
     copied = _copy_to_system_clipboard(prefetched_totp_code)
     await progress_cb(
