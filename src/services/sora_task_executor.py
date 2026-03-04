@@ -1696,11 +1696,13 @@ class SoraSession:
                 return None
 
     async def _maybe_click_login_button_if_prompted(self, page) -> bool:
+        has_login_button = False
         """若页面出现未登录提示，则尝试点击 'Log in' 按钮/链接。"""
         if page is None:
-            return False
+            return False, has_login_button
         phrase = "Log in to create and edit images and videos"
         has_prompt = False
+        
 
         # 优先用 locator（更快），不行再用 HTML 兜底
         try:
@@ -1728,8 +1730,9 @@ class SoraSession:
 
         if not has_prompt:
             await self._push_debug_progress(page, "未发现 Log in 提示", level="info")
-            return False
+            return False, has_login_button
         await self._push_debug_progress(page, "发现了 Log in 提示", level="info")
+        has_login_button = True
 
         # 点击 Log in（按钮优先，其次链接；最后 CSS 兜底）
         try:
@@ -1738,7 +1741,7 @@ class SoraSession:
                     btn = page.get_by_role("button", name="Log in")
                     await btn.first.click(timeout=3000)
                     await self._push_debug_progress(page, "点击 Log in 成功（button）", level="ok")
-                    return True
+                    return True, has_login_button
                 except Exception as e:
                     await self._push_debug_progress(page, f"点击 Log in 失败（button）：{_short_err_msg(e)}", level="warn")
                     pass
@@ -1746,7 +1749,7 @@ class SoraSession:
                     link = page.get_by_role("link", name="Log in")
                     await link.first.click(timeout=3000)
                     await self._push_debug_progress(page, "点击 Log in 成功（link）", level="ok")
-                    return True
+                    return True, has_login_button
                 except Exception as e:
                     await self._push_debug_progress(page, f"点击 Log in 失败（link）：{_short_err_msg(e)}", level="warn")
                     pass
@@ -1757,10 +1760,10 @@ class SoraSession:
             loc2 = page.locator('button:has-text("Log in"), a:has-text("Log in")')
             await loc2.first.click(timeout=3000)
             await self._push_debug_progress(page, "点击 Log in 成功（css fallback）", level="ok")
-            return True
+            return True, has_login_button
         except Exception as e:
             await self._push_debug_progress(page, f"点击 Log in 失败（css fallback）：{_short_err_msg(e)}", level="error")
-            return False
+            return False, has_login_button
 
     async def _bring_sora_drafts_to_front(self, refresh_target=True) -> None:
         """将 Sora drafts 页面置前，并尽量确保整个指纹浏览器实例只保留一个 drafts 页面。
@@ -1926,11 +1929,10 @@ class SoraSession:
 
             # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
             try:
-                clicked = await self._maybe_click_login_button_if_prompted(drafts_page)
+                clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
                 if clicked:
                     try:
                         await asyncio.sleep(3.0)
-                        
                     except Exception:
                         pass
 
@@ -1939,6 +1941,20 @@ class SoraSession:
                     except Exception:
                         # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
                         pass
+                
+                if not clicked and has_login_button:
+                    await self._push_debug_progress(drafts_page, "重新再试一次点击login", level="ok")
+                    try:
+                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
+                        pass
+
+                    clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
+                    if clicked:
+                        await self._push_debug_progress(drafts_page, "重新再试一次点击login成功", level="ok")
+                    else:
+                        await self._push_debug_progress(drafts_page, "重新再试一次点击login失败", level="error")
             except Exception:
                 pass
 
