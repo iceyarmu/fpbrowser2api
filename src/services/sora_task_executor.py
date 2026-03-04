@@ -1520,7 +1520,14 @@ class SoraSession:
         return True
 
     async def _restart_window_and_restore_single_drafts(self, *, drafts_url: str, sora_host: str) -> Any:
-        """关闭并重开指纹浏览器窗口（仅打开窗口，不连接 CDP/不查找页面）。"""
+        """关闭并重开指纹浏览器窗口，重连 CDP（browser+context），但不恢复任何 page。
+
+        流程：
+        1. 关闭当前 CDP 连接（不调用 browser_close，避免把窗口也关了）
+        2. 仅调用 browser_open 重新打开指纹浏览器窗口（Cloudflare 在此阶段自动通过）
+        3. 稍作等待后，通过 ensure_open(require_page=False) 重新连接 CDP，
+           建立 browser + context，但不查找/恢复任何 page，避免再次触发 Cloudflare。
+        """
         log_file = (
             Path(self.monitor_log_path)
             if self.monitor_log_path
@@ -1531,20 +1538,27 @@ class SoraSession:
         except Exception:
             pass
 
+        # 断开旧 CDP 连接句柄（不调 fp_client.browser_close，窗口本身不关闭）
         try:
-            await self.pw_ctx.close()
+            br = self.pw_ctx.browser
+            self.pw_ctx.browser = None
+            self.pw_ctx.context = None
+            self.pw_ctx.page = None
+            self.pw_ctx.cdp_endpoint = None
+            if br is not None:
+                try:
+                    await br.close()
+                except Exception:
+                    pass
         except Exception:
             pass
+
         try:
             await asyncio.sleep(0.5)
         except Exception:
             pass
 
-        try:
-            append_log(log_file, "[sora][drafts] reopen window only: skip cdp connect/page probing")
-        except Exception:
-            pass
-
+        # 仅调 browser_open 重新打开窗口；此步骤会触发指纹浏览器自身完成 Cloudflare 验证。
         try:
             rsp = await self.pw_ctx.fp_client.browser_open(
                 vendor=self.pw_ctx.vendor,
@@ -1570,14 +1584,34 @@ class SoraSession:
             except Exception:
                 pass
 
-        # 仅重开窗口，不建立 CDP 连接；显式清理句柄，避免误复用旧连接。
+        # 给浏览器一点时间完成 Cloudflare 验证后稳定
         try:
-            self.pw_ctx.browser = None
-            self.pw_ctx.context = None
-            self.pw_ctx.page = None
-            self.pw_ctx.cdp_endpoint = None
+            await asyncio.sleep(2.0)
         except Exception:
             pass
+
+        # 重连 CDP：建立 browser + context，但不操作 page（require_page=False）
+        try:
+            append_log(log_file, "[sora][drafts] reconnecting CDP (require_page=False)")
+        except Exception:
+            pass
+        try:
+            await self.pw_ctx.ensure_open(
+                args=self.browser_open_args,
+                force_open=False,
+                headless=self.browser_headless,
+                require_page=False,
+            )
+            try:
+                append_log(log_file, "[sora][drafts] CDP reconnected, browser+context ready, page not touched")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                append_log(log_file, f"[sora][drafts] CDP reconnect failed: {e}")
+            except Exception:
+                pass
+
         return None
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
