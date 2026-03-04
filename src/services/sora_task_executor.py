@@ -1974,6 +1974,7 @@ class SoraSession:
                     except Exception:
                         # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
                         pass
+                    await asyncio.sleep(2.0)
                     await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
                     still_cf_after_wait = await self._wait_cloudflare_auto_pass(
                         drafts_page,
