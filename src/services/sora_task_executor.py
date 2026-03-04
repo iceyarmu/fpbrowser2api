@@ -1992,6 +1992,13 @@ class SoraSession:
             try:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
+                    try:
+                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
+                        pass
+                    await asyncio.sleep(3.0)
+                    
                     await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
                     still_cf_after_wait = await self._wait_cloudflare_auto_pass(
                         drafts_page,
@@ -2966,19 +2973,44 @@ class SoraSession:
         if not generation_id:
             raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
             
-        await self._bring_sora_drafts_to_front()
-        async with self._bring_drafts_lock:
-            sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(self.pw_ctx.page, device_id=self.oai_device_id, log_file=log_file)
-            if not sentinel_token:
-                raise RuntimeError("缺少 sentinel_token，无法发布草稿")
-            post_resp = await _sora_api_post_project_y_post_pw(
-                self.pw_ctx.page,
-                target_url=target_url,
-                bearer_token=str(self.bearer_token),
-                sentinel_token=str(sentinel_token),
-                generation_id=generation_id,
-                log_file=log_file,
-            )
+        max_publish_attempts = 3
+        publish_retry_delay_seconds = 1.5
+        post_resp: Dict[str, Any] = {}
+        for publish_attempt in range(1, max_publish_attempts + 1):
+            try:
+                await self._bring_sora_drafts_to_front(refresh_target=True)
+                await asyncio.sleep(publish_retry_delay_seconds)
+                async with self._bring_drafts_lock:
+                    sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
+                        self.pw_ctx.page,
+                        device_id=self.oai_device_id,
+                        log_file=log_file,
+                    )
+                    if not sentinel_token:
+                        raise RuntimeError("缺少 sentinel_token，无法发布草稿")
+                    post_resp = await _sora_api_post_project_y_post_pw(
+                        self.pw_ctx.page,
+                        target_url=target_url,
+                        bearer_token=str(self.bearer_token),
+                        sentinel_token=str(sentinel_token),
+                        generation_id=generation_id,
+                        log_file=log_file,
+                    )
+                break
+            except Exception as e:
+                err_msg = str(e or "")
+                should_retry = (
+                    publish_attempt < max_publish_attempts
+                    and "fetch_json 解析失败：status=" in err_msg
+                )
+                append_log(
+                    log_file,
+                    f"[sora][publish] attempt={publish_attempt}/{max_publish_attempts} failed "
+                    f"retry={bool(should_retry)} err={safe_trim(err_msg, 300)!r}",
+                )
+                if not should_retry:
+                    raise
+                await asyncio.sleep(float(publish_retry_delay_seconds))
             
         
         post_id = ""
