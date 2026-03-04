@@ -19,11 +19,13 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import os
 import subprocess
 import struct
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from ..core.database import Database
 from .playwright_broswer_context import get_or_create_ctx, pick_working_page_from_context
@@ -32,6 +34,74 @@ from .task_executor_types import ProgressCB
 
 def _s(v: Any) -> str:
     return str(v or "").strip()
+
+
+def _safe_hostname(url: str) -> str:
+    try:
+        return str(urlparse(str(url or "").strip()).hostname or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _main_domain(hostname: str) -> str:
+    host = str(hostname or "").strip().lower().strip(".")
+    if not host:
+        return ""
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return host
+    second_level_markers = {"ac", "co", "com", "edu", "gov", "net", "org"}
+    country_tlds = {"au", "br", "cn", "hk", "jp", "kr", "mx", "nz", "sg", "tw", "uk", "za"}
+    if len(parts[-1]) == 2 and parts[-1] in country_tlds and parts[-2] in second_level_markers and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _same_main_domain(url_a: str, url_b: str) -> bool:
+    host_a = _safe_hostname(url_a)
+    host_b = _safe_hostname(url_b)
+    if not host_a or not host_b:
+        return False
+    return _main_domain(host_a) == _main_domain(host_b)
+
+
+async def _pick_platform_domain_page(context: Any, *, platform_url: str) -> Any:
+    """优先选与 platform_url 主域名一致的已开页面；找不到时回退可用页面。"""
+    target_host = _safe_hostname(platform_url)
+    target_url = str(platform_url or "").strip().lower()
+    best = None
+    best_score = -1
+    try:
+        pages = list(getattr(context, "pages", []) or [])
+    except Exception:
+        pages = []
+    for p in pages:
+        try:
+            if bool(getattr(p, "is_closed", lambda: False)()):
+                continue
+        except Exception:
+            continue
+        try:
+            page_url = str(getattr(p, "url", "") or "").strip()
+        except Exception:
+            page_url = ""
+        if not _same_main_domain(page_url, target_url):
+            continue
+        page_url_lc = page_url.lower()
+        page_host = _safe_hostname(page_url)
+        score = 0
+        if page_url_lc.startswith(("http://", "https://")):
+            score += 10
+        if target_host and page_host == target_host:
+            score += 5
+        if target_url and page_url_lc.startswith(target_url):
+            score += 3
+        if score > best_score:
+            best_score = score
+            best = p
+    if best is not None:
+        return best
+    return await pick_working_page_from_context(context)
 
 
 GOOGLE_PASSWORD_PAGE_URL = "https://myaccount.google.com/signinoptions/password?continue=https%3A%2F%2Fmyaccount.google.com%2Fsecurity"
@@ -337,7 +407,7 @@ async def _do_chatgpt_google_login(
     previous_totp_code: str,
     timeout_ms: int,
     progress_cb: ProgressCB,
-) -> None:
+) -> Dict[str, Any]:
     # 你指定的节点：等 3 秒后预先生成 2FA code，并写入系统剪贴板，方便手动 Ctrl+V。
     await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
     await asyncio.sleep(1)
@@ -351,8 +421,286 @@ async def _do_chatgpt_google_login(
         {
             "stage": "prefetch_2fa_code_ready",
             "copied_to_clipboard": copied,
+            "prefetched_totp_code": prefetched_totp_code,
         },
     )
+    return {"prefetched_totp_code": prefetched_totp_code, "copied_to_clipboard": copied}
+
+
+def _build_copy_panel_script() -> str:
+    """返回用于注入页面悬浮复制面板的 JS。"""
+    return r"""
+(payload) => {
+  try {
+    const PANEL_ID = "__sora_plus_copy_panel__";
+    const STYLE_ID = "__sora_plus_copy_panel_style__";
+    const safe = (v) => (v === null || v === undefined) ? "" : String(v);
+
+    const state = {
+      title: safe(payload && payload.title),
+      rows: Array.isArray(payload && payload.rows) ? payload.rows.map((x) => ({
+        key: safe(x && x.key),
+        label: safe(x && x.label),
+        value: safe(x && x.value),
+      })) : [],
+      updatedAt: safe(payload && payload.updatedAt),
+      totpSecret: safe(payload && payload.totpSecret),
+    };
+    window.__SORA_PLUS_COPY_PANEL_STATE__ = state;
+
+    if (!document.getElementById(STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent = `
+#${PANEL_ID}{
+position:fixed;top:16px;right:16px;z-index:2147483647;width:380px;
+background:rgba(17,24,39,.96);color:#e5e7eb;border:1px solid rgba(148,163,184,.35);
+border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:12px;font-family:Arial,sans-serif;
+}
+#${PANEL_ID}.min{width:180px}
+#${PANEL_ID} .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.25)}
+#${PANEL_ID} .ttl{font-weight:700;color:#f8fafc}
+#${PANEL_ID} .btn{background:#334155;color:#f8fafc;border:0;border-radius:8px;padding:4px 8px;cursor:pointer}
+#${PANEL_ID} .bd{padding:10px 12px;max-height:55vh;overflow:auto}
+#${PANEL_ID} .row{display:grid;grid-template-columns:86px 1fr auto;gap:6px;align-items:start;margin-bottom:8px}
+#${PANEL_ID} .k{color:#94a3b8;line-height:1.5}
+#${PANEL_ID} .v{white-space:pre-wrap;word-break:break-word;background:rgba(15,23,42,.7);padding:6px 8px;border-radius:8px}
+#${PANEL_ID} .ops{display:flex;align-items:center;gap:6px}
+#${PANEL_ID} .cp{background:#2563eb}
+#${PANEL_ID} .gen{background:#16a34a}
+#${PANEL_ID} .fts{padding:8px 12px;border-top:1px solid rgba(148,163,184,.2);color:#94a3b8}
+      `.trim();
+      document.documentElement.appendChild(style);
+    }
+
+    const ensurePanel = () => {
+      let panel = document.getElementById(PANEL_ID);
+      if (!panel) {
+        panel = document.createElement("div");
+        panel.id = PANEL_ID;
+        panel.innerHTML = `
+          <div class="hdr">
+            <span class="ttl"></span>
+            <button class="btn tg" type="button">收起</button>
+          </div>
+          <div class="bd"></div>
+          <div class="fts"></div>
+        `;
+        document.documentElement.appendChild(panel);
+      }
+      return panel;
+    };
+
+    const copyText = async (text) => {
+      const v = safe(text);
+      if (!v) return false;
+      try {
+        await navigator.clipboard.writeText(v);
+        return true;
+      } catch (_e1) {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = v;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          const ok = document.execCommand("copy");
+          document.body.removeChild(ta);
+          return !!ok;
+        } catch (_e2) {
+          return false;
+        }
+      }
+    };
+
+    const decodeBase32 = (input) => {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      const clean = safe(input).replace(/[\s-]/g, "").toUpperCase();
+      if (!clean) return new Uint8Array(0);
+      let bits = "";
+      for (const ch of clean) {
+        const val = alphabet.indexOf(ch);
+        if (val < 0) continue;
+        bits += val.toString(2).padStart(5, "0");
+      }
+      const out = [];
+      for (let i = 0; i + 8 <= bits.length; i += 8) {
+        out.push(parseInt(bits.slice(i, i + 8), 2));
+      }
+      return new Uint8Array(out);
+    };
+
+    const generateTotpCode = async (secret) => {
+      const keyBytes = decodeBase32(secret);
+      if (!keyBytes.length || !window.crypto || !window.crypto.subtle) {
+        return "";
+      }
+      const period = 30;
+      const counter = Math.floor(Date.now() / 1000 / period);
+      const counterBuffer = new ArrayBuffer(8);
+      const view = new DataView(counterBuffer);
+      view.setUint32(0, Math.floor(counter / 0x100000000), false);
+      view.setUint32(4, counter >>> 0, false);
+      const cryptoKey = await window.crypto.subtle.importKey(
+        "raw",
+        keyBytes,
+        { name: "HMAC", hash: "SHA-1" },
+        false,
+        ["sign"]
+      );
+      const sig = new Uint8Array(await window.crypto.subtle.sign("HMAC", cryptoKey, counterBuffer));
+      const offset = sig[sig.length - 1] & 0x0f;
+      const binCode = ((sig[offset] & 0x7f) << 24) | ((sig[offset + 1] & 0xff) << 16) | ((sig[offset + 2] & 0xff) << 8) | (sig[offset + 3] & 0xff);
+      return String(binCode % 1000000).padStart(6, "0");
+    };
+
+    const render = () => {
+      const panel = ensurePanel();
+      const ttl = panel.querySelector(".ttl");
+      const bd = panel.querySelector(".bd");
+      const fts = panel.querySelector(".fts");
+      const tg = panel.querySelector(".tg");
+      if (!ttl || !bd || !fts || !tg) return;
+
+      ttl.textContent = state.title || "Sora Plus 数据面板";
+      bd.innerHTML = "";
+      for (const row of state.rows) {
+        const wrap = document.createElement("div");
+        wrap.className = "row";
+        const key = document.createElement("div");
+        key.className = "k";
+        key.textContent = row.label || row.key || "-";
+        const val = document.createElement("div");
+        val.className = "v";
+        val.textContent = row.value || "";
+        const ops = document.createElement("div");
+        ops.className = "ops";
+        if (row.key === "prefetched_totp_code") {
+          const genBtn = document.createElement("button");
+          genBtn.className = "btn gen";
+          genBtn.type = "button";
+          genBtn.textContent = "生成";
+          genBtn.onclick = async () => {
+            try {
+              const code = await generateTotpCode(state.totpSecret || "");
+              if (!code) {
+                genBtn.textContent = "失败";
+                setTimeout(() => { genBtn.textContent = "生成"; }, 1200);
+                return;
+              }
+              row.value = code;
+              val.textContent = code;
+              genBtn.textContent = "已生成";
+              setTimeout(() => { genBtn.textContent = "生成"; }, 1200);
+            } catch (_e3) {
+              genBtn.textContent = "失败";
+              setTimeout(() => { genBtn.textContent = "生成"; }, 1200);
+            }
+          };
+          ops.appendChild(genBtn);
+        }
+        const btn = document.createElement("button");
+        btn.className = "btn cp";
+        btn.type = "button";
+        btn.textContent = "复制";
+        btn.onclick = async () => {
+          const ok = await copyText(row.value || "");
+          btn.textContent = ok ? "已复制" : "失败";
+          setTimeout(() => { btn.textContent = "复制"; }, 1200);
+        };
+        ops.appendChild(btn);
+        wrap.appendChild(key);
+        wrap.appendChild(val);
+        wrap.appendChild(ops);
+        bd.appendChild(wrap);
+      }
+
+      fts.textContent = state.updatedAt ? `更新时间: ${state.updatedAt}` : "";
+      tg.onclick = () => {
+        const min = panel.classList.toggle("min");
+        bd.style.display = min ? "none" : "block";
+        fts.style.display = min ? "none" : "block";
+        tg.textContent = min ? "展开" : "收起";
+      };
+    };
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", render, { once: true });
+    } else {
+      render();
+    }
+  } catch (_e) {
+    // 忽略注入失败，避免影响主流程。
+  }
+}
+"""
+
+
+async def _show_sticky_copy_panel(
+    context: Any,
+    page: Any,
+    *,
+    panel_data: Dict[str, Any],
+    progress_cb: ProgressCB,
+) -> None:
+    """在当前页和后续新页面注入常驻复制面板。"""
+    script = _build_copy_panel_script()
+    try:
+        await context.add_init_script(script=script, arg=panel_data)
+    except Exception:
+        # 某些场景 add_init_script 可能受限，降级为仅当前页注入。
+        pass
+    pages = []
+    try:
+        pages = list(getattr(context, "pages", []) or [])
+    except Exception:
+        pages = []
+    if page not in pages:
+        pages.append(page)
+    shown_count = 0
+    failed_count = 0
+    for p in pages:
+        try:
+            await p.evaluate(script, panel_data)
+            shown_count += 1
+        except Exception:
+            failed_count += 1
+    try:
+        await progress_cb(99, {"stage": "copy_panel_shown", "shown_count": shown_count, "failed_count": failed_count})
+    except Exception:
+        await progress_cb(99, {"stage": "copy_panel_show_failed"})
+
+
+def _stringify_panel_value(v: Any) -> str:
+    """将任意 payload 值转成适合面板展示的字符串。"""
+    if v is None:
+        return ""
+    if isinstance(v, (str, int, float, bool)):
+        return str(v)
+    try:
+        # 非基础类型使用多行 JSON，便于保留并展示结构化内容的换行。
+        return json.dumps(v, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return str(v)
+
+
+def _build_payload_rows(payload: Dict[str, Any]) -> list[Dict[str, str]]:
+    """把 payload 的所有顶层字段转换为面板行。"""
+    rows: list[Dict[str, str]] = []
+    if not isinstance(payload, dict):
+        return rows
+    for k in sorted(payload.keys(), key=lambda x: str(x)):
+        key = str(k)
+        rows.append(
+            {
+                "key": f"payload.{key}",
+                "label": f"Payload.{key}",
+                "value": _stringify_panel_value(payload.get(k)),
+            }
+        )
+    return rows
 
 
 async def _navigate_to_password_page(page: Any, *, timeout_ms: int, progress_cb: ProgressCB) -> None:
@@ -439,7 +787,7 @@ async def sora_plus_register(
     timeout_seconds: float,
 ) -> Dict[str, Any]:
     """打开平台页 -> Google 登录 -> 跳转 ChatGPT -> Continue with Google 登录。"""
-    _ = payload or {}
+    source_payload = payload if isinstance(payload, dict) else {}
     timeout_ms = int(max(10_000, min(float(timeout_seconds) * 1000, 120_000)))
 
     await progress_cb(1, {"stage": "resolve_credentials", "window_pk": int(window_pk)})
@@ -462,13 +810,8 @@ async def sora_plus_register(
     async with ctx.driver_lock:
         if ctx.context is None:
             raise RuntimeError("浏览器上下文不可用：context is None")
-        page = await pick_working_page_from_context(ctx.context)
+        page = await _pick_platform_domain_page(ctx.context, platform_url=platform_url)
         ctx.page = page
-
-        try:
-            await page.bring_to_front()
-        except Exception:
-            pass
 
         await page.goto(platform_url, wait_until="domcontentloaded", timeout=timeout_ms)
         await progress_cb(10, {"stage": "page_loaded", "url": platform_url})
@@ -490,7 +833,7 @@ async def sora_plus_register(
                 progress_cb=progress_cb,
             )
 
-        await _do_chatgpt_google_login(
+        chatgpt_login_result = await _do_chatgpt_google_login(
             page,
             platform_username=platform_username,
             platform_efa=platform_efa,
@@ -499,11 +842,31 @@ async def sora_plus_register(
             progress_cb=progress_cb,
         )
 
+        panel_data = {
+            "title": "Sora Plus 注册数据",
+            "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "rows": [
+                {"key": "platform_username", "label": "账号邮箱", "value": platform_username},
+                {"key": "platform_password", "label": "平台密码", "value": platform_password},
+                {
+                    "key": "prefetched_totp_code",
+                    "label": "当前2FA验证码",
+                    "value": str((chatgpt_login_result or {}).get("prefetched_totp_code") or ""),
+                },
+                {"key": "new_password_value", "label": "新密码模板", "value": NEW_PASSWORD_VALUE},
+            ]
+            + _build_payload_rows(source_payload),
+            "totpSecret": platform_efa,
+        }
+        await _show_sticky_copy_panel(ctx.context, page, panel_data=panel_data, progress_cb=progress_cb)
+
     return {
         "ok": True,
         "stage": "chatgpt_google_login_done",
         "platform_url": platform_url,
         "platform_username": platform_username,
         "already_logged_in": already_logged_in,
+        "copy_panel_enabled": True,
+        "prefetched_totp_code": str((chatgpt_login_result or {}).get("prefetched_totp_code") or ""),
         "message": "已完成 Google 登录并通过 ChatGPT Continue with Google 登录",
     }

@@ -232,8 +232,33 @@ class PlaywrightBrowserContext:
         self.last_used_at = time.time()
 
         # 优先走“复用已连接的 browser/context”。
+        # 但如果用户手动关掉了指纹浏览器，缓存中的句柄会变成“非空但失效”，
+        # 这里先做活性检查，避免后续在 new_page/goto 时报 TargetClosedError。
         if self.browser is not None and self.context is not None:
-            return
+            browser_ok = True
+            try:
+                is_connected_fn = getattr(self.browser, "is_connected", None)
+                if callable(is_connected_fn):
+                    browser_ok = bool(is_connected_fn())
+            except Exception:
+                browser_ok = False
+
+            context_ok = True
+            if browser_ok:
+                try:
+                    _ = list(getattr(self.context, "pages", []) or [])
+                except Exception:
+                    context_ok = False
+            else:
+                context_ok = False
+
+            if browser_ok and context_ok:
+                return
+
+            # 失效句柄：清空后走下面的重连流程
+            self.browser = None
+            self.context = None
+            self.page = None
 
         try:
             from playwright.async_api import async_playwright  # type: ignore

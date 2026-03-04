@@ -2453,7 +2453,7 @@ class SoraSession:
                         except Exception:
                             page_closed = False
                     if self.pw_ctx.page is None or page_closed:
-                        await self._bring_sora_drafts_to_front()
+                        await self._bring_sora_drafts_to_front(refresh_target=False)
                     if self.pw_ctx.page is None:
                         raise RuntimeError("无法获取可用 page（context/pages 不可用或 drafts 打开失败）")
                 except Exception as e:
@@ -2587,7 +2587,7 @@ class SoraSession:
         self._cancel_idle_close()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await asyncio.sleep(5)
-        await self._bring_sora_drafts_to_front()
+        await self._bring_sora_drafts_to_front(refresh_target=False)
         
         log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
         token = self._get_bearer_token_required()
@@ -3159,7 +3159,7 @@ async def sora_gen_video(
         browser_force_open=False,
         browser_headless=False,
     )
-    await sess._bring_sora_drafts_to_front();
+    await sess._bring_sora_drafts_to_front(refresh_target=False);
     await progress_cb(1, {"stage": "created", "task_id": task_id})
     await progress_cb(1, {"stage": "monitor_progress", "task_id": task_id})
     progress_result = await sess.watch_task_progress(
@@ -3180,7 +3180,7 @@ async def sora_gen_video(
         drafts_limit=int(payload.get("sora_drafts_limit") or 15),
     )
 
-    await sess._bring_sora_drafts_to_front();
+    await sess._bring_sora_drafts_to_front(refresh_target=False);
 
     await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
     _ = progress_result
