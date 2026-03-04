@@ -1416,7 +1416,13 @@ class SoraSession:
         await self._push_debug_progress(page, "checkbox 点击失败：所有策略已尝试", level="error")
         return False
 
-    async def _wait_cloudflare_auto_pass(self, page, *, max_wait_seconds: float = 10.0) -> bool:
+    async def _wait_cloudflare_auto_pass(
+        self,
+        page,
+        *,
+        max_wait_seconds: float = 10.0,
+        max_success_clicks: int = 2,
+    ) -> bool:
         """等待 Cloudflare 可能自动放行，同时尝试点击 Turnstile checkbox。
 
         返回：
@@ -1428,12 +1434,17 @@ class SoraSession:
         except Exception:
             deadline = time.time() + 10.0
         await asyncio.sleep(5.0)
+        try:
+            max_click_success = max(0, int(max_success_clicks))
+        except Exception:
+            max_click_success = 2
         # 两档等待：点击后给 Cloudflare 3s 处理时间；未点击时 1s 轮询
         poll_after_click = 6.0
         poll_idle = 1.0
         await self._push_debug_progress(page, "检测到 Cloudflare，开始等待自动放行并尝试点击 checkbox", level="warn")
         reported_click_fail = False
         consecutive_not_cf = 0
+        clicked_success_count = 0
         while time.time() < deadline:
             try:
                 is_closed = bool(getattr(page, "is_closed", lambda: False)())
@@ -1469,7 +1480,30 @@ class SoraSession:
             except Exception:
                 pass
             if clicked:
-                await self._push_debug_progress(page, "checkbox 已点击，等待 Cloudflare 验证结果", level="info")
+                clicked_success_count += 1
+                await self._push_debug_progress(
+                    page,
+                    f"checkbox 已点击（第 {clicked_success_count} 次），等待 Cloudflare 验证结果",
+                    level="info",
+                )
+                if max_click_success > 0 and clicked_success_count >= max_click_success:
+                    await self._push_debug_progress(
+                        page,
+                        f"checkbox 成功点击已达上限（{max_click_success} 次），提前结束等待",
+                        level="warn",
+                    )
+                    try:
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+                    try:
+                        still_cf_after_limit = await self._is_cloudflare_page(page, deep=True)
+                    except Exception:
+                        still_cf_after_limit = True
+                    if not still_cf_after_limit:
+                        await self._push_debug_progress(page, "Cloudflare 已放行", level="ok")
+                        return False
+                    return True
             elif not reported_click_fail:
                 await self._push_debug_progress(page, "尚未成功点击 checkbox，继续重试", level="warn")
                 reported_click_fail = True
@@ -1486,7 +1520,7 @@ class SoraSession:
         return True
 
     async def _restart_window_and_restore_single_drafts(self, *, drafts_url: str, sora_host: str) -> Any:
-        """关闭并重开窗口，并确保只保留一个 drafts tab 且置前。"""
+        """关闭并重开指纹浏览器窗口（仅打开窗口，不连接 CDP/不查找页面）。"""
         log_file = (
             Path(self.monitor_log_path)
             if self.monitor_log_path
@@ -1506,104 +1540,45 @@ class SoraSession:
         except Exception:
             pass
 
-        # 重开窗口前：清空本地缓存 + 一键随机指纹（降低 Cloudflare “复用旧环境”导致的持续拦截概率）
         try:
-            append_log(log_file, "[sora][drafts] pre-open: clear_local_cache + random_env")
+            append_log(log_file, "[sora][drafts] reopen window only: skip cdp connect/page probing")
         except Exception:
             pass
 
         try:
-            await self.pw_ctx.fp_client.browser_clear_local_cache(
+            rsp = await self.pw_ctx.fp_client.browser_open(
                 vendor=self.pw_ctx.vendor,
                 base_url=self.pw_ctx.base_url,
                 access_key=self.pw_ctx.access_key,
-                window_keys=[self.pw_ctx.window_key],
+                space_id=self.pw_ctx.space_id,
+                window_key=self.pw_ctx.window_key,
+                args=self.browser_open_args,
+                force_open=self.browser_force_open,
+                headless=self.browser_headless,
             )
+            try:
+                code = int((rsp or {}).get("code", -1))
+            except Exception:
+                code = -1
+            try:
+                append_log(log_file, f"[sora][drafts] browser_open result code={code}")
+            except Exception:
+                pass
         except Exception as e:
             try:
-                append_log(log_file, f"[sora][drafts] clear_local_cache failed: {e}")
+                append_log(log_file, f"[sora][drafts] browser_open failed: {e}")
             except Exception:
                 pass
 
-        await self.pw_ctx.ensure_open(
-            args=self.browser_open_args,
-            force_open=self.browser_force_open,
-            headless=self.browser_headless,
-            require_page=False,
-        )
-
-        ctx2 = getattr(self.pw_ctx, "context", None)
-        if ctx2 is None:
-            return None
-
+        # 仅重开窗口，不建立 CDP 连接；显式清理句柄，避免误复用旧连接。
         try:
-            pages2 = list(getattr(ctx2, "pages", []) or [])
-        except Exception:
-            pages2 = []
-
-        open_pages2 = []
-        for p2 in pages2:
-            try:
-                is_closed2 = bool(getattr(p2, "is_closed", lambda: False)())
-            except Exception:
-                is_closed2 = False
-            if not is_closed2:
-                open_pages2.append(p2)
-
-        sora_pages2: list[tuple[Any, str]] = []
-        drafts_pages2: list[Any] = []
-        for p2 in open_pages2:
-            try:
-                u2 = str(getattr(p2, "url", "") or "").strip()
-            except Exception:
-                u2 = ""
-            if not u2:
-                continue
-            try:
-                host2 = (urlparse(u2).netloc or "").strip().lower()
-            except Exception:
-                host2 = ""
-            if host2 != sora_host:
-                continue
-            sora_pages2.append((p2, u2))
-            if u2.startswith(drafts_url):
-                drafts_pages2.append(p2)
-
-        drafts_page2 = drafts_pages2[0] if drafts_pages2 else None
-        if drafts_page2 is None:
-            try:
-                drafts_page2 = await ctx2.new_page()
-            except Exception:
-                return None
-
-            try:
-                await drafts_page2.goto(drafts_url, wait_until="domcontentloaded")
-            except Exception:
-                pass
-
-        for p2, _u2 in sora_pages2:
-            if p2 is drafts_page2:
-                continue
-            try:
-                await p2.close()
-            except Exception:
-                pass
-
-        try:
-            self.pw_ctx.page = drafts_page2
+            self.pw_ctx.browser = None
+            self.pw_ctx.context = None
+            self.pw_ctx.page = None
+            self.pw_ctx.cdp_endpoint = None
         except Exception:
             pass
-        try:
-            await drafts_page2.bring_to_front()
-        except Exception:
-            pass
-        '''
-        try:
-            await drafts_page2.evaluate("() => { try { window.focus(); } catch(e) {} }")
-        except Exception:
-            pass
-        '''
-        return drafts_page2
+        return None
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
         """从本地代理池挑选“使用次数最少”的代理并切换（尽量与当前代理/出口 IP 不同）。
@@ -1978,12 +1953,16 @@ class SoraSession:
                 maybe_cf = await self._is_cloudflare_page(drafts_page, deep=False)
                 if maybe_cf:
                     await self._push_debug_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
-                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(drafts_page, max_wait_seconds=45.0)
+                    still_cf_after_wait = await self._wait_cloudflare_auto_pass(
+                        drafts_page,
+                        max_wait_seconds=45.0,
+                        max_success_clicks=2,
+                    )
                     if still_cf_after_wait and await self._is_cloudflare_page(drafts_page, deep=True):
                         await self._push_debug_progress(drafts_page, "Cloudflare 持续存在，准备重启窗口", level="warn")
-                        new_page = await self._restart_window_and_restore_single_drafts(
+                        await self._restart_window_and_restore_single_drafts(
                             drafts_url=drafts_url, sora_host=sora_host
-                        )   
+                        )
             except Exception:
                 pass
 
