@@ -1570,7 +1570,7 @@ class SoraSession:
             except Exception:
                 pass
 
-        # 仅重开窗口，不建立 CDP 连接；显式清理句柄，避免误复用旧连接。
+        # 清空旧句柄，避免 ensure_open 复用检查误判为"仍然连接"
         try:
             self.pw_ctx.browser = None
             self.pw_ctx.context = None
@@ -1579,17 +1579,25 @@ class SoraSession:
         except Exception:
             pass
 
+        # 等待指纹浏览器完成 Cloudflare 验证并稳定
         try:
             await asyncio.sleep(15.0)
         except Exception:
             pass
 
+        # 重连 CDP：建立 browser+context，不操作 page
         try:
-            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-            await self._bring_sora_drafts_to_front(refresh_target=False)
+            await self.pw_ctx.ensure_open(
+                args=self.browser_open_args,
+                force_open=False,
+                headless=self.browser_headless,
+                require_page=False,
+            )
         except Exception as e:
-            print(f"ensure_open failed: {e}")
-            pass
+            try:
+                append_log(log_file, f"[sora][drafts] CDP reconnect after restart failed: {e}")
+            except Exception:
+                pass
         return None
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
@@ -1975,6 +1983,78 @@ class SoraSession:
                         await self._restart_window_and_restore_single_drafts(
                             drafts_url=drafts_url, sora_host=sora_host
                         )
+                        # 重启后：从新 context 里找到 drafts page，关掉其它页面，置前
+                        try:
+                            ctx_new = getattr(self.pw_ctx, "context", None)
+                            br_new = getattr(self.pw_ctx, "browser", None)
+                            ctxs_new: list[Any] = []
+                            try:
+                                ctxs_new = list(getattr(br_new, "contexts", []) or [])
+                            except Exception:
+                                pass
+                            if ctx_new is not None and ctx_new not in ctxs_new:
+                                ctxs_new.insert(0, ctx_new)
+
+                            # 收集所有打开的页面
+                            all_pages_new: list[tuple[Any, str]] = []
+                            for c_n in ctxs_new:
+                                try:
+                                    ps = list(getattr(c_n, "pages", []) or [])
+                                except Exception:
+                                    ps = []
+                                for p_n in ps:
+                                    try:
+                                        closed = bool(getattr(p_n, "is_closed", lambda: False)())
+                                    except Exception:
+                                        closed = False
+                                    if closed:
+                                        continue
+                                    try:
+                                        u_n = str(getattr(p_n, "url", "") or "").strip()
+                                    except Exception:
+                                        u_n = ""
+                                    all_pages_new.append((p_n, u_n))
+
+                            # 找到 drafts page（优先精确匹配，其次 sora_host）
+                            target_page_new: Any = None
+                            for p_n, u_n in all_pages_new:
+                                if u_n.startswith(drafts_url):
+                                    target_page_new = p_n
+                                    break
+                            if target_page_new is None:
+                                for p_n, u_n in all_pages_new:
+                                    try:
+                                        h_n = (urlparse(u_n).netloc or "").strip().lower()
+                                    except Exception:
+                                        h_n = ""
+                                    if h_n == sora_host:
+                                        target_page_new = p_n
+                                        break
+
+                            if target_page_new is not None:
+                                # 关掉其它页面
+                                for p_n, _u_n in all_pages_new:
+                                    if p_n is target_page_new:
+                                        continue
+                                    try:
+                                        await p_n.close()
+                                    except Exception:
+                                        pass
+                                # 更新 page 引用并置前
+                                try:
+                                    self.pw_ctx.page = target_page_new
+                                    drafts_page = target_page_new
+                                except Exception:
+                                    pass
+                                try:
+                                    await target_page_new.bring_to_front()
+                                except Exception:
+                                    pass
+                                await self._push_debug_progress(
+                                    drafts_page, "重启后已恢复 drafts 页面并置前", level="ok"
+                                )
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
