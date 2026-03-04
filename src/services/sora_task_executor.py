@@ -2587,7 +2587,7 @@ class SoraSession:
         self._cancel_idle_close()
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await asyncio.sleep(5)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
+        await self._bring_sora_drafts_to_front()
         
         log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
         token = self._get_bearer_token_required()
