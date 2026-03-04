@@ -1578,28 +1578,6 @@ class SoraSession:
             self.pw_ctx.cdp_endpoint = None
         except Exception:
             pass
-
-        try:
-            await asyncio.sleep(2.0)
-        except Exception:
-            pass
-
-        try:
-            await self.pw_ctx.ensure_open(
-                args=self.browser_open_args,
-                force_open=False,
-                headless=self.browser_headless,
-                require_page=False,
-            )
-            try:
-                append_log(log_file, "[sora][drafts] CDP reconnected, browser+context ready")
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                append_log(log_file, f"[sora][drafts] CDP reconnect failed: {e}")
-            except Exception:
-                pass
         return None
 
     async def switch_window_ip_by_proxy_pool(self, *, log_file: Optional[Path] = None) -> Optional[int]:
