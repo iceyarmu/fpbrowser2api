@@ -1326,31 +1326,6 @@ class SoraSession:
             except Exception:
                 pass
 
-        #注释掉下方代码
-        '''
-        try:
-            await self.pw_ctx.fp_client.browser_random_env(
-                vendor=self.pw_ctx.vendor,
-                base_url=self.pw_ctx.base_url,
-                access_key=self.pw_ctx.access_key,
-                space_id=self.pw_ctx.space_id,
-                window_key=self.pw_ctx.window_key,
-            )
-        except Exception as e:
-            try:
-                append_log(log_file, f"[sora][drafts] random_env failed: {e}")
-            except Exception:
-                pass
-        
-        # random_env 后：从本地代理 IP 池选择“使用次数最少”的代理并切换（且必须与当前出口 IP 不同）
-        try:
-            append_log(log_file, "[sora][drafts] post-random_env: selecting least-used proxy from local pool")
-        except Exception:
-            pass
-        '''
-        # 说明：窗口切 IP 的逻辑已封装为独立方法，且不在“重启窗口自愈 Cloudflare”流程中触发。
-        # 触发时机改为：TaskService 在“连续错误达到阈值/进入冷却”时再切换 IP。
-
         await self.pw_ctx.ensure_open(
             args=self.browser_open_args,
             force_open=self.browser_force_open,
@@ -1401,10 +1376,11 @@ class SoraSession:
                 drafts_page2 = await ctx2.new_page()
             except Exception:
                 return None
-        try:
-            await drafts_page2.goto(drafts_url, wait_until="domcontentloaded")
-        except Exception:
-            pass
+
+            try:
+                await drafts_page2.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
 
         for p2, _u2 in sora_pages2:
             if p2 is drafts_page2:
