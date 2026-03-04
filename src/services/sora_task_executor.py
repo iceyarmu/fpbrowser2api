@@ -1939,6 +1939,26 @@ class SoraSession:
 
             # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
             try:
+                try:
+                    page_html = await drafts_page.content()
+                    if "Something went wrong. Please try again in a few minutes." in (page_html or ""):
+                        await self._push_debug_progress(
+                            drafts_page,
+                            "检测到 Something went wrong 提示，先刷新 drafts 页面",
+                            level="warn",
+                        )
+                        try:
+                            await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                        except Exception:
+                            # 即使 goto 失败也继续，避免中断后续登录点击判断流程
+                            pass
+                        try:
+                            await asyncio.sleep(2.0)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
                 clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
                 if clicked:
                     try:
