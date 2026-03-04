@@ -358,6 +358,7 @@ class PlaywrightBrowserContext:
         else:
             self.context = await self.browser.new_context()
 
+
     async def close(self) -> None:
         self.last_used_at = time.time()
         try:
