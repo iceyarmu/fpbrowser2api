@@ -346,6 +346,9 @@ class Database:
                 WHERE deleted = 0 AND enabled = 1
                 """
             )
+            # 兼容旧库：windows 可能缺失 window_status，先补列再建索引
+            if await self._table_exists(db, "windows") and not await self._column_exists(db, "windows", "window_status"):
+                await db.execute("ALTER TABLE windows ADD COLUMN window_status INTEGER DEFAULT 0")
             # 调度路径会频繁按可用窗口状态过滤
             await db.execute(
                 """
