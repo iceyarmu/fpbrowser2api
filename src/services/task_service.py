@@ -366,6 +366,28 @@ class TaskService:
                                 sess.set_access_token(access_token, expires)
                             except Exception:
                                 pass
+
+                            try:
+                                checked = await sess.api_nf_check(target_url=target_url)
+                                nf_check = checked if isinstance(checked, dict) else None
+                            except Exception as e:
+                                nf_check_err = e
+                                nf_check = None
+
+                            try:
+                                if nf_check and nf_check.get("remaining_count") is not None:
+                                    await self.db.update_task_type_window(
+                                        mapping_id=picked.mapping_id,
+                                        remaining_quota=int(nf_check.get("remaining_count") or 0),
+                                        sora_remaining_count=int(nf_check.get("remaining_count") or 0),
+                                        sora_purchased_remaining_count=int(nf_check.get("purchased_remaining_count") or 0),
+                                        sora_rate_limit_reached=bool(nf_check.get("rate_limit_reached", False)),
+                                        sora_access_resets_in_seconds=int(nf_check.get("access_resets_in_seconds") or 0),
+                                        cooldown_until=(str(nf_check.get("cooldown_until")) if nf_check.get("cooldown_until") else None),
+                                    )
+                            except Exception:
+                                pass
+
                 except Exception as e:
                     print("refresh access token error", e)
                     pass
