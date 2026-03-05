@@ -3367,14 +3367,28 @@ class Database:
             )
             await db.commit()
 
-    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 7200, cooldown_seconds_short: int = 900) -> None:
-        """一次失败：累计错误；连续错误达阈值时清零并进入长冷却，否则短冷却。"""
+    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 7200, cooldown_seconds_short: int = 900) -> bool:
+        """一次失败：累计错误；连续错误达阈值时清零并进入长冷却，否则短冷却。
+
+        Returns:
+            bool: 本次失败是否触发了连续错误阈值（即进入长冷却并清零连续错误）。
+        """
         thr = max(1, int(threshold))
         cd = max(10, int(cooldown_seconds))
         cd_short = max(10, int(cooldown_seconds_short))
         modifier = f"+{cd} seconds"
         modifier_short = f"+{cd_short} seconds"
         async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT consecutive_errors FROM task_type_windows WHERE id = ?",
+                (int(mapping_id),),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            if row is None:
+                return False
+            prev_ce = int((row or [0])[0] or 0)
+            reached_threshold = (prev_ce + 1) >= thr
             await db.execute(
                 """
                 UPDATE task_type_windows
@@ -3393,6 +3407,7 @@ class Database:
                 (thr, thr, modifier, modifier_short, int(mapping_id)),
             )
             await db.commit()
+            return reached_threshold
 
     async def get_mapping_runtime_state(self, mapping_id: int) -> Dict[str, Any]:
         """读取窗口映射运行态字段（连续错误/错误冷却等）。"""
