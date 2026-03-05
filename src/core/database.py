@@ -2287,7 +2287,7 @@ class Database:
                     # - 再在该窗口池中按既有策略（连续错误最少 -> 最久未用 -> 余额最多）选第 1 个。
                     cur = await db.execute(
                         """
-                        WITH eligible AS (
+                        WITH base AS (
                           SELECT
                             m.id AS mapping_id,
                             t.concurrency AS task_concurrency,
@@ -2295,6 +2295,9 @@ class Database:
                             m.consecutive_errors AS consecutive_errors,
                             m.updated_at AS mapping_updated_at,
                             m.remaining_quota AS remaining_quota,
+                            m.cooldown_until AS cooldown_until,
+                            m.error_cooldown_until AS error_cooldown_until,
+                            COALESCE(m.inflight_slots, 0) AS inflight_slots,
                             COALESCE(w.window_status, 0) AS window_status,
                             b.id AS browser_pk
                           FROM task_types t
@@ -2306,27 +2309,45 @@ class Database:
                             AND t.code = ?
                             AND m.deleted = 0 AND m.enabled = 1
                             AND w.deleted = 0 AND w.enabled = 1
-                            AND (
-                              (m.remaining_quota > 2)
-                              OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
-                            )
-                            AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
-                            AND (m.consecutive_errors < t.continuous_error_threshold)
-                            AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                            AND COALESCE(w.window_status, 0) IN (0, 1)
+                        ),
+                        pool_source AS (
+                          SELECT
+                            b.*,
+                            CASE
+                              WHEN (
+                                ((b.remaining_quota > 2)
+                                  OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                                AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
+                                AND (b.consecutive_errors < b.continuous_error_threshold)
+                                AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
+                              ) THEN 1
+                              ELSE 0
+                            END AS is_runnable
+                          FROM base b
+                          WHERE b.window_status = 1
+                             OR (
+                                  b.window_status = 0
+                                  AND (
+                                    ((b.remaining_quota > 2)
+                                      OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                                    AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
+                                    AND (b.consecutive_errors < b.continuous_error_threshold)
+                                    AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
+                                  )
+                                )
                         ),
                         ranked AS (
                           SELECT
-                            e.*,
+                            p.*,
                             ROW_NUMBER() OVER (
-                              PARTITION BY e.browser_pk
+                              PARTITION BY p.browser_pk
                               ORDER BY
-                                e.window_status DESC,
-                                e.consecutive_errors ASC,
-                                e.mapping_updated_at ASC,
-                                e.remaining_quota DESC
+                                p.window_status DESC,
+                                p.consecutive_errors ASC,
+                                p.mapping_updated_at ASC,
+                                p.remaining_quota DESC
                             ) AS browser_pool_rank
-                          FROM eligible e
+                          FROM pool_source p
                         )
                         SELECT
                           mapping_id,
@@ -2334,6 +2355,7 @@ class Database:
                           continuous_error_threshold
                         FROM ranked
                         WHERE browser_pool_rank <= ?
+                          AND is_runnable = 1
                         ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                         LIMIT 1
                         """,
