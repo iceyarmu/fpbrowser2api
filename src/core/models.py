@@ -91,6 +91,8 @@ class WindowInfo(BaseModel):
     proxy_expire_at: Optional[str] = None
 
     enabled: bool = True
+    # 窗口状态：1=已打开，0=未打开（来源：Roxy /browser/connection_info）
+    window_status: int = 0
     deleted: bool = False
 
     raw: Optional[Dict[str, Any]] = None  # 保存原始窗口信息 JSON（便于排查/扩展）

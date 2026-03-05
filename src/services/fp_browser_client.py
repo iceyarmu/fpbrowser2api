@@ -546,6 +546,35 @@ class FPBrowserClient:
                 return it
         return None
 
+    async def list_open_window_connection_infos(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        window_keys: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """批量查询已打开窗口进程信息（RoxyBrowser：GET /browser/connection_info）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        if not base_url:
+            raise RuntimeError("list_open_window_connection_infos 参数不足：base_url 不能为空")
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 connection_info，请设置为 roxy")
+
+        keys = [str(x or "").strip() for x in (window_keys or []) if str(x or "").strip()]
+        params: Dict[str, Any] = {}
+        if keys:
+            # Roxy 文档：多个窗口 ID 以英文逗号分隔
+            params["dirIds"] = ",".join(keys)
+        rsp = await self._roxy_get(base_url, access_key, "/browser/connection_info", params)
+        if (rsp or {}).get("code") != 0:
+            return []
+        data = (rsp or {}).get("data")
+        if not isinstance(data, list):
+            return []
+        return [x for x in data if isinstance(x, dict)]
+
     # -------------------- RoxyBrowser --------------------
     def _roxy_headers(self, token: Optional[str]) -> Dict[str, str]:
         h = {"Content-Type": "application/json"}

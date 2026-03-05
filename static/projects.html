@@ -417,6 +417,7 @@
               <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_space" data-space='${encodeURIComponent(JSON.stringify(s))}'>修改</button>
               <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_space" data-space_pk="${s.id}">删除</button>
               <button class="btn btn-primary btn-sm" type="button" data-action="sync_space" data-space_pk="${s.id}">同步窗口</button>
+              <button class="btn btn-outline-primary btn-sm" type="button" data-action="sync_space_status" data-space_pk="${s.id}">同步窗口状态</button>
               <button class="btn btn-outline-primary btn-sm" type="button" data-action="proxies" data-space_pk="${s.id}">代理列表</button>
               <button class="btn btn-outline-success btn-sm" type="button" data-action="accounts" data-space_pk="${s.id}">账号管理</button>
             </div>
@@ -439,6 +440,12 @@
 
       function enabledBadge(enabled) {
         return enabled ? `<span class="badge text-bg-success">是</span>` : `<span class="badge text-bg-secondary">否</span>`;
+      }
+
+      function windowStatusBadge(status) {
+        return Number(status || 0) === 1
+          ? `<span class="badge text-bg-success">打开</span>`
+          : `<span class="badge text-bg-secondary">未打开</span>`;
       }
 
       function getWindowProxyId(w) {
@@ -500,6 +507,7 @@
                   <th>代理</th>
                   <th>到期</th>
                   <th>启用</th>
+                  <th>窗口状态</th>
                   <th>删除</th>
                 </tr>
               </thead>
@@ -542,6 +550,7 @@
                     </td>
                     <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
                     <td>${enabledBadge(!!w.enabled)}</td>
+                    <td>${windowStatusBadge(w.window_status)}</td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_window"
@@ -576,6 +585,8 @@
           deleteSpace(parseInt(ds.space_pk, 10));
         } else if (action === "sync_space") {
           syncSpace(parseInt(ds.space_pk, 10), fromEl);
+        } else if (action === "sync_space_status") {
+          syncSpaceWindowStatus(parseInt(ds.space_pk, 10), fromEl);
         } else if (action === "proxies") {
           openProxiesModal(parseInt(ds.space_pk, 10));
         } else if (action === "accounts") {
@@ -2267,6 +2278,29 @@
         } catch (e) {
           setSpaceProgress(spacePk, { current: 0, total: 3, text: `同步失败：${e.message || "未知错误"}` });
           toast(e.message, "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      async function syncSpaceWindowStatus(spacePk, fromEl) {
+        let btn = fromEl;
+        if (!btn) btn = document.querySelector(`button[data-action="sync_space_status"][data-space_pk="${spacePk}"]`);
+        try {
+          setBtnBusy(btn, true, { loadingText: "同步中" });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-window-status`, { method: "POST", body: JSON.stringify({}) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "同步窗口状态失败");
+
+          const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
+          if (!r2) return;
+          const d2 = await r2.json();
+          if (!r2.ok) throw new Error(d2.detail || "加载窗口列表失败");
+          await renderWindowsIncrementally(spacePk, d2.windows || []);
+          toast(d.message || "窗口状态同步完成", "success");
+        } catch (e) {
+          toast(e.message || "同步窗口状态失败", "error");
         } finally {
           setBtnBusy(btn, false);
         }

@@ -152,6 +152,7 @@ class Database:
                     proxy_country TEXT,
                     proxy_expire_at TEXT,
                     enabled BOOLEAN DEFAULT 1,
+                    window_status INTEGER DEFAULT 0,
                     deleted BOOLEAN DEFAULT 0,
                     raw_json TEXT,
                     synced_at TIMESTAMP,
@@ -453,6 +454,7 @@ class Database:
                     ("window_sort_num", "INTEGER"),
                     ("platform_account_id", "INTEGER"),
                     ("proxy_id", "INTEGER"),
+                    ("window_status", "INTEGER DEFAULT 0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "windows", col_name):
@@ -975,6 +977,13 @@ class Database:
                 proxy_country = (w.get("proxy_country") or w.get("country"))
                 proxy_expire_at = (w.get("proxy_expire_at") or w.get("expire_at") or w.get("proxy_expire"))
                 enabled = 1 if bool(w.get("enabled", True)) else 0
+                window_status_raw = w.get("window_status")
+                if window_status_raw is None:
+                    window_status_raw = w.get("windowStatus")
+                try:
+                    window_status = 1 if int(window_status_raw or 0) == 1 else 0
+                except Exception:
+                    window_status = 0
                 deleted = 1 if bool(w.get("deleted", False)) else 0
                 raw_json = json.dumps(w, ensure_ascii=False)
 
@@ -985,8 +994,8 @@ class Database:
                         platform_account, platform_url, platform_account_id,
                         proxy_id,
                         proxy_addr, proxy_country, proxy_expire_at,
-                        enabled, deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
+                        enabled, window_status, deleted, raw_json, synced_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, window_key) DO UPDATE SET
                         window_sort_num=excluded.window_sort_num,
                         window_name=excluded.window_name,
@@ -999,6 +1008,7 @@ class Database:
                         proxy_country=excluded.proxy_country,
                         proxy_expire_at=excluded.proxy_expire_at,
                         enabled=excluded.enabled,
+                        window_status=COALESCE(excluded.window_status, windows.window_status),
                         -- 约定：本地标记删除后，不因“同步窗口”而被覆盖为未删除
                         deleted=CASE WHEN windows.deleted = 1 THEN 1 ELSE excluded.deleted END,
                         raw_json=excluded.raw_json,
@@ -1018,6 +1028,7 @@ class Database:
                         proxy_country,
                         proxy_expire_at,
                         enabled,
+                        window_status,
                         deleted,
                         raw_json,
                     ),
@@ -1241,6 +1252,36 @@ class Database:
                     str(window_key).strip(),
                 ),
             )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
+    async def sync_window_statuses(self, *, space_pk: int, open_window_keys: List[str]) -> int:
+        """按窗口 key 批量同步窗口状态（1=打开，0=未打开）。"""
+        keys = [str(x or "").strip() for x in (open_window_keys or []) if str(x or "").strip()]
+        async with aiosqlite.connect(self.db_path) as db:
+            if keys:
+                placeholders = ",".join(["?"] * len(keys))
+                sql = f"""
+                    UPDATE windows
+                    SET window_status = CASE WHEN window_key IN ({placeholders}) THEN 1 ELSE 0 END,
+                        updated_at = datetime('now','localtime')
+                    WHERE space_pk = ? AND deleted = 0
+                """
+                params: List[Any] = [*keys, int(space_pk)]
+                cur = await db.execute(sql, params)
+            else:
+                cur = await db.execute(
+                    """
+                    UPDATE windows
+                    SET window_status = 0,
+                        updated_at = datetime('now','localtime')
+                    WHERE space_pk = ? AND deleted = 0
+                    """,
+                    (int(space_pk),),
+                )
             await db.commit()
             try:
                 return int(cur.rowcount or 0)
@@ -2001,6 +2042,7 @@ class Database:
                   w.proxy_addr,
                   w.proxy_country,
                   w.proxy_expire_at,
+                  w.window_status,
                   w.enabled AS window_enabled,
                   s.space_id AS space_id,
                   s.name AS space_name,

@@ -1076,6 +1076,54 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条窗口记录", "affected": affected}
 
 
+@router.post("/api/admin/spaces/{space_pk}/sync-window-status")
+async def sync_window_status(space_pk: int, token: str = Depends(verify_admin_token)):
+    """同步某个空间下本地窗口的“打开状态”（1=打开，0=未打开）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    local_windows = await db.list_windows(space_pk)
+    window_keys = [str(w.window_key or "").strip() for w in local_windows if str(w.window_key or "").strip()]
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(
+        proxy_enabled=syscfg.proxy_enabled,
+        proxy_url=syscfg.proxy_url,
+    )
+    try:
+        opened = await client.list_open_window_connection_infos(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            window_keys=window_keys,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    open_keys: List[str] = []
+    for row in opened:
+        did = str((row or {}).get("dirId") or "").strip()
+        if did:
+            open_keys.append(did)
+
+    affected = await db.sync_window_statuses(space_pk=space_pk, open_window_keys=open_keys)
+    return {
+        "success": True,
+        "message": f"状态同步完成：{len(open_keys)} 个打开 / {len(window_keys)} 个窗口",
+        "affected": affected,
+        "open_count": len(open_keys),
+        "total": len(window_keys),
+    }
+
+
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/delete")
 async def delete_window_local(space_pk: int, window_key: str, token: str = Depends(verify_admin_token)):
     """仅本地标记删除窗口（不调用指纹浏览器的删除接口）。"""
@@ -1178,6 +1226,7 @@ async def list_all_windows(project_id: Optional[int] = None, token: str = Depend
                             "window_pk": w.get("id"),
                             "window_sort_num": w.get("window_sort_num"),
                             "window_name": w.get("window_name"),
+                            "window_status": w.get("window_status", 0),
                             "platform_account": w.get("platform_account"),
                             "platform_url": w.get("platform_url"),
                             "proxy_addr": w.get("proxy_addr"),

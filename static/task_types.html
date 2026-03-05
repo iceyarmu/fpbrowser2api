@@ -218,6 +218,7 @@
                     <tr class="small2">
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
+                      <th>窗口状态</th>
                       <th>空间</th>
                       <th>代理</th>
                       <th>检测代理</th>
@@ -277,6 +278,7 @@
                   <tr class="small2">
                     <th><input type="checkbox" id="chkAll" /></th>
                     <th>窗口</th>
+                    <th>窗口状态</th>
                     <th>网址</th>
                     <th>账号 / 代理</th>
                   </tr>
@@ -1399,7 +1401,7 @@
         if (!id) {
           state.mappings = [];
           updateMappingsHeaderSummaryUI();
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -1558,7 +1560,7 @@
         const body = document.getElementById("mappingBody");
         updateMappingsHeaderSummaryUI();
         if (!state.mappings.length) {
-          body.innerHTML = `<tr><td colspan="13" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="14" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -1589,6 +1591,9 @@
               <div class="text-muted truncate-1" title="${escapeHtml(String(m.platform_account || "-") + " · " + String(m.browser_name || "-"))}">
                 <span class="mono">账号：${escapeHtml(m.platform_account || "-")}</span>
               </div>
+            </td>
+            <td>
+              ${Number(m.window_status || 0) === 1 ? `<span class="badge text-bg-success">打开</span>` : `<span class="badge text-bg-secondary">未打开</span>`}
             </td>
             <td style="width: 50px; min-width: 50px;">
               <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")}-${escapeHtml(m.space_name || "-")}</div>
@@ -2179,7 +2184,7 @@
         document.getElementById("winSelectedCount").textContent = String(state.winSelected.size || 0);
 
         if (!items.length) {
-          body.innerHTML = `<tr><td colspan="4" class="text-muted small">${state.windows.length ? "无匹配结果，请调整搜索条件。" : "暂无窗口数据，请先在“项目管理”里同步窗口。"}</td></tr>`;
+          body.innerHTML = `<tr><td colspan="5" class="text-muted small">${state.windows.length ? "无匹配结果，请调整搜索条件。" : "暂无窗口数据，请先在“项目管理”里同步窗口。"}</td></tr>`;
           document.getElementById("chkAll").checked = false;
           return;
         }
@@ -2201,6 +2206,9 @@
               </div>
               <div class="text-muted">${escapeHtml(w.project_name || "-")} / ${escapeHtml(w.browser_name || "-")}</div>
               <div class="mono text-muted">${escapeHtml(w.space_id || "-")} <span class="text-muted">·</span> ${escapeHtml(w.space_name || "-")}</div>
+            </td>
+            <td>
+              ${Number(w.window_status || 0) === 1 ? `<span class="badge text-bg-success">打开</span>` : `<span class="badge text-bg-secondary">未打开</span>`}
             </td>
             <td class="mono">
               <div class="truncate-1">
@@ -2264,7 +2272,7 @@
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
         updateMappingsHeaderSummaryUI();
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -2281,7 +2289,7 @@
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
           updateMappingsHeaderSummaryUI();
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
