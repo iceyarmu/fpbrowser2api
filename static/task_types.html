@@ -1535,6 +1535,7 @@
           const success24h = Number(m.success_count_24h ?? m.success_24h_count ?? m.success_24h ?? 0) || 0;
           const successTotal = Number(m.success_count ?? 0) || 0;
           const failConsecutive = Number(m.consecutive_errors ?? 0) || 0;
+          const fail24h = Number(m.failed_count_24h ?? m.fail_count_24h ?? m.error_count_24h ?? 0) || 0;
           const failTotal = Number(m.total_errors ?? 0) || 0;
           return `
           <tr class="small2" data-mid="${m.id}">
@@ -1586,8 +1587,11 @@
                 title="点击查看该窗口任务列表（按时间倒序）"
                 data-role="taskStats"
                 data-mid="${m.id}"
-              ><span class="text-primary fw-semibold">${success24h}</span>/<span class="text-primary fw-semibold">${successTotal}</span>/<span class="text-danger fw-semibold">${failConsecutive}</span>/<span class="text-danger fw-semibold">${failTotal}</span></button>
-              <div class="small2 text-muted">24h成功/总成功/连续失败/总失败</div>
+              ><span class="text-primary fw-semibold" data-role="success24h" data-mid="${m.id}">${success24h}</span>/<span class="text-primary fw-semibold" data-role="successTotal" data-mid="${m.id}">${successTotal}</span>/<span class="text-danger fw-semibold" data-role="consecutiveErrors" data-mid="${m.id}">${failConsecutive}</span>/<span class="text-danger fw-semibold" data-role="failed24h" data-mid="${m.id}">${fail24h}</span>/<span class="text-danger fw-semibold" data-role="totalErrors" data-mid="${m.id}">${failTotal}</span>|<span class="fw-semibold small" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></button>
+              <div class="small2 text-muted d-flex flex-wrap align-items-center gap-2">
+                <span>24h成功/总成功/连续失败/24h失败/总失败</span>
+                <button class="btn btn-outline-secondary btn-sm" title="重置连续错误并清空错误重置时间（error_cooldown_until）" aria-label="重置连续错误" data-act="resetConsecutiveErrors" data-mid="${m.id}">⟳</button>
+              </div>
             </td>
             <td class="mono cell-stack">
               <div class="d-flex flex-wrap gap-2 align-items-center">

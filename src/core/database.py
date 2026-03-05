@@ -2012,7 +2012,14 @@ class Database:
                     WHERE window_pk = m.window_pk
                       AND status = 'completed'
                       AND datetime(created_at) >= datetime('now', '-24 hours', 'localtime')
-                  ) AS success_count_24h
+                  ) AS success_count_24h,
+                  (
+                    SELECT COUNT(*)
+                    FROM tasks
+                    WHERE window_pk = m.window_pk
+                      AND status = 'failed'
+                      AND datetime(created_at) >= datetime('now', '-24 hours', 'localtime')
+                  ) AS failed_count_24h
                 FROM task_type_windows m
                 JOIN windows w ON m.window_pk = w.id
                 JOIN spaces s ON w.space_pk = s.id
