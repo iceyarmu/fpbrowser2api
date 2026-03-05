@@ -3325,7 +3325,7 @@ class Database:
             )
             await db.commit()
 
-    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 3600, cooldown_seconds_short: int = 900) -> None:
+    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 7200, cooldown_seconds_short: int = 900) -> None:
         """一次失败：累计错误；连续错误达阈值时清零并进入长冷却，否则短冷却。"""
         thr = max(1, int(threshold))
         cd = max(10, int(cooldown_seconds))
