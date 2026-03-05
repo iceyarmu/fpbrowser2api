@@ -3326,7 +3326,7 @@ class Database:
             await db.commit()
 
     async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 3600, cooldown_seconds_short: int = 900) -> None:
-        """一次失败：累计错误 + 连续错误，并在达到阈值时写入冷却时间。"""
+        """一次失败：累计错误；连续错误达阈值时清零并进入长冷却，否则短冷却。"""
         thr = max(1, int(threshold))
         cd = max(10, int(cooldown_seconds))
         cd_short = max(10, int(cooldown_seconds_short))
@@ -3337,7 +3337,10 @@ class Database:
                 """
                 UPDATE task_type_windows
                 SET total_errors = total_errors + 1,
-                    consecutive_errors = consecutive_errors + 1,
+                    consecutive_errors = CASE
+                      WHEN (consecutive_errors + 1) >= ? THEN 0
+                      ELSE consecutive_errors + 1
+                    END,
                     error_cooldown_until = CASE
                       WHEN (consecutive_errors + 1) >= ? THEN datetime('now','localtime', ?)
                       ELSE datetime('now','localtime', ?)
@@ -3345,7 +3348,7 @@ class Database:
                     updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
-                (thr, modifier, modifier_short, int(mapping_id)),
+                (thr, thr, modifier, modifier_short, int(mapping_id)),
             )
             await db.commit()
 
