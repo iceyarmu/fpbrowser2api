@@ -221,8 +221,8 @@
                       <th>空间</th>
                       <th>代理</th>
                       <th>检测代理</th>
-                      <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted" id="statusSortHint">↕</span></th>
-                      <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted" id="balanceSortHint">↕</span></th>
+                      <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
+                      <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th>邀请码</th>
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
@@ -1144,6 +1144,7 @@
             el.className = `fw-semibold ${cooling ? "text-danger" : "text-success"}`;
           }
         }
+        updateMappingsHeaderSummaryUI();
       }
 
       function setBtnBusy(btn, busy, { loadingText = "处理中", keepWidth = true } = {}) {
@@ -1385,15 +1386,19 @@
         if (!r.ok) return toast(d.detail || "删除失败", "error");
         toast("已删除", "success");
         state.current = null;
+        state.mappings = [];
         lsDel(LS_KEYS.currentTypeId);
         await loadTypes();
         fillTypeForm(null);
+        updateMappingsHeaderSummaryUI();
         document.getElementById("mappingBody").innerHTML = "";
       }
 
       async function loadMappings({ preserveSelection = false } = {}) {
         const id = document.getElementById("typeId").value;
         if (!id) {
+          state.mappings = [];
+          updateMappingsHeaderSummaryUI();
           document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
@@ -1502,6 +1507,34 @@
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
       }
 
+      function updateMappingsHeaderSummaryUI() {
+        const items = Array.isArray(state.mappings) ? state.mappings : [];
+        let success24hAll = 0;
+        let successTotalAll = 0;
+        let failConsecutiveAll = 0;
+        let fail24hAll = 0;
+        let failTotalAll = 0;
+        let remainingQuotaAll = 0;
+
+        items.forEach((m) => {
+          success24hAll += Number(m?.success_count_24h ?? m?.success_24h_count ?? m?.success_24h ?? 0) || 0;
+          successTotalAll += Number(m?.success_count ?? 0) || 0;
+          failConsecutiveAll += Number(m?.consecutive_errors ?? 0) || 0;
+          fail24hAll += Number(m?.failed_count_24h ?? m?.fail_count_24h ?? m?.error_count_24h ?? 0) || 0;
+          failTotalAll += Number(m?.total_errors ?? 0) || 0;
+          remainingQuotaAll += Number(m?.remaining_quota ?? 0) || 0;
+        });
+
+        const statusSummaryEl = document.getElementById("statusSummaryAll");
+        if (statusSummaryEl) {
+          statusSummaryEl.textContent = `${success24hAll}|${successTotalAll}|${failConsecutiveAll}|${fail24hAll}|${failTotalAll}`;
+        }
+        const balanceSummaryEl = document.getElementById("balanceSummaryAll");
+        if (balanceSummaryEl) {
+          balanceSummaryEl.textContent = `总余额: ${remainingQuotaAll}`;
+        }
+      }
+
       function updateMapSelectedCountUI() {
         const n = state.mapSelected?.size || 0;
         const el = document.getElementById("mapSelectedCount");
@@ -1523,6 +1556,7 @@
 
       function renderMappings() {
         const body = document.getElementById("mappingBody");
+        updateMappingsHeaderSummaryUI();
         if (!state.mappings.length) {
           body.innerHTML = `<tr><td colspan="13" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
@@ -2224,10 +2258,12 @@
       document.getElementById("btnLogout").addEventListener("click", logout);
       document.getElementById("btnNewType").addEventListener("click", () => {
         state.current = null;
+        state.mappings = [];
         lsSet(LS_KEYS.currentTypeId, "");
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
+        updateMappingsHeaderSummaryUI();
         document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
@@ -2241,8 +2277,10 @@
         const v = e.target.value;
         if (!v) {
           state.current = null;
+          state.mappings = [];
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
+          updateMappingsHeaderSummaryUI();
           document.getElementById("mappingBody").innerHTML = `<tr><td colspan="13" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
