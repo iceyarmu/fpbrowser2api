@@ -258,26 +258,27 @@ async def sora_fetch_access_token_in_window(
     - 使用 `page_fetch_json`（credentials: include），会自动携带该窗口 Cookie（含代理/指纹网络栈）。
     - 不允许手工传 Cookie header（page_fetch_tx 会屏蔽 cookie/ua/origin/referer 等头）。
     """
-    if sess.pw_ctx.page is None:
-        raise RuntimeError("page 未初始化")
-
     await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
     await sess._bring_sora_drafts_to_front(refresh_target=False)
+    sess._cancel_idle_close()
+    async with sess._bring_drafts_lock:
+        if sess.pw_ctx.page is None:
+            raise RuntimeError("page 未初始化")
 
-    log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-    url = "https://sora.chatgpt.com/api/auth/session"
-    tx = await page_fetch_json(sess.pw_ctx.page, url=url, method="GET", headers={"Accept": "application/json"}, json_data=None, log_file=log_file)
-    data = tx.get("_json")
-    if not isinstance(data, dict):
-        raise RuntimeError(f"读取 session 失败：status={tx.get('status')} body={safe_trim(str(tx.get('response_body') or ''), 500)!r}")
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        url = "https://sora.chatgpt.com/api/auth/session"
+        tx = await page_fetch_json(sess.pw_ctx.page, url=url, method="GET", headers={"Accept": "application/json"}, json_data=None, log_file=log_file)
+        data = tx.get("_json")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"读取 session 失败：status={tx.get('status')} body={safe_trim(str(tx.get('response_body') or ''), 500)!r}")
 
-    access_token = str(data.get("accessToken") or "").strip() or None
-    expires = str(data.get("expires") or "").strip() or None
-    user = data.get("user") if isinstance(data.get("user"), dict) else {}
-    email = str((user or {}).get("email") or "").strip() or None
-    if not access_token:
-        raise RuntimeError("读取 session 失败：响应缺少 accessToken（请确认窗口已登录 Sora）")
-    return {"access_token": access_token, "expires": expires, "email": email}
+        access_token = str(data.get("accessToken") or "").strip() or None
+        expires = str(data.get("expires") or "").strip() or None
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        email = str((user or {}).get("email") or "").strip() or None
+        if not access_token:
+            raise RuntimeError("读取 session 失败：响应缺少 accessToken（请确认窗口已登录 Sora）")
+        return {"access_token": access_token, "expires": expires, "email": email}
 
 
 async def _pw_get_user_agent(page) -> Optional[str]:

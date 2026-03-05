@@ -13,7 +13,7 @@ from ..core.logger import logger
 from ..core.models import Task
 from .image_task_executor import simulate_image_task
 from .video_task_executor import simulate_video_task
-from .sora_task_executor import get_or_create_sora_session, sora_gen_video
+from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
 from .sora_wm_remove_executor import sora_wm_remove
 from .sora_plus_register_executor import sora_plus_register
 
@@ -346,6 +346,28 @@ class TaskService:
                             cooldown_until=(str(nf_check.get("cooldown_until")) if nf_check.get("cooldown_until") else None),
                         )
                 except Exception:
+                    pass
+
+                # 当 remaining_count=0 时，参考 admin 接口逻辑尝试在窗口内刷新一次 access_token
+                try:
+                    if nf_check and int(nf_check.get("remaining_count") or 0) == 0:
+                        info = await sora_fetch_access_token_in_window(sess=sess, target_url=target_url)
+                        access_token = str((info or {}).get("access_token") or "").strip() or None
+                        expires = str((info or {}).get("expires") or "").strip() or None
+                        if access_token:
+                            await self.db.update_task_type_window(
+                                mapping_id=picked.mapping_id,
+                                sora_access_token=access_token,
+                                sora_access_expires=expires,
+                            )
+                            picked.sora_access_token = access_token
+                            picked.sora_access_expires = expires
+                            try:
+                                sess.set_access_token(access_token, expires)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    print("refresh access token error", e)
                     pass
 
                 # 余额低/查询异常时倾向于回收会话，余额充足时保持会话热态
