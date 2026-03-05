@@ -350,13 +350,17 @@ class Database:
             if await self._table_exists(db, "windows") and not await self._column_exists(db, "windows", "window_status"):
                 await db.execute("ALTER TABLE windows ADD COLUMN window_status INTEGER DEFAULT 0")
             # 调度路径会频繁按可用窗口状态过滤
-            await db.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_windows_pick_status
-                ON windows(space_pk, window_status)
-                WHERE deleted = 0 AND enabled = 1
-                """
-            )
+            try:
+                await db.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_windows_pick_status
+                    ON windows(space_pk, window_status)
+                    WHERE deleted = 0 AND enabled = 1
+                    """
+                )
+            except Exception:
+                # 启动阶段不因历史库索引失败中断，后续 check_and_migrate_db 会再次补齐
+                pass
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_space_pk ON proxies(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_accounts_space_pk ON platform_accounts(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)")
