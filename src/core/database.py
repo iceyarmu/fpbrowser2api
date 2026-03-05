@@ -338,6 +338,22 @@ class Database:
                 pass
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
+            # 调度挑选路径索引：按 task_type 过滤 + 活跃记录排序挑选
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ttw_pick_active_order
+                ON task_type_windows(task_type_id, consecutive_errors, updated_at, remaining_quota DESC)
+                WHERE deleted = 0 AND enabled = 1
+                """
+            )
+            # 调度路径会频繁按可用窗口状态过滤
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_windows_pick_status
+                ON windows(space_pk, window_status)
+                WHERE deleted = 0 AND enabled = 1
+                """
+            )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_space_pk ON proxies(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_accounts_space_pk ON platform_accounts(space_pk)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)")
@@ -618,6 +634,24 @@ class Database:
                         await db.execute("UPDATE task_type_windows SET cooldown_until = NULL WHERE cooldown_until IS NOT NULL")
                     except Exception:
                         pass
+
+                # 查询优化索引：支持调度挑选高频路径（兼容已有库）
+                await db.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_ttw_pick_active_order
+                    ON task_type_windows(task_type_id, consecutive_errors, updated_at, remaining_quota DESC)
+                    WHERE deleted = 0 AND enabled = 1
+                    """
+                )
+
+            if await self._table_exists(db, "windows"):
+                await db.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_windows_pick_status
+                    ON windows(space_pk, window_status)
+                    WHERE deleted = 0 AND enabled = 1
+                    """
+                )
 
             # Step 3: 默认行（不覆盖已有）
             await self._ensure_default_rows(db, config_dict=config_dict)
@@ -2213,7 +2247,9 @@ class Database:
             )
             await db.commit()
 
-    async def pick_and_reserve_window_for_task(self, task_type_code: str) -> Optional[Dict[str, Any]]:
+    async def pick_and_reserve_window_for_task(
+        self, task_type_code: str, browser_pool_limit: int = 100
+    ) -> Optional[Dict[str, Any]]:
         """挑选 1 个窗口并原子预占 1 个并发槽位（一步完成）。
 
         目标：
@@ -2228,6 +2264,7 @@ class Database:
         code = (task_type_code or "").strip()
         if not code:
             return None
+        pool_limit = max(1, int(browser_pool_limit or 100))
 
         # SQLite 高并发下可能出现 "database is locked"；做少量快速重试
         for _ in range(3):
@@ -2246,8 +2283,8 @@ class Database:
 
                     # Step 1: 按排序挑选 1 个 mapping_id，并取出本次更新需要的并发/阈值参数
                     # 负载窗口池策略：
-                    # - 先按 browser_id 分组，把“已打开 + 已冷却未打开”的窗口压缩到每个浏览器最多 100 个。
-                    # - 再在这 100 个窗口池中按既有策略（连续错误最少 -> 最久未用 -> 余额最多）选第 1 个。
+                    # - 先按 browser_id 分组，把“已打开 + 已冷却未打开”的窗口压缩到每个浏览器最多 pool_limit 个。
+                    # - 再在该窗口池中按既有策略（连续错误最少 -> 最久未用 -> 余额最多）选第 1 个。
                     cur = await db.execute(
                         """
                         WITH eligible AS (
@@ -2276,13 +2313,7 @@ class Database:
                             AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
                             AND (m.consecutive_errors < t.continuous_error_threshold)
                             AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                            AND (
-                              COALESCE(w.window_status, 0) = 1
-                              OR (
-                                COALESCE(w.window_status, 0) = 0
-                                AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
-                              )
-                            )
+                            AND COALESCE(w.window_status, 0) IN (0, 1)
                         ),
                         ranked AS (
                           SELECT
@@ -2302,11 +2333,11 @@ class Database:
                           task_concurrency,
                           continuous_error_threshold
                         FROM ranked
-                        WHERE browser_pool_rank <= 100
+                        WHERE browser_pool_rank <= ?
                         ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                         LIMIT 1
                         """,
-                        (code,),
+                        (code, pool_limit),
                     )
                     picked = await cur.fetchone()
                     if not picked:

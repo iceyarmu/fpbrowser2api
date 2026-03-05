@@ -199,7 +199,7 @@ class TaskService:
         - 预占由 DB 字段 inflight_slots 完成（支持多进程/多实例，避免超卖）
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
         """
-        r = await self.db.pick_and_reserve_window_for_task(task_type_code=task_type_code)
+        r = await self.db.pick_and_reserve_window_for_task(task_type_code=task_type_code, browser_pool_limit=80)
         if not r:
             return None
 
