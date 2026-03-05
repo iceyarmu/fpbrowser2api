@@ -3010,7 +3010,7 @@ class SoraSession:
                     f"retry={bool(should_retry)} err={safe_trim(err_msg, 300)!r}",
                 )
                 if not should_retry:
-                    raise
+                    raise NonPenalizedTaskError(f"发布草稿失败: {err_msg}", status_code=429)
                 await asyncio.sleep(float(publish_retry_delay_seconds))
             
         

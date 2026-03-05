@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse, urlunparse
 
 from .fp_browser_client import FPBrowserClient
 
@@ -42,15 +43,47 @@ def append_log(log_file: Path, s: str) -> None:
         pass
 
 
-def normalize_cdp_endpoint(endpoint: str) -> str:
+def normalize_cdp_endpoint(endpoint: str, *, base_url: Optional[str] = None) -> str:
     """将指纹浏览器返回的 http/ws 调试地址规范化为 Playwright 可连接的 endpoint。"""
     s = (endpoint or "").strip()
     if not s:
         return ""
     if s.startswith(("http://", "https://", "ws://", "wss://")):
-        return s
-    # 常见返回：127.0.0.1:9222
-    return "http://" + s
+        normalized = s
+    else:
+        # 常见返回：127.0.0.1:9222
+        normalized = "http://" + s
+
+    # 将 debugger endpoint 的主机对齐到 base_url，避免 API 在远端机器时仍回传 127.0.0.1 导致 ECONNREFUSED。
+    base = (base_url or "").strip()
+    if not base:
+        return normalized
+    if "://" not in base:
+        base = "http://" + base
+
+    try:
+        endpoint_u = urlparse(normalized)
+        base_u = urlparse(base)
+        host = (base_u.hostname or "").strip()
+        if not host or not endpoint_u.scheme:
+            return normalized
+
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
+        userinfo = ""
+        if endpoint_u.username:
+            userinfo = endpoint_u.username
+            if endpoint_u.password:
+                userinfo += f":{endpoint_u.password}"
+            userinfo += "@"
+
+        netloc = f"{userinfo}{host}"
+        if endpoint_u.port is not None:
+            netloc += f":{endpoint_u.port}"
+        return urlunparse(endpoint_u._replace(netloc=netloc))
+    except Exception:
+        return normalized
 
 
 def _is_probably_navigable_url(url: str) -> bool:
@@ -310,7 +343,7 @@ class PlaywrightBrowserContext:
                 data = (rsp or {}).get("data") or {}
                 raw_endpoint = str(data.get("http") or data.get("ws") or "").strip()
 
-        debugger_address = normalize_cdp_endpoint(raw_endpoint)
+        debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
         if not debugger_address:
             raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
         self.cdp_endpoint = debugger_address
