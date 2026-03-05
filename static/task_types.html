@@ -1637,7 +1637,7 @@
                 <div class="fw-semibold quota-click" title="点击按额度排序" data-role="remainingQuota" data-mid="${m.id}">
                   额度: <span class="fw-semibold" data-role="remainingQuotaValue" data-mid="${m.id}">${m.remaining_quota}</span>
                 </div>
-                <button class="btn btn-outline-secondary btn-sm" title="刷新剩余额度" data-act="refreshQuota" data-mid="${m.id}">⟳</button>
+                <button class="btn btn-outline-secondary btn-sm btn-icon" title="刷新剩余额度" aria-label="刷新额度" data-act="refreshQuota" data-mid="${m.id}"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span class="visually-hidden">刷新额度</span></button>
       
                 <div class="text-muted">限流:${m.sora_rate_limit_reached ? `<span class="badge text-bg-warning">是</span>` : `<span class="badge text-bg-success">否</span>`}费额:<span class="fw-semibold" data-role="purchasedRemainingCount" data-mid="${m.id}">${escapeHtml(String(m.sora_purchased_remaining_count ?? 0))}</span></div>
               </div>
