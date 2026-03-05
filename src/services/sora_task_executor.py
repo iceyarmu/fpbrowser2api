@@ -1708,42 +1708,21 @@ class SoraSession:
 
     async def _maybe_click_login_button_if_prompted(self, page) -> bool:
         has_login_button = False
-        """若页面出现未登录提示，则尝试点击 'Log in' 按钮/链接。"""
+        """尝试点击页面上的 Log in 按钮/链接（不依赖固定提示文案）。"""
         if page is None:
             return False, has_login_button
-        phrase = "Log in to create and edit images and videos"
-        has_prompt = False
-        
 
-        # 优先用 locator（更快），不行再用 HTML 兜底
+        # 只要页面上能找到 Log in 入口，就尝试点击（按钮优先，其次链接；最后 CSS 兜底）
         try:
-            if hasattr(page, "get_by_text"):
-                loc = page.get_by_text(phrase)
-                try:
-                    has_prompt = bool(await loc.first.is_visible())
-                except Exception:
-                    try:
-                        has_prompt = (await loc.count()) > 0
-                    except Exception:
-                        has_prompt = False
-            else:
-                loc = page.locator(f"text={phrase}")
-                has_prompt = (await loc.count()) > 0
+            loc_probe = page.locator('button:has-text("Log in"), a:has-text("Log in"), [role="button"]:has-text("Log in"), [role="link"]:has-text("Log in")')
+            has_login_button = (await loc_probe.count()) > 0
         except Exception:
-            has_prompt = False
+            has_login_button = False
 
-        if not has_prompt:
-            try:
-                html = await page.content()
-                has_prompt = phrase.lower() in (html or "").lower()
-            except Exception:
-                has_prompt = False
-
-        if not has_prompt:
-            await self._push_debug_progress(page, "未发现 Log in 提示", level="info")
+        if not has_login_button:
+            await self._push_debug_progress(page, "未发现 Log in 按钮/链接", level="info")
             return False, has_login_button
-        await self._push_debug_progress(page, "发现了 Log in 提示", level="info")
-        has_login_button = True
+        await self._push_debug_progress(page, "发现 Log in 按钮/链接，准备点击", level="info")
 
         # 点击 Log in（按钮优先，其次链接；最后 CSS 兜底）
         try:
@@ -1768,7 +1747,7 @@ class SoraSession:
             pass
 
         try:
-            loc2 = page.locator('button:has-text("Log in"), a:has-text("Log in")')
+            loc2 = page.locator('button:has-text("Log in"), a:has-text("Log in"), [role="button"]:has-text("Log in"), [role="link"]:has-text("Log in")')
             await loc2.first.click(timeout=3000)
             await self._push_debug_progress(page, "点击 Log in 成功（css fallback）", level="ok")
             return True, has_login_button
