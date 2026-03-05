@@ -16,6 +16,7 @@ import contextvars
 import json
 import os
 import random
+import re
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -1712,10 +1713,39 @@ class SoraSession:
         if page is None:
             return False, has_login_button
 
+        # 页面跳转到 /login 后，DOM 可能晚到；先短暂等待一次，避免误判“未发现按钮”。
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=4000)
+        except Exception:
+            pass
+
+        # 同时探测 page 与所有 frame，避免登录按钮出现在 frame 内时漏检。
+        scopes: list[Any] = [page]
+        try:
+            for fr in list(getattr(page, "frames", []) or []):
+                if fr is not page and fr not in scopes:
+                    scopes.append(fr)
+        except Exception:
+            pass
+
+        login_name_re = re.compile(r"log\s*in", re.IGNORECASE)
+
         # 只要页面上能找到 Log in 入口，就尝试点击（按钮优先，其次链接；最后 CSS 兜底）
         try:
-            loc_probe = page.locator('button:has-text("Log in"), a:has-text("Log in"), [role="button"]:has-text("Log in"), [role="link"]:has-text("Log in")')
-            has_login_button = (await loc_probe.count()) > 0
+            for sc in scopes:
+                try:
+                    if hasattr(sc, "get_by_role"):
+                        btn_cnt = await sc.get_by_role("button", name=login_name_re).count()
+                        link_cnt = await sc.get_by_role("link", name=login_name_re).count()
+                        if (btn_cnt + link_cnt) > 0:
+                            has_login_button = True
+                            break
+                    loc_probe = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=login_name_re)
+                    if (await loc_probe.count()) > 0:
+                        has_login_button = True
+                        break
+                except Exception:
+                    continue
         except Exception:
             has_login_button = False
 
@@ -1724,36 +1754,38 @@ class SoraSession:
             return False, has_login_button
         await self._push_debug_progress(page, "发现 Log in 按钮/链接，准备点击", level="info")
 
-        # 点击 Log in（按钮优先，其次链接；最后 CSS 兜底）
-        try:
-            if hasattr(page, "get_by_role"):
-                try:
-                    btn = page.get_by_role("button", name="Log in")
-                    await btn.first.click(timeout=3000)
-                    await self._push_debug_progress(page, "点击 Log in 成功（button）", level="ok")
-                    return True, has_login_button
-                except Exception as e:
-                    await self._push_debug_progress(page, f"点击 Log in 失败（button）：{_short_err_msg(e)}", level="warn")
-                    pass
-                try:
-                    link = page.get_by_role("link", name="Log in")
-                    await link.first.click(timeout=3000)
-                    await self._push_debug_progress(page, "点击 Log in 成功（link）", level="ok")
-                    return True, has_login_button
-                except Exception as e:
-                    await self._push_debug_progress(page, f"点击 Log in 失败（link）：{_short_err_msg(e)}", level="warn")
-                    pass
-        except Exception:
-            pass
+        # 点击 Log in（先 role，再文本兜底；同时遍历 page + frames）
+        for sc in scopes:
+            try:
+                scope_name = "page" if sc is page else "frame"
+                if hasattr(sc, "get_by_role"):
+                    try:
+                        btn = sc.get_by_role("button", name=login_name_re)
+                        await btn.first.click(timeout=3000)
+                        await self._push_debug_progress(page, f"点击 Log in 成功（button/{scope_name}）", level="ok")
+                        return True, has_login_button
+                    except Exception as e:
+                        await self._push_debug_progress(page, f"点击 Log in 失败（button/{scope_name}）：{_short_err_msg(e)}", level="warn")
+                    try:
+                        link = sc.get_by_role("link", name=login_name_re)
+                        await link.first.click(timeout=3000)
+                        await self._push_debug_progress(page, f"点击 Log in 成功（link/{scope_name}）", level="ok")
+                        return True, has_login_button
+                    except Exception as e:
+                        await self._push_debug_progress(page, f"点击 Log in 失败（link/{scope_name}）：{_short_err_msg(e)}", level="warn")
 
-        try:
-            loc2 = page.locator('button:has-text("Log in"), a:has-text("Log in"), [role="button"]:has-text("Log in"), [role="link"]:has-text("Log in")')
-            await loc2.first.click(timeout=3000)
-            await self._push_debug_progress(page, "点击 Log in 成功（css fallback）", level="ok")
-            return True, has_login_button
-        except Exception as e:
-            await self._push_debug_progress(page, f"点击 Log in 失败（css fallback）：{_short_err_msg(e)}", level="error")
-            return False, has_login_button
+                try:
+                    loc2 = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=login_name_re)
+                    await loc2.first.click(timeout=3000)
+                    await self._push_debug_progress(page, f"点击 Log in 成功（text fallback/{scope_name}）", level="ok")
+                    return True, has_login_button
+                except Exception as e:
+                    await self._push_debug_progress(page, f"点击 Log in 失败（text fallback/{scope_name}）：{_short_err_msg(e)}", level="warn")
+            except Exception:
+                continue
+
+        await self._push_debug_progress(page, "点击 Log in 失败（全部策略）", level="error")
+        return False, has_login_button
 
     async def _bring_sora_drafts_to_front(self, refresh_target=True) -> None:
         """将 Sora drafts 页面置前，并尽量确保整个指纹浏览器实例只保留一个 drafts 页面。
