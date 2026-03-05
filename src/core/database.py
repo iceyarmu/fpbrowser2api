@@ -1288,6 +1288,39 @@ class Database:
             except Exception:
                 return 0
 
+    async def update_window_status_by_space_and_key(self, *, space_id: str, window_key: str, window_status: int) -> int:
+        """按 (space_id, window_key) 更新单个窗口状态（1=打开，0=未打开）。"""
+        sid = str(space_id or "").strip()
+        wk = str(window_key or "").strip()
+        if not sid or not wk:
+            return 0
+        st = 1 if int(window_status or 0) == 1 else 0
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE windows
+                SET window_status = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE id = (
+                    SELECT w.id
+                    FROM windows w
+                    JOIN spaces s ON s.id = w.space_pk
+                    WHERE s.deleted = 0
+                      AND w.deleted = 0
+                      AND s.space_id = ?
+                      AND w.window_key = ?
+                    ORDER BY w.id DESC
+                    LIMIT 1
+                )
+                """,
+                (st, sid, wk),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
     async def clear_window_platform_binding_by_account(self, *, space_pk: int, account_id: int) -> int:
         """当账号被删除时，清空引用该账号的窗口绑定。"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -2212,29 +2245,65 @@ class Database:
                     await db.execute("BEGIN IMMEDIATE")
 
                     # Step 1: 按排序挑选 1 个 mapping_id，并取出本次更新需要的并发/阈值参数
+                    # 负载窗口池策略：
+                    # - 先按 browser_id 分组，把“已打开 + 已冷却未打开”的窗口压缩到每个浏览器最多 100 个。
+                    # - 再在这 100 个窗口池中按既有策略（连续错误最少 -> 最久未用 -> 余额最多）选第 1 个。
                     cur = await db.execute(
                         """
+                        WITH eligible AS (
+                          SELECT
+                            m.id AS mapping_id,
+                            t.concurrency AS task_concurrency,
+                            t.continuous_error_threshold AS continuous_error_threshold,
+                            m.consecutive_errors AS consecutive_errors,
+                            m.updated_at AS mapping_updated_at,
+                            m.remaining_quota AS remaining_quota,
+                            COALESCE(w.window_status, 0) AS window_status,
+                            b.id AS browser_pk
+                          FROM task_types t
+                          JOIN task_type_windows m ON m.task_type_id = t.id
+                          JOIN windows w ON m.window_pk = w.id
+                          JOIN spaces s ON w.space_pk = s.id
+                          JOIN browsers b ON s.browser_id = b.id
+                          WHERE t.deleted = 0 AND t.enabled = 1
+                            AND t.code = ?
+                            AND m.deleted = 0 AND m.enabled = 1
+                            AND w.deleted = 0 AND w.enabled = 1
+                            AND (
+                              (m.remaining_quota > 2)
+                              OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
+                            )
+                            AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
+                            AND (m.consecutive_errors < t.continuous_error_threshold)
+                            AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
+                            AND (
+                              COALESCE(w.window_status, 0) = 1
+                              OR (
+                                COALESCE(w.window_status, 0) = 0
+                                AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
+                              )
+                            )
+                        ),
+                        ranked AS (
+                          SELECT
+                            e.*,
+                            ROW_NUMBER() OVER (
+                              PARTITION BY e.browser_pk
+                              ORDER BY
+                                e.window_status DESC,
+                                e.consecutive_errors ASC,
+                                e.mapping_updated_at ASC,
+                                e.remaining_quota DESC
+                            ) AS browser_pool_rank
+                          FROM eligible e
+                        )
                         SELECT
-                          m.id AS mapping_id,
-                          t.concurrency AS task_concurrency,
-                          t.continuous_error_threshold
-                        FROM task_types t
-                        JOIN task_type_windows m ON m.task_type_id = t.id
-                        JOIN windows w ON m.window_pk = w.id
-                        JOIN spaces s ON w.space_pk = s.id
-                        JOIN browsers b ON s.browser_id = b.id
-                        WHERE t.deleted=0 AND t.enabled=1
-                          AND t.code=?
-                          AND m.deleted=0 AND m.enabled=1
-                          AND w.deleted=0 AND w.enabled=1
-                          AND (
-                            (m.remaining_quota > 2)
-                            OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
-                          )
-                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
-                          AND (m.consecutive_errors < t.continuous_error_threshold)
-                          AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                        ORDER BY m.consecutive_errors ASC, m.updated_at ASC, m.remaining_quota DESC
+                          mapping_id,
+                          task_concurrency,
+                          continuous_error_threshold
+                        FROM ranked
+                        WHERE browser_pool_rank <= 100
+                        ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                         LIMIT 1
                         """,
                         (code,),

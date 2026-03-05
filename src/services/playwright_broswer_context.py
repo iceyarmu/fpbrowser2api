@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse, urlunparse
 
+from ..core.database import Database
 from .fp_browser_client import FPBrowserClient
 
 
@@ -244,6 +245,7 @@ class PlaywrightBrowserContext:
     space_id: str
     window_key: str
     fp_client: FPBrowserClient
+    db: Database = field(default_factory=Database)
 
     playwright: Any = None
     browser: Any = None
@@ -253,6 +255,16 @@ class PlaywrightBrowserContext:
     last_used_at: float = field(default_factory=lambda: time.time())
 
     driver_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def _sync_window_status(self, opened: bool) -> None:
+        try:
+            await self.db.update_window_status_by_space_and_key(
+                space_id=self.space_id,
+                window_key=self.window_key,
+                window_status=1 if opened else 0,
+            )
+        except Exception:
+            pass
 
     async def ensure_open(
         self,
@@ -286,6 +298,7 @@ class PlaywrightBrowserContext:
                 context_ok = False
 
             if browser_ok and context_ok:
+                await self._sync_window_status(True)
                 return
 
             # 失效句柄：清空后走下面的重连流程
@@ -390,6 +403,7 @@ class PlaywrightBrowserContext:
             self.context = best_ctx or ctxs[0]
         else:
             self.context = await self.browser.new_context()
+        await self._sync_window_status(True)
 
 
     async def close(self) -> None:
@@ -403,6 +417,7 @@ class PlaywrightBrowserContext:
             )
         except Exception:
             pass
+        await self._sync_window_status(False)
 
         br = self.browser
         self.browser = None
