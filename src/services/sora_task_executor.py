@@ -432,7 +432,7 @@ async def _sora_generate_sentinel_token_in_fp_context_pw(page, *, device_id: Opt
         if token_s and not token_s.startswith("ERROR"):
             append_log(log_file, f"[sora][sentinel] token_ok value={_mask_secret(token_s, head=15, tail=15)!r}")
             return token_s
-        append_log(log_file, f"[sora][sentinel] token_error value={safe_trim(token_s, 300)!r}")
+        append_log(log_file, f"[sora][sentinel] token_error value={safe_trim(token_s, 600)!r}")
         return None
     except Exception as e:
         append_log(log_file, f"[sora][sentinel] generate failed: {e}")
@@ -830,7 +830,7 @@ async def _sora_api_upload_image_bytes_pw(
             text = str((res or {}).get("text") or "")
             append_log(log_file, f"[sora][upload] url={upload_url!r} status={status} body={safe_trim(text, 500)!r}")
             if status not in (200, 201):
-                last_err = f"status={status} body={safe_trim(text, 300)}"
+                last_err = f"status={status} body={safe_trim(text, 600)}"
                 continue
             try:
                 obj = json.loads(text) if text else {}
@@ -839,7 +839,7 @@ async def _sora_api_upload_image_bytes_pw(
             media_id = str((obj or {}).get("id") or "").strip()
             if media_id:
                 return media_id
-            last_err = f"missing id body={safe_trim(text, 300)}"
+            last_err = f"missing id body={safe_trim(text, 600)}"
         except Exception as e:
             last_err = str(e)
             continue
@@ -877,7 +877,7 @@ async def _sora_api_upload_character_video_pw(
                 timeout_ms=180_000,
             )
             if status not in (200, 201):
-                last_err = f"url={upload_url!r} status={status} body={safe_trim(text, 300)}"
+                last_err = f"url={upload_url!r} status={status} body={safe_trim(text, 600)}"
                 continue
             try:
                 obj = json.loads(text) if text else {}
@@ -886,7 +886,7 @@ async def _sora_api_upload_character_video_pw(
             cameo_id = str((obj or {}).get("id") or "").strip()
             if cameo_id:
                 return cameo_id
-            last_err = f"url={upload_url!r} missing id body={safe_trim(text, 300)}"
+            last_err = f"url={upload_url!r} missing id body={safe_trim(text, 600)}"
         except Exception as e:
             last_err = f"url={upload_url!r} err={e}"
             continue
@@ -922,7 +922,7 @@ async def _sora_api_upload_character_image_pw(
                 timeout_ms=120_000,
             )
             if status not in (200, 201):
-                last_err = f"url={upload_url!r} status={status} body={safe_trim(text, 300)}"
+                last_err = f"url={upload_url!r} status={status} body={safe_trim(text, 600)}"
                 continue
             try:
                 obj = json.loads(text) if text else {}
@@ -931,7 +931,7 @@ async def _sora_api_upload_character_image_pw(
             asset_pointer = str((obj or {}).get("asset_pointer") or "").strip()
             if asset_pointer:
                 return asset_pointer
-            last_err = f"url={upload_url!r} missing asset_pointer body={safe_trim(text, 300)}"
+            last_err = f"url={upload_url!r} missing asset_pointer body={safe_trim(text, 600)}"
         except Exception as e:
             last_err = f"url={upload_url!r} err={e}"
             continue
