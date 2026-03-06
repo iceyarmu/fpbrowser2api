@@ -2193,6 +2193,31 @@ class SoraSession:
                 pass
             return out
 
+    async def api_subscription_info(self, *, target_url: str) -> Dict[str, Any]:
+        """读取 Sora 订阅信息：GET /backend/billing/subscriptions。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        # 查询会员信息属于“仍在使用窗口”的行为：不要触发倒计时关窗
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            url = _sora_backend_url_from_target(target_url, "/backend/billing/subscriptions")
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
+            tx = await page_fetch_json(self.pw_ctx.page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
+            obj = tx.get("_json") or {}
+            rows = (obj or {}).get("data") or []
+            first = rows[0] if isinstance(rows, list) and rows else {}
+            plan = (first or {}).get("plan") if isinstance(first, dict) else {}
+            plan = plan if isinstance(plan, dict) else {}
+            return {
+                "plan_type": str(plan.get("id") or "").strip(),
+                "plan_title": str(plan.get("title") or "").strip(),
+                "subscription_end": str((first or {}).get("end_ts") or "").strip(),
+                "raw": obj,
+            }
+
     async def api_invite_mine(self, *, target_url: str) -> Dict[str, Any]:
         """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
         self.last_used_at = time.time()

@@ -137,15 +137,19 @@
                   <label class="form-label form-label-tight">英文名称（唯一）</label>
                   <input class="form-control mono" id="typeCode" placeholder="gen_video / gen_image" />
                 </div>
-                <div class="col-12 col-md-4">
+                <div class="col-12 col-md-3">
                   <label class="form-label form-label-tight">并发数</label>
                   <input class="form-control form-control-sm" id="typeConcurrency" type="number" min="1" value="1" />
                 </div>
-                <div class="col-12 col-md-4">
+                <div class="col-12 col-md-3">
                   <label class="form-label form-label-tight">连续错误阈值</label>
                   <input class="form-control form-control-sm" id="typeErrThr" type="number" min="1" value="3" />
                 </div>
-                <div class="col-12 col-md-4">
+                <div class="col-12 col-md-3">
+                  <label class="form-label form-label-tight">连续错误关闭窗口阈值</label>
+                  <input class="form-control form-control-sm" id="typeErrCloseWinThr" type="number" min="1" value="3" />
+                </div>
+                <div class="col-12 col-md-3">
                   <label class="form-label form-label-tight">超时时长（秒）</label>
                   <input class="form-control form-control-sm" id="typeTimeout" type="number" min="10" value="1800" />
                 </div>
@@ -1059,7 +1063,7 @@
 
       function getRowActionButtons(mappingId, fromEl) {
         const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
-        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null };
+        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
         return {
           tr,
           openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
@@ -1067,6 +1071,7 @@
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
           refreshQuotaBtn: tr.querySelector(`button[data-act="refreshQuota"][data-mid="${mappingId}"]`),
           refreshInviteBtn: tr.querySelector(`button[data-act="refreshInvite"][data-mid="${mappingId}"]`),
+          refreshSubBtn: tr.querySelector(`button[data-act="refreshSubscription"][data-mid="${mappingId}"]`),
         };
       }
 
@@ -1128,6 +1133,14 @@
         if (has("sora_access_expires")) {
           const expEl = tr.querySelector(`[data-role="accessTokenExpires"][data-mid="${mappingId}"]`);
           if (expEl) expEl.textContent = String(formatDateTimeShanghai(m.sora_access_expires) || "-");
+        }
+        if (has("sora_plan_title")) {
+          const planEl = tr.querySelector(`[data-role="planTitle"][data-mid="${mappingId}"]`);
+          if (planEl) planEl.textContent = String(m.sora_plan_title || "-");
+        }
+        if (has("sora_subscription_end")) {
+          const endEl = tr.querySelector(`[data-role="subscriptionEnd"][data-mid="${mappingId}"]`);
+          if (endEl) endEl.textContent = String(formatDateTimeShanghai(m.sora_subscription_end) || "-");
         }
 
         // 派生字段：冷却中（对齐 pick_and_reserve_window_for_task）
@@ -1326,6 +1339,7 @@
         document.getElementById("typeCode").value = t?.code || "";
         document.getElementById("typeConcurrency").value = t?.concurrency ?? 1;
         document.getElementById("typeErrThr").value = t?.continuous_error_threshold ?? 3;
+        document.getElementById("typeErrCloseWinThr").value = t?.continuous_error_close_window_threshold ?? 3;
         document.getElementById("typeTimeout").value = t?.timeout_seconds ?? 1800;
         document.getElementById("typeCreateHandler").value = t?.create_task_handler || "";
         document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
@@ -1350,6 +1364,7 @@
             code: document.getElementById("typeCode").value.trim(),
             concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
             continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
+            continuous_error_close_window_threshold: parseInt(document.getElementById("typeErrCloseWinThr").value, 10) || 3,
             timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
             create_task_handler: document.getElementById("typeCreateHandler").value || null,
             refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
@@ -1595,8 +1610,13 @@
             <td>
               ${Number(m.window_status || 0) === 1 ? `<span class="badge text-bg-success">打开</span>` : `<span class="badge text-bg-secondary">未打开</span>`}
             </td>
-            <td style="width: 50px; min-width: 50px;">
+            <td style="width: 220px; min-width: 220px;">
               <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")}-${escapeHtml(m.space_name || "-")}</div>
+              <div class="small2 text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
+                <span>会员：<span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span></span>
+                <span>到期：<span class="fw-semibold mono" data-role="subscriptionEnd" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_subscription_end))}</span></span>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="刷新会员信息" data-act="refreshSubscription" data-mid="${m.id}">⟳</button>
+              </div>
             </td>
             <td style="width: 430px; min-width: 430px;">
               <select
@@ -1622,14 +1642,14 @@
             </td>
             <td class="mono">
               <button
-                class="btn btn-link p-0 fw-semibold text-decoration-none mono text-start"
+                class="btn btn-link p-0 fw-semibold text-decoration-none mono text-start small2"
                 title="点击查看该窗口任务列表（按时间倒序）"
                 data-role="taskStats"
                 data-mid="${m.id}"
-              ><span class="text-primary fw-semibold" data-role="success24h" data-mid="${m.id}">${success24h}</span>/<span class="text-primary fw-semibold" data-role="successTotal" data-mid="${m.id}">${successTotal}</span>/<span class="text-danger fw-semibold" data-role="consecutiveErrors" data-mid="${m.id}">${failConsecutive}</span>/<span class="text-danger fw-semibold" data-role="failed24h" data-mid="${m.id}">${fail24h}</span>/<span class="text-danger fw-semibold" data-role="totalErrors" data-mid="${m.id}">${failTotal}</span>|<span class="fw-semibold small" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></button>
-              <div class="small2 text-muted d-flex flex-wrap align-items-center gap-2">
-                <span>24h成功/总成功/连续失败/24h失败/总失败</span>
-                <button class="btn btn-outline-secondary btn-sm" title="重置连续错误并清空错误重置时间（error_cooldown_until）" aria-label="重置连续错误" data-act="resetConsecutiveErrors" data-mid="${m.id}">⟳</button>
+              ><span class="text-primary fw-semibold" data-role="success24h" data-mid="${m.id}">${success24h}</span>/<span class="text-primary fw-semibold" data-role="successTotal" data-mid="${m.id}">${successTotal}</span>/<span class="text-danger fw-semibold" data-role="consecutiveErrors" data-mid="${m.id}">${failConsecutive}</span>/<span class="text-danger fw-semibold" data-role="failed24h" data-mid="${m.id}">${fail24h}</span>/<span class="text-danger fw-semibold" data-role="totalErrors" data-mid="${m.id}">${failTotal}</span>|<span class="fw-semibold small2" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></button>
+              <button class="btn btn-outline-secondary btn-sm" title="重置连续错误并清空错误重置时间（error_cooldown_until）" aria-label="重置连续错误" data-act="resetConsecutiveErrors" data-mid="${m.id}">⟳</button>
+              <div class="text-muted d-flex flex-wrap align-items-center gap-2 small2">
+                <span  class="text-muted d-flex flex-wrap align-items-center gap-2 small2">24h成功|总成功|连续失败|24h失败|总失败</span>
               </div>
             </td>
             <td class="mono cell-stack">
@@ -1838,6 +1858,9 @@
         if (act === "refreshInvite") {
           return refreshInvite(mappingId);
         }
+        if (act === "refreshSubscription") {
+          return refreshSubscription(mappingId);
+        }
         if (act === "convertAccessToken") {
           return openTokenModal(mappingId);
         }
@@ -1884,6 +1907,24 @@
         } finally {
           const { refreshInviteBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshInviteBtn, false);
+        }
+      }
+
+      async function refreshSubscription(mappingId) {
+        try {
+          const { refreshSubBtn } = getRowActionButtons(mappingId);
+          setBtnBusy(refreshSubBtn, true, { loadingText: "刷新中", keepWidth: false });
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info`, { method: "POST" });
+          updateMappingRowUI(mappingId, {
+            sora_plan_title: d?.plan_title || "",
+            sora_subscription_end: d?.subscription_end || "",
+          });
+          toast("会员信息已刷新", "success");
+        } catch (e) {
+          toast(e.message, "error");
+        } finally {
+          const { refreshSubBtn } = getRowActionButtons(mappingId);
+          setBtnBusy(refreshSubBtn, false);
         }
       }
 

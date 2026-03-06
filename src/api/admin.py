@@ -96,6 +96,7 @@ class CreateTaskTypeRequest(BaseModel):
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
+    continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
@@ -106,6 +107,7 @@ class UpdateTaskTypeRequest(BaseModel):
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
+    continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
@@ -1263,6 +1265,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             req.code,
             req.concurrency,
             req.continuous_error_threshold,
+            req.continuous_error_close_window_threshold,
             req.timeout_seconds,
             create_task_handler=req.create_task_handler,
             refresh_quota_handler=req.refresh_quota_handler,
@@ -1291,6 +1294,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             code=req.code,
             concurrency=req.concurrency,
             continuous_error_threshold=req.continuous_error_threshold,
+            continuous_error_close_window_threshold=req.continuous_error_close_window_threshold,
             timeout_seconds=req.timeout_seconds,
             create_task_handler=req.create_task_handler,
             refresh_quota_handler=req.refresh_quota_handler,
@@ -1405,6 +1409,52 @@ async def refresh_mapping_remaining_quota(
     except Exception:
         pass
     return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/refresh-subscription-info")
+async def refresh_mapping_subscription_info(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """通过指纹浏览器读取订阅信息并写回 mapping。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
+
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    try:
+        sora_ctx.set_access_token(ctx_row.get("sora_access_token"), ctx_row.get("sora_access_expires"))
+    except Exception:
+        pass
+
+    try:
+        info = await sora_ctx.api_subscription_info(target_url="https://sora.chatgpt.com/drafts")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
+
+    plan_title = str((info or {}).get("plan_title") or "").strip() or None
+    subscription_end = str((info or {}).get("subscription_end") or "").strip() or None
+    await db.update_task_type_window(
+        mapping_id=mapping_id,
+        sora_plan_title=plan_title,
+        sora_subscription_end=subscription_end,
+    )
+    return {
+        "success": True,
+        "mapping_id": mapping_id,
+        "plan_title": plan_title,
+        "subscription_end": subscription_end,
+    }
 
 
 @router.get("/api/admin/auto-refresh-errors")

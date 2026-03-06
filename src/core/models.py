@@ -166,6 +166,7 @@ class TaskType(BaseModel):
     code: str  # 英文唯一
     concurrency: int = 1
     continuous_error_threshold: int = 3
+    continuous_error_close_window_threshold: int = 3
     timeout_seconds: int = 1800
     # 动态函数 key（来自 services/task_handler_registry.py）
     create_task_handler: Optional[str] = None

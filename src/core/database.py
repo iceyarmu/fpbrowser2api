@@ -232,6 +232,7 @@ class Database:
                     code TEXT UNIQUE NOT NULL,
                     concurrency INTEGER DEFAULT 1,
                     continuous_error_threshold INTEGER DEFAULT 3,
+                    continuous_error_close_window_threshold INTEGER DEFAULT 3,
                     timeout_seconds INTEGER DEFAULT 1800,
                     create_task_handler TEXT,
                     refresh_quota_handler TEXT,
@@ -261,6 +262,8 @@ class Database:
                     sora_invite_code TEXT,
                     sora_access_token TEXT,
                     sora_access_expires TEXT,
+                    sora_plan_title TEXT,
+                    sora_subscription_end TEXT,
                     -- 额度重置时间点（来自 nf/check：now + access_resets_in_seconds）
                     cooldown_until TIMESTAMP,
                     -- 连续错误熔断冷却时间（与 cooldown_until 区分）
@@ -442,6 +445,7 @@ class Database:
                 columns_to_add = [
                     ("create_task_handler", "TEXT"),
                     ("refresh_quota_handler", "TEXT"),
+                    ("continuous_error_close_window_threshold", "INTEGER DEFAULT 3"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
@@ -615,6 +619,8 @@ class Database:
                     ("sora_invite_code", "TEXT"),
                     ("sora_access_token", "TEXT"),
                     ("sora_access_expires", "TEXT"),
+                    ("sora_plan_title", "TEXT"),
+                    ("sora_subscription_end", "TEXT"),
                     ("error_cooldown_until", "TIMESTAMP"),
                 ]
                 for col_name, col_type in columns_to_add:
@@ -1894,6 +1900,7 @@ class Database:
         code: str,
         concurrency: int,
         continuous_error_threshold: int,
+        continuous_error_close_window_threshold: int,
         timeout_seconds: int,
         create_task_handler: Optional[str] = None,
         refresh_quota_handler: Optional[str] = None,
@@ -1902,17 +1909,18 @@ class Database:
             cur = await db.execute(
                 """
                 INSERT INTO task_types (
-                  name, code, concurrency, continuous_error_threshold, timeout_seconds,
+                  name, code, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
                   create_task_handler, refresh_quota_handler,
                   enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
                     code.strip(),
                     int(concurrency),
                     int(continuous_error_threshold),
+                    int(continuous_error_close_window_threshold),
                     int(timeout_seconds),
                     (create_task_handler or "").strip() or None,
                     (refresh_quota_handler or "").strip() or None,
@@ -1928,6 +1936,7 @@ class Database:
         code: str,
         concurrency: int,
         continuous_error_threshold: int,
+        continuous_error_close_window_threshold: int,
         timeout_seconds: int,
         create_task_handler: Optional[str],
         refresh_quota_handler: Optional[str],
@@ -1956,7 +1965,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE task_types
-                SET name=?, code=?, concurrency=?, continuous_error_threshold=?, timeout_seconds=?,
+                SET name=?, code=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
                     create_task_handler=?, refresh_quota_handler=?,
                     enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
@@ -1966,6 +1975,7 @@ class Database:
                     new_code,
                     int(concurrency),
                     int(continuous_error_threshold),
+                    int(continuous_error_close_window_threshold),
                     int(timeout_seconds),
                     (create_task_handler or "").strip() or None,
                     (refresh_quota_handler or "").strip() or None,
@@ -2200,6 +2210,8 @@ class Database:
         sora_invite_code: Optional[str] = None,
         sora_access_token: Optional[str] = None,
         sora_access_expires: Optional[str] = None,
+        sora_plan_title: Optional[str] = None,
+        sora_subscription_end: Optional[str] = None,
         cooldown_until: Optional[str] = None,  # ISO string or None
         error_cooldown_until: Optional[str] = None,  # ISO string or None
         total_errors: Optional[int] = None,
@@ -2234,6 +2246,10 @@ class Database:
             _set("sora_access_token", (sora_access_token or "").strip() or None)
         if sora_access_expires is not None:
             _set("sora_access_expires", (sora_access_expires or "").strip() or None)
+        if sora_plan_title is not None:
+            _set("sora_plan_title", (sora_plan_title or "").strip() or None)
+        if sora_subscription_end is not None:
+            _set("sora_subscription_end", (sora_subscription_end or "").strip() or None)
         if cooldown_until is not None:
             _set("cooldown_until", cooldown_until if cooldown_until else None)
         if error_cooldown_until is not None:
@@ -2408,6 +2424,7 @@ class Database:
                           t.code AS task_code,
                           t.concurrency AS task_concurrency,
                           t.continuous_error_threshold,
+                          t.continuous_error_close_window_threshold,
                           t.timeout_seconds,
                           t.create_task_handler,
                           w.window_key,
@@ -2531,6 +2548,7 @@ class Database:
                           t.code AS task_code,
                           t.concurrency AS task_concurrency,
                           t.continuous_error_threshold,
+                          t.continuous_error_close_window_threshold,
                           t.timeout_seconds,
                           t.create_task_handler,
                           w.window_key,
@@ -2634,6 +2652,7 @@ class Database:
                           t.code AS task_code,
                           t.concurrency AS task_concurrency,
                           t.continuous_error_threshold,
+                          t.continuous_error_close_window_threshold,
                           t.timeout_seconds,
                           t.create_task_handler,
                           w.window_key,
@@ -2739,6 +2758,7 @@ class Database:
                           t.code AS task_code,
                           t.concurrency AS task_concurrency,
                           t.continuous_error_threshold,
+                          t.continuous_error_close_window_threshold,
                           t.timeout_seconds,
                           t.create_task_handler,
                           w.window_key,
@@ -2857,6 +2877,7 @@ class Database:
                           t.code AS task_code,
                           t.concurrency AS task_concurrency,
                           t.continuous_error_threshold,
+                          t.continuous_error_close_window_threshold,
                           t.timeout_seconds,
                           t.create_task_handler,
                           w.window_key,
@@ -3496,8 +3517,15 @@ class Database:
             )
             await db.commit()
 
-    async def mark_mapping_error(self, mapping_id: int, threshold: int, cooldown_seconds: int = 7200, cooldown_seconds_short: int = 900) -> bool:
-        """一次失败：累计错误；连续错误达阈值时清零并进入长冷却，否则短冷却。
+    async def mark_mapping_error(
+        self,
+        mapping_id: int,
+        threshold: int,
+        cooldown_seconds: int = 7200,
+        cooldown_seconds_short: int = 900,
+        reset_on_threshold: bool = True,
+    ) -> bool:
+        """一次失败：累计错误；连续错误达阈值时进入长冷却（可选清零），否则短冷却。
 
         Returns:
             bool: 本次失败是否触发了连续错误阈值（即进入长冷却并清零连续错误）。
@@ -3523,7 +3551,7 @@ class Database:
                 UPDATE task_type_windows
                 SET total_errors = total_errors + 1,
                     consecutive_errors = CASE
-                      WHEN (consecutive_errors + 1) >= ? THEN 0
+                      WHEN (consecutive_errors + 1) >= ? AND ? = 1 THEN 0
                       ELSE consecutive_errors + 1
                     END,
                     error_cooldown_until = CASE
@@ -3533,7 +3561,7 @@ class Database:
                     updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
-                (thr, thr, modifier, modifier_short, int(mapping_id)),
+                (thr, 1 if reset_on_threshold else 0, thr, modifier, modifier_short, int(mapping_id)),
             )
             await db.commit()
             return reached_threshold

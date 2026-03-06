@@ -26,6 +26,7 @@ class PickedWindow:
     task_code: str
     task_concurrency: int
     threshold: int
+    close_window_threshold: int
     timeout_seconds: int
     create_task_handler: Optional[str]
     browser_vendor: str
@@ -211,6 +212,7 @@ class TaskService:
             task_code=str(r["task_code"]),
             task_concurrency=int(r.get("task_concurrency") or 1),
             threshold=int(r.get("continuous_error_threshold") or 3),
+            close_window_threshold=int(r.get("continuous_error_close_window_threshold") or 3),
             timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
             window_ip=(str(r.get("window_ip") or "").strip() or None),
@@ -244,6 +246,7 @@ class TaskService:
             task_code=str(r["task_code"]),
             task_concurrency=int(r.get("task_concurrency") or 1),
             threshold=int(r.get("continuous_error_threshold") or 3),
+            close_window_threshold=int(r.get("continuous_error_close_window_threshold") or 3),
             timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
             window_ip=(str(r.get("window_ip") or "").strip() or None),
@@ -276,6 +279,7 @@ class TaskService:
             task_code=str(r["task_code"]),
             task_concurrency=int(r.get("task_concurrency") or 1),
             threshold=int(r.get("continuous_error_threshold") or 3),
+            close_window_threshold=int(r.get("continuous_error_close_window_threshold") or 3),
             timeout_seconds=int(r.get("timeout_seconds") or 600),
             create_task_handler=(str(r.get("create_task_handler") or "").strip() or None),
             window_ip=(str(r.get("window_ip") or "").strip() or None),
@@ -395,6 +399,7 @@ class TaskService:
                 # 余额低/查询异常时倾向于回收会话，余额充足时保持会话热态
                 try:
                     if nf_check_err is not None:
+                        print("余额更新失败:", nf_check_err)
                         sess._schedule_idle_close()
                     else:
                         remaining = int((nf_check or {}).get("remaining_count") or 0)
@@ -502,14 +507,22 @@ class TaskService:
                 # 某些错误不应计入“窗口连续错误”（例如：Sora create 400 invalid_request、未抓到 POST 等环境/请求错误）
                 # 执行器侧会抛出带 no_penalty=true 的异常（或同名属性），这里做兼容判断。
                 if not no_penalty:
-                    reached_threshold = await self.db.mark_mapping_error(
+                    await self.db.mark_mapping_error(
                         picked.mapping_id,
                         threshold=picked.threshold,
                         cooldown_seconds=3600,
+                        reset_on_threshold=False,
                     )
-                    # 若连续错误达到/超过阈值（熔断进入错误冷却），则启动倒计时关闭窗口（释放前端状态）
+                    # 连续错误达到“关闭窗口阈值”的整数倍时，启动倒计时关闭窗口（不重置连续错误）
+                    try:
+                        st = await self.db.get_mapping_runtime_state(mapping_id=picked.mapping_id)
+                        ce = int((st or {}).get("consecutive_errors") or 0)
+                    except Exception:
+                        ce = 0
+                    close_thr = max(1, int(getattr(picked, "close_window_threshold", 1) or 1))
+                    should_close = ce > 0 and (ce % close_thr == 0)
                     # 注意：仅对 Sora 窗口做处理；其它模拟执行器没有需要维护的浏览器会话
-                    if reached_threshold:
+                    if should_close:
                         try:
                             sess = get_or_create_sora_session(
                                 vendor=picked.browser_vendor,
@@ -518,7 +531,7 @@ class TaskService:
                                 space_id=picked.space_id,
                                 window_key=picked.window_key,
                             )
-                            # 连续错误达到阈值：切换 IP（更换代理），降低后续继续被风控/封禁概率
+                            # 连续错误达到关闭阈值倍数：切换 IP（更换代理），降低后续继续被风控/封禁概率
                             #try:
                             #    await sess.switch_window_ip_by_proxy_pool()
                             #except Exception:
