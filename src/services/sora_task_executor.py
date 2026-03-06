@@ -828,9 +828,9 @@ async def _sora_api_upload_image_bytes_pw(
             )
             status = int((res or {}).get("status") or 0)
             text = str((res or {}).get("text") or "")
-            append_log(log_file, f"[sora][upload] url={upload_url!r} status={status} body={safe_trim(text, 500)!r}")
+            append_log(log_file, f"[sora][upload] url={upload_url!r} status={status} body={safe_trim(text, 1000)!r}")
             if status not in (200, 201):
-                last_err = f"status={status} body={safe_trim(text, 600)}"
+                last_err = f"status={status} body={safe_trim(text, 2000)}"
                 continue
             try:
                 obj = json.loads(text) if text else {}
@@ -839,7 +839,7 @@ async def _sora_api_upload_image_bytes_pw(
             media_id = str((obj or {}).get("id") or "").strip()
             if media_id:
                 return media_id
-            last_err = f"missing id body={safe_trim(text, 600)}"
+            last_err = f"missing id body={safe_trim(text, 2000)}"
         except Exception as e:
             last_err = str(e)
             continue
