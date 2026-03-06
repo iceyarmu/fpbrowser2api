@@ -222,9 +222,9 @@
                     <tr class="small2">
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
-                      <th>窗口状态</th>
-                      <th>空间</th>
-                      <th>代理</th>
+                      <th>状态</th>
+                      <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">空间 <span class="text-muted" id="spaceSortHint">↕</span></th>
+                      <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>检测代理</th>
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
@@ -1492,6 +1492,33 @@
           });
           return items;
         }
+        if (key === "proxy") {
+          items.sort((a, b) => {
+            const av = parseInt(a?.proxy_id, 10);
+            const bv = parseInt(b?.proxy_id, 10);
+            const a1 = Number.isNaN(av) ? 0 : av;
+            const b1 = Number.isNaN(bv) ? 0 : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+
+            const aa = String(a?.proxy_addr || "").trim().toLowerCase();
+            const ba = String(b?.proxy_addr || "").trim().toLowerCase();
+            if (aa !== ba) return aa.localeCompare(ba) * sign;
+
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        if (key === "subscription_end") {
+          items.sort((a, b) => {
+            const av = parseTimeMs(a?.sora_subscription_end);
+            const bv = parseTimeMs(b?.sora_subscription_end);
+            const a1 = (av == null) ? Number.MAX_SAFE_INTEGER : av;
+            const b1 = (bv == null) ? Number.MAX_SAFE_INTEGER : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         if (key === "cooling") {
           items.sort((a, b) => {
             const av = coolingFlagForMapping(a);
@@ -1519,6 +1546,8 @@
         };
         mk(document.getElementById("balanceSortHint"), ui.mappingSortKey === "remaining_quota");
         mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
+        mk(document.getElementById("proxySortHint"), ui.mappingSortKey === "proxy");
+        mk(document.getElementById("spaceSortHint"), ui.mappingSortKey === "subscription_end");
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
         mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
@@ -1611,10 +1640,11 @@
               ${Number(m.window_status || 0) === 1 ? `<span class="badge text-bg-success">打开</span>` : `<span class="badge text-bg-secondary">未打开</span>`}
             </td>
             <td style="width: 220px; min-width: 220px;">
-              <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")}-${escapeHtml(m.space_name || "-")}</div>
+              <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")}
+                <span>[<span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span>]</span>
+              </div>
               <div class="small2 text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
-                <span>会员：<span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span></span>
-                <span>到期：<span class="fw-semibold mono" data-role="subscriptionEnd" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_subscription_end))}</span></span>
+                <span><span class="fw-semibold mono quota-click" title="点击按会员过期时间排序" data-role="subscriptionEnd" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_subscription_end))}</span></span>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="刷新会员信息" data-act="refreshSubscription" data-mid="${m.id}">⟳</button>
               </div>
             </td>
@@ -1730,6 +1760,13 @@
         body.querySelectorAll('[data-role="winName"]').forEach(el => {
           el.addEventListener("click", () => {
             toggleSort("window_name", "asc");
+          });
+        });
+
+        // 点击会员过期时间：按会员过期时间排序
+        body.querySelectorAll('[data-role="subscriptionEnd"]').forEach(el => {
+          el.addEventListener("click", () => {
+            toggleSort("subscription_end", "asc");
           });
         });
 
@@ -2722,6 +2759,8 @@
       document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", () => openAutoRefreshErrorModal({ mappingId: null }));
       document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
+      document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));
+      document.getElementById("thSpace")?.addEventListener("click", () => toggleSort("subscription_end", "asc"));
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));
       document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));
       document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));
