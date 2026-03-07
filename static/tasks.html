@@ -105,6 +105,17 @@
               <tbody id="body"></tbody>
             </table>
           </div>
+          <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+            <div class="text-muted small">
+              共 <span class="fw-semibold" id="hintTotalBottom">0</span> 条
+              <span class="text-muted">·</span>
+              当前第 <span class="fw-semibold" id="hintPageBottom">1</span> 页
+            </div>
+            <div class="ms-auto d-flex gap-2">
+              <button class="btn btn-outline-secondary btn-sm" id="btnPrevBottom">上一页</button>
+              <button class="btn btn-outline-secondary btn-sm" id="btnNextBottom">下一页</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -328,9 +339,13 @@
 
         document.getElementById("hintTotal").textContent = String(total);
         document.getElementById("hintPage").textContent = `${page}/${maxPage}`;
+        document.getElementById("hintTotalBottom").textContent = String(total);
+        document.getElementById("hintPageBottom").textContent = `${page}/${maxPage}`;
 
         document.getElementById("btnPrev").disabled = offset <= 0;
         document.getElementById("btnNext").disabled = (offset + limit) >= total;
+        document.getElementById("btnPrevBottom").disabled = offset <= 0;
+        document.getElementById("btnNextBottom").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
           body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无任务</td></tr>`;
@@ -455,6 +470,14 @@
         await load();
       });
       document.getElementById("btnNext").addEventListener("click", async () => {
+        state.offset = state.offset + state.limit;
+        await load();
+      });
+      document.getElementById("btnPrevBottom").addEventListener("click", async () => {
+        state.offset = Math.max(0, state.offset - state.limit);
+        await load();
+      });
+      document.getElementById("btnNextBottom").addEventListener("click", async () => {
         state.offset = state.offset + state.limit;
         await load();
       });

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextvars
+import io
 import json
 import os
 import random
@@ -459,6 +460,109 @@ def _guess_image_filename_and_mime(headers: Dict[str, str], *, default_name: str
     return default_name, "image/png"
 
 
+def _prepare_first_frame_image_for_upload(
+    image_bytes: bytes,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+    target_bytes: int = 1_900_000,
+) -> Tuple[bytes, str, str]:
+    """将首帧图规范化为 JPEG/PNG，并尽量在清晰度优先前提下压到目标大小。"""
+    try:
+        from PIL import Image, ImageOps  # type: ignore[import-not-found]
+    except Exception as e:
+        raise NonPenalizedTaskError(f"图片处理依赖缺失：请安装 Pillow。err={e}") from e
+
+    if not image_bytes:
+        raise NonPenalizedTaskError("首帧图片下载失败：下载内容为空")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes 必须大于 0")
+
+    # 给上传留少量缓冲，避免边界抖动。
+    limit_bytes = min(int(max_bytes), int(target_bytes) if int(target_bytes) > 0 else int(max_bytes))
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as src:
+            src.load()
+            source_format = str(src.format or "").upper()
+            if source_format not in ("JPEG", "JPG", "PNG"):
+                raise NonPenalizedTaskError("不支持的首帧图片格式：仅支持 jpeg/jpg/png")
+            base_img = ImageOps.exif_transpose(src)
+    except NonPenalizedTaskError:
+        raise
+    except Exception as e:
+        raise NonPenalizedTaskError(f"首帧图片解析失败（请检查图片地址/图片内容）：err={e}") from e
+
+    preferred_format = "JPEG" if source_format in ("JPEG", "JPG") else "PNG"
+
+    def _save_bytes(img: Any, fmt: str, *, quality: Optional[int] = None) -> bytes:
+        buf = io.BytesIO()
+        if fmt == "JPEG":
+            out = img.convert("RGB")
+            q = int(quality if quality is not None else 88)
+            out.save(buf, format="JPEG", quality=max(40, min(95, q)), optimize=True, progressive=True)
+        elif fmt == "PNG":
+            out = img.convert("RGBA") if ("A" in (img.mode or "")) else img.convert("RGB")
+            out.save(buf, format="PNG", optimize=True, compress_level=9)
+        else:
+            raise ValueError(f"unsupported format: {fmt}")
+        return buf.getvalue()
+
+    def _fit_by_quality_and_scale(img: Any, fmt: str) -> Optional[bytes]:
+        # 先固定分辨率降质量，不够再逐步降分辨率，尽量保清晰度。
+        quality_steps = [92, 88, 84, 80, 76, 72, 68]
+        min_long_edge = 1024
+        max_rounds = 8
+        current = img
+        for _ in range(max_rounds):
+            if fmt == "JPEG":
+                for q in quality_steps:
+                    out_b = _save_bytes(current, fmt, quality=q)
+                    if len(out_b) <= limit_bytes:
+                        return out_b
+            else:
+                out_b = _save_bytes(current, fmt)
+                if len(out_b) <= limit_bytes:
+                    return out_b
+
+            w, h = current.size
+            long_edge = max(w, h)
+            if long_edge <= min_long_edge:
+                break
+            scale = 0.9
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            if new_w == w and new_h == h:
+                break
+            current = current.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        return None
+
+    # 原始字节已经小于阈值时，直接透传原图，避免不必要损失。
+    if len(image_bytes) <= limit_bytes:
+        if preferred_format == "JPEG":
+            return image_bytes, "image.jpg", "image/jpeg"
+        return image_bytes, "image.png", "image/png"
+
+    out_bytes = _fit_by_quality_and_scale(base_img, preferred_format)
+    out_format = preferred_format
+
+    # PNG 在大图下经常难压，必要时回退到 JPEG（白底），保持可用性。
+    if out_bytes is None and preferred_format == "PNG":
+        rgb_bg = Image.new("RGB", base_img.size, (255, 255, 255))
+        alpha = base_img.getchannel("A") if "A" in (base_img.mode or "") else None
+        rgb_bg.paste(base_img.convert("RGB"), mask=alpha)
+        out_bytes = _fit_by_quality_and_scale(rgb_bg, "JPEG")
+        out_format = "JPEG"
+
+    if out_bytes is None or len(out_bytes) > limit_bytes:
+        raise NonPenalizedTaskError(
+            f"首帧图片过大：压缩后仍超过限制（限制 {max_bytes} bytes，建议更换更小图片）"
+        )
+
+    if out_format == "JPEG":
+        return out_bytes, "image.jpg", "image/jpeg"
+    return out_bytes, "image.png", "image/png"
+
+
 def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent: Optional[str] = None) -> Tuple[bytes, Dict[str, str]]:
     """本地下载资源（按当前实现：不走指纹浏览器下载首帧图）。"""
     u = str(url or "").strip()
@@ -475,6 +579,61 @@ def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent
         except Exception:
             hdrs = {}
         return bytes(data or b""), hdrs
+
+
+async def _download_bytes_local_async(
+    url: str,
+    *,
+    timeout_seconds: float = 30.0,
+    user_agent: Optional[str] = None,
+) -> Tuple[bytes, Dict[str, str]]:
+    """异步包装：将本地阻塞下载放入线程池，避免阻塞事件循环。"""
+    return await asyncio.to_thread(
+        _download_bytes_local,
+        url,
+        timeout_seconds=timeout_seconds,
+        user_agent=user_agent,
+    )
+
+
+async def _prepare_first_frame_image_for_upload_async(
+    image_bytes: bytes,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+    target_bytes: int = 1_900_000,
+) -> Tuple[bytes, str, str]:
+    """异步包装：将 CPU 密集型图片压缩放入线程池。"""
+    return await asyncio.to_thread(
+        _prepare_first_frame_image_for_upload,
+        image_bytes,
+        max_bytes=max_bytes,
+        target_bytes=target_bytes,
+    )
+
+
+def _write_bytes_to_tempfile_local(data: bytes, *, suffix: str) -> Path:
+    """将字节写入临时文件并返回路径。"""
+    fd = tempfile.NamedTemporaryFile(delete=False, suffix=str(suffix or ""))
+    tmp_path = Path(fd.name)
+    try:
+        fd.close()
+        with open(tmp_path, "wb") as f:
+            f.write(bytes(data or b""))
+        return tmp_path
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)  # type: ignore[call-arg]
+        except Exception:
+            try:
+                os.unlink(str(tmp_path))
+            except Exception:
+                pass
+        raise
+
+
+async def _write_bytes_to_tempfile_local_async(data: bytes, *, suffix: str) -> Path:
+    """异步包装：将阻塞文件写入放入线程池。"""
+    return await asyncio.to_thread(_write_bytes_to_tempfile_local, data, suffix=suffix)
 
 
 def _download_to_tempfile_local(
@@ -537,6 +696,25 @@ def _download_to_tempfile_local(
             except Exception:
                 pass
         raise
+
+
+async def _download_to_tempfile_local_async(
+    url: str,
+    *,
+    suffix: str,
+    timeout_seconds: float = 60.0,
+    user_agent: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+) -> Tuple[Path, Dict[str, str]]:
+    """异步包装：将阻塞下载到临时文件放入线程池。"""
+    return await asyncio.to_thread(
+        _download_to_tempfile_local,
+        url,
+        suffix=suffix,
+        timeout_seconds=timeout_seconds,
+        user_agent=user_agent,
+        max_bytes=max_bytes,
+    )
 
 
 def _mp4_duration_seconds(path: Path) -> float:
@@ -1072,7 +1250,11 @@ async def _sora_create_task_pw(
     inpaint_items: list[Dict[str, Any]] = []
     if first_image_url:
         try:
-            img_bytes, img_headers = _download_bytes_local(first_image_url, timeout_seconds=30.0, user_agent=user_agent)
+            img_bytes, img_headers = await _download_bytes_local_async(
+                first_image_url,
+                timeout_seconds=30.0,
+                user_agent=user_agent,
+            )
         except Exception as e:
             raise NonPenalizedTaskError(
                 f"首帧图片下载失败（请检查图片地址是否正确/可访问）：url={safe_trim(str(first_image_url), 400)!r} err={e}"
@@ -1093,7 +1275,11 @@ async def _sora_create_task_pw(
             raise NonPenalizedTaskError(
                 f"首帧图片下载失败：响应 Content-Type={safe_trim(ct, 120)!r}，疑似非图片（请检查图片地址）：url={safe_trim(str(first_image_url), 400)!r}"
             )
-        filename, mime_type = _guess_image_filename_and_mime(img_headers)
+        img_bytes, filename, mime_type = await _prepare_first_frame_image_for_upload_async(
+            img_bytes,
+            max_bytes=2 * 1024 * 1024,
+            target_bytes=1_900_000,
+        )
         media_id = await _sora_api_upload_image_bytes_pw(
             page,
             target_url=target_url,
@@ -1947,7 +2133,7 @@ class SoraSession:
                 except Exception:
                     pass
 
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(3.0)
 
             # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
             try:
@@ -3010,13 +3196,11 @@ class SoraSession:
         if not generation_id:
             raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
             
-        max_publish_attempts = 3
-        publish_retry_delay_seconds = 1.5
+        max_publish_attempts = 5
         post_resp: Dict[str, Any] = {}
         for publish_attempt in range(1, max_publish_attempts + 1):
             try:
                 await self._bring_sora_drafts_to_front(refresh_target=True)
-                await asyncio.sleep(publish_retry_delay_seconds)
                 async with self._bring_drafts_lock:
                     sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
                         self.pw_ctx.page,
@@ -3047,7 +3231,6 @@ class SoraSession:
                 )
                 if not should_retry:
                     raise NonPenalizedTaskError(f"发布草稿失败: {err_msg}", status_code=429)
-                await asyncio.sleep(float(publish_retry_delay_seconds))
             
         
         post_id = ""
@@ -3195,21 +3378,20 @@ async def sora_gen_video(
         try:
             
             await progress_cb(0, {"stage": "character_download_avatar", "head_url": head_url})
-            tmp_img, hdrs = _download_to_tempfile_local(
-                head_url,
-                suffix=".png",
-                timeout_seconds=float(payload.get("avatar_download_timeout_seconds") or 60.0),
-                user_agent=sess.user_agent,
-                max_bytes=6 * 1024 * 1024,
-            )
-
             try:
-                if int(tmp_img.stat().st_size) <= 0:
-                    raise NonPenalizedTaskError("头像下载失败：文件为空", status_code=400)
-            except NonPenalizedTaskError:
-                raise
-            except Exception:
-                pass
+                avatar_bytes_raw, hdrs = await _download_bytes_local_async(
+                    head_url,
+                    timeout_seconds=float(payload.get("avatar_download_timeout_seconds") or 60.0),
+                    user_agent=sess.user_agent,
+                )
+            except Exception as e:
+                raise NonPenalizedTaskError(
+                    f"头像下载失败（请检查 head_url 是否正确/可访问）：url={safe_trim(str(head_url), 400)!r} err={e}",
+                    status_code=400,
+                ) from e
+
+            if not avatar_bytes_raw:
+                raise NonPenalizedTaskError("头像下载失败：文件为空", status_code=400)
 
             ct = ""
             try:
@@ -3221,6 +3403,14 @@ async def sora_gen_video(
                     f"头像下载失败：响应 Content-Type={safe_trim(ct, 120)!r}，疑似非图片（请检查 head_url）：url={safe_trim(str(head_url), 400)!r}",
                     status_code=400,
                 )
+
+            avatar_bytes, _avatar_filename, avatar_mime = await _prepare_first_frame_image_for_upload_async(
+                avatar_bytes_raw,
+                max_bytes=100 * 1024,
+                target_bytes=95 * 1024,
+            )
+            tmp_suffix = ".jpg" if avatar_mime == "image/jpeg" else ".png"
+            tmp_img = await _write_bytes_to_tempfile_local_async(avatar_bytes, suffix=tmp_suffix)
 
             await progress_cb(1, {"stage": "character_from_generation_submit", "generation_id": generation_id})
 
@@ -3370,7 +3560,7 @@ async def sora_gen_video(
         try:
             await progress_cb(0, {"stage": "character_download_video", "video_url": video_url})
             # 下载到本地临时文件（用于浏览器上下文上传）
-            tmp_video, _hdrs = _download_to_tempfile_local(
+            tmp_video, _hdrs = await _download_to_tempfile_local_async(
                 video_url,
                 suffix=".mp4",
                 timeout_seconds=float(payload.get("video_download_timeout_seconds") or 120.0),
@@ -3456,7 +3646,7 @@ async def sora_gen_video(
                 raise RuntimeError("cameo_status 缺少 profile_asset_url，无法完成角色创建")
 
             await progress_cb(75, {"stage": "character_download_avatar"})
-            tmp_img, _hdrs2 = _download_to_tempfile_local(
+            tmp_img, _hdrs2 = await _download_to_tempfile_local_async(
                 profile_asset_url,
                 suffix=".webp",
                 timeout_seconds=float(payload.get("avatar_download_timeout_seconds") or 60.0),
