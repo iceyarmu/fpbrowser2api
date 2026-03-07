@@ -2911,7 +2911,7 @@ class SoraSession:
                         )
                         # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
                         # 所以这里必须在未持锁状态下调用，避免锁重入。
-                        await self._bring_sora_drafts_to_front(refresh_target=True)
+                        await self._bring_sora_drafts_to_front()
 
                 if task_id is None:
                     if last_create_err:
@@ -3228,7 +3228,6 @@ class SoraSession:
         post_resp: Dict[str, Any] = {}
         for publish_attempt in range(1, max_publish_attempts + 1):
             try:
-                await self._bring_sora_drafts_to_front(refresh_target=True)
                 async with self._bring_drafts_lock:
                     sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
                         self.pw_ctx.page,
@@ -3259,7 +3258,7 @@ class SoraSession:
                 )
                 if not should_retry:
                     raise NonPenalizedTaskError(f"发布草稿失败: {err_msg}", status_code=429)
-            
+                await self._bring_sora_drafts_to_front()
         
         post_id = ""
         try:
