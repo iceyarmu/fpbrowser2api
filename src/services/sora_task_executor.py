@@ -2876,28 +2876,56 @@ class SoraSession:
                             except Exception:
                                 pass
 
-                async with self._bring_drafts_lock:
-                    task_id, create_tx, auth_state = await _sora_create_task_pw(
-                        page=self.pw_ctx.page,
-                        prompt=prompt,
-                        target_url=target_url,
-                        monitor_log_path=monitor_log_path,
-                        first_image_url=first_image_url,
-                        orientation=orientation,
-                        n_frames=n_frames,
-                        bearer_token=str(self.bearer_token or "") or None,
-                        sentinel_token=str(sentinel_token or "") or None,
-                        user_agent=str(self.user_agent or "") or None,
-                        oai_device_id=str(self.oai_device_id or "") or None,
-                    )
+                max_create_attempts = 3 if str(first_image_url or "").strip() else 1
+                task_id: Optional[str] = None
+                create_tx: Dict[str, Any] = {}
+                auth_state: Dict[str, Any] = {}
+                last_create_err: Optional[Exception] = None
+
+                for attempt in range(1, max_create_attempts + 1):
                     try:
-                        self.bearer_token = auth_state.get("bearer_token") or self.bearer_token
-                        self.sentinel_token = auth_state.get("sentinel_token") or sentinel_token
-                        self.user_agent = auth_state.get("user_agent") or self.user_agent
-                        self.oai_device_id = auth_state.get("oai_device_id") or self.oai_device_id
-                    except Exception:
-                        pass
-                    return task_id, create_tx
+                        async with self._bring_drafts_lock:
+                            task_id, create_tx, auth_state = await _sora_create_task_pw(
+                                page=self.pw_ctx.page,
+                                prompt=prompt,
+                                target_url=target_url,
+                                monitor_log_path=monitor_log_path,
+                                first_image_url=first_image_url,
+                                orientation=orientation,
+                                n_frames=n_frames,
+                                bearer_token=str(self.bearer_token or "") or None,
+                                sentinel_token=str(sentinel_token or "") or None,
+                                user_agent=str(self.user_agent or "") or None,
+                                oai_device_id=str(self.oai_device_id or "") or None,
+                            )
+                        break
+                    except Exception as e:
+                        last_create_err = e
+                        err_msg = str(e or "")
+                        is_upload_err = "上传首帧失败" in err_msg
+                        if (not is_upload_err) or attempt >= max_create_attempts:
+                            raise
+                        append_log(
+                            log_file,
+                            f"[sora][create] 首帧上传失败，准备第 {attempt + 1}/{max_create_attempts} 次重试：{safe_trim(err_msg, 400)!r}",
+                        )
+                        # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
+                        # 所以这里必须在未持锁状态下调用，避免锁重入。
+                        await self._bring_sora_drafts_to_front(refresh_target=True)
+
+                if task_id is None:
+                    if last_create_err:
+                        raise last_create_err
+                    raise RuntimeError("create 失败：未知错误（未生成 task_id）")
+
+                try:
+                    self.bearer_token = auth_state.get("bearer_token") or self.bearer_token
+                    self.sentinel_token = auth_state.get("sentinel_token") or sentinel_token
+                    self.user_agent = auth_state.get("user_agent") or self.user_agent
+                    self.oai_device_id = auth_state.get("oai_device_id") or self.oai_device_id
+                except Exception:
+                    pass
+                return task_id, create_tx
             finally:
                 # create_task 后通常仍会继续监控/发布，需要窗口保持前端状态
                 self._cancel_idle_close()
