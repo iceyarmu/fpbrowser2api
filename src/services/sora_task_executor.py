@@ -1769,7 +1769,7 @@ class SoraSession:
 
         # 等待指纹浏览器完成 Cloudflare 验证并稳定
         try:
-            await asyncio.sleep(15.0)
+            await asyncio.sleep(25.0)
         except Exception:
             pass
 
