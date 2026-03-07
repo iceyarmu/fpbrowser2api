@@ -1356,6 +1356,20 @@ async def _sora_create_task_pw(
                 status_code=status_i,
             )
 
+        # token 过期：交给上层做“重新获取 access_token 并重试”的流程；
+        # 且该类错误不应计入窗口连续错误。
+        if status_i == 401 and (
+            str(err_code or "").strip() == "token_expired"
+            or "token_expired" in bt_lower
+            or "token is expired" in bt_lower
+            or "token_expired" in msg_lower
+            or "token is expired" in msg_lower
+        ):
+            raise NonPenalizedTaskError(
+                f"create 失败（token_expired）：{safe_trim(str(err_msg or body_text), 400)}",
+                status_code=status_i,
+            )
+
         raise RuntimeError(f"create failed：status={status_i} body={safe_trim(body_text, 400)}")
 
     auth_state: Dict[str, Any] = {
@@ -2876,11 +2890,12 @@ class SoraSession:
                             except Exception:
                                 pass
 
-                max_create_attempts = 3 if str(first_image_url or "").strip() else 1
+                max_create_attempts = 3 if str(first_image_url or "").strip() else 2
                 task_id: Optional[str] = None
                 create_tx: Dict[str, Any] = {}
                 auth_state: Dict[str, Any] = {}
                 last_create_err: Optional[Exception] = None
+                token_refresh_used = False
 
                 for attempt in range(1, max_create_attempts + 1):
                     try:
@@ -2902,6 +2917,45 @@ class SoraSession:
                     except Exception as e:
                         last_create_err = e
                         err_msg = str(e or "")
+                        err_msg_lower = err_msg.lower()
+
+                        is_token_expired = (
+                            isinstance(e, NonPenalizedTaskError)
+                            and (
+                                "token_expired" in err_msg_lower
+                                or "token is expired" in err_msg_lower
+                            )
+                        )
+                        if is_token_expired:
+                            if token_refresh_used:
+                                raise NonPenalizedTaskError(
+                                    f"create 失败（token_expired）：刷新 access_token 后仍失败：{safe_trim(err_msg, 400)}",
+                                    status_code=401,
+                                ) from e
+                            token_refresh_used = True
+                            append_log(
+                                log_file,
+                                f"[sora][create] 命中 token_expired，准备刷新 access_token 并重试（{attempt + 1}/{max_create_attempts}）",
+                            )
+                            # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
+                            # 所以这里必须在未持锁状态下调用，避免锁重入。
+                            await self._bring_sora_drafts_to_front()
+                            try:
+                                token_info = await sora_fetch_access_token_in_window(
+                                    sess=self,
+                                    target_url=target_url,
+                                )
+                                self.set_access_token(
+                                    token_info.get("access_token"),
+                                    token_info.get("expires"),
+                                )
+                            except Exception as te:
+                                raise NonPenalizedTaskError(
+                                    f"create 失败（token_expired）：刷新 access_token 失败：{safe_trim(str(te), 400)}",
+                                    status_code=401,
+                                ) from te
+                            continue
+
                         is_upload_err = "上传首帧失败" in err_msg
                         if (not is_upload_err) or attempt >= max_create_attempts:
                             raise
