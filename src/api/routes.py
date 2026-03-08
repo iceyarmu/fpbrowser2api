@@ -63,7 +63,7 @@ async def create_task(
         try:
             syscfg = await db.get_system_config()
             if bool(getattr(syscfg, "stop_accepting_tasks", False)):
-                raise HTTPException(status_code=503, detail="服务器维护中不接受新任务...")
+                raise HTTPException(status_code=503, detail="服务器稳定性升级中，请稍后再试...")
         except HTTPException:
             raise
         except Exception:
