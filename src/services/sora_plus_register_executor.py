@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import subprocess
 import struct
 import time
@@ -399,32 +400,33 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
         return False, True
 
     async def _is_cloudflare_page(page: Any, *, deep: bool = False) -> bool:
-        """检测当前页面是否疑似 Cloudflare 挑战页。"""
-        markers = [
-            "checking your browser before accessing",
-            "verify you are human",
-            "attention required",
-            "cf-challenge",
-            "cloudflare",
-            "ray id",
-        ]
+        """判断当前页面是否为 Cloudflare 拦截/挑战页。"""
+        if page is None:
+            return False
         try:
-            cur_url = str(getattr(page, "url", "") or "").strip().lower()
+            u = str(getattr(page, "url", "") or "").strip()
         except Exception:
-            cur_url = ""
-        if "challenges.cloudflare.com" in cur_url or "/cdn-cgi/" in cur_url:
+            u = ""
+        ul = u.lower()
+        if "/cdn-cgi/" in ul or "challenges.cloudflare.com" in ul:
+            return True
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        tl = (title or "").strip().lower()
+        if "just a moment" in tl or "attention required" in tl:
             return True
         if not deep:
-            try:
-                title = str(await page.title() or "").lower()
-            except Exception:
-                title = ""
-            return ("cloudflare" in title) or ("attention required" in title)
+            return False
         try:
-            html = str(await page.content() or "").lower()
+            html = await page.content()
         except Exception:
             html = ""
-        if any(m in html for m in markers):
+        hl = (html or "").lower()
+        if "cloudflare" in hl and ("just a moment" in hl or "/cdn-cgi/" in hl or "cf-ray" in hl):
+            return True
+        if ("turnstile" in hl or "cf-challenge" in hl) and ("/cdn-cgi/" in hl or "cloudflare" in hl):
             return True
         return False
 
@@ -458,22 +460,52 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
             pass
 
     async def _try_cloudflare_click(page: Any) -> bool:
-        """尝试点击 Cloudflare 验证控件（若存在）。"""
-        selectors = [
-            'input[type="checkbox"]',
-            'label:has-text("Verify you are human")',
-            'button:has-text("Verify")',
-            '[data-testid*="challenge"] button',
-            '#challenge-stage button',
-        ]
-        for sel in selectors:
+        """尝试点击 Cloudflare Turnstile checkbox。"""
+        if page is None:
+            return False
+        cf_frame = None
+        try:
+            frames = list(getattr(page, "frames", []) or [])
+        except Exception:
+            frames = []
+        for f in frames:
             try:
-                loc = page.locator(sel).first
-                await loc.click(timeout=1500)
-                return True
+                fu = str(getattr(f, "url", "") or "")
             except Exception:
-                continue
-        return False
+                fu = ""
+            if "challenges.cloudflare.com" in fu or "/cdn-cgi/" in fu:
+                cf_frame = f
+                break
+        if cf_frame is None:
+            return False
+
+        # 策略1：frame.locator 直接点击
+        try:
+            loc = cf_frame.locator("input[type='checkbox']")
+            if (await loc.count()) > 0:
+                await loc.first.click(force=True, timeout=1500)
+                return True
+        except Exception:
+            pass
+
+        # 策略2：坐标法点击（可穿 closed shadow-root）
+        try:
+            iframe_handle = await cf_frame.frame_element()
+            box = await iframe_handle.bounding_box()
+            if not (box and box.get("width", 0) > 0 and box.get("height", 0) > 0):
+                return False
+            target_x = box["x"] + 26.0
+            target_y = box["y"] + box["height"] / 2.0
+            start_x = target_x + random.uniform(-80, 120)
+            start_y = target_y + random.uniform(-50, 50)
+            await page.mouse.move(start_x, start_y)
+            await asyncio.sleep(random.uniform(0.08, 0.20))
+            await page.mouse.move(target_x, target_y, steps=random.randint(6, 12))
+            await asyncio.sleep(random.uniform(0.04, 0.12))
+            await page.mouse.click(target_x, target_y)
+            return True
+        except Exception:
+            return False
 
     async def _wait_cloudflare_auto_pass(
         page: Any,
@@ -483,40 +515,117 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
         on_progress: Optional[Any] = None,
     ) -> bool:
         """等待 Cloudflare 自动放行；返回 True 表示超时后仍疑似 Cloudflare。"""
-        deadline = time.time() + max(3.0, float(max_wait_seconds))
-        click_succ = 0
+        try:
+            deadline = time.time() + max(0.0, float(max_wait_seconds))
+        except Exception:
+            deadline = time.time() + 10.0
+        await asyncio.sleep(5.0)
+        try:
+            max_click_success = max(0, int(max_success_clicks))
+        except Exception:
+            max_click_success = 2
+        poll_after_click = 6.0
+        poll_idle = 1.0
         if callable(on_progress):
             try:
                 await on_progress("检测到 Cloudflare，开始等待自动放行并尝试点击 checkbox", "warn")
             except Exception:
                 pass
+        reported_click_fail = False
+        consecutive_not_cf = 0
+        clicked_success_count = 0
         while time.time() < deadline:
-            if not await _is_cloudflare_page(page, deep=False):
+            try:
+                is_closed = bool(getattr(page, "is_closed", lambda: False)())
+            except Exception:
+                is_closed = False
+            if is_closed:
+                return True
+
+            try:
+                still_cf = await _is_cloudflare_page(page, deep=True)
+            except Exception:
+                still_cf = True
+            if not still_cf:
+                consecutive_not_cf += 1
+                if consecutive_not_cf >= 2:
+                    if callable(on_progress):
+                        try:
+                            await on_progress("Cloudflare 已放行", "ok")
+                        except Exception:
+                            pass
+                    return False
                 if callable(on_progress):
                     try:
-                        await on_progress("Cloudflare 已放行", "ok")
+                        await on_progress("Cloudflare 疑似已放行，进行二次确认", "info")
                     except Exception:
                         pass
-                return False
-            if click_succ < max(0, int(max_success_clicks)):
+                remain = deadline - time.time()
+                if remain <= 0:
+                    break
                 try:
-                    clicked = await _try_cloudflare_click(page)
-                    if clicked:
-                        click_succ += 1
+                    await asyncio.sleep(min(poll_idle, max(0.1, remain)))
+                except Exception:
+                    break
+                continue
+            consecutive_not_cf = 0
+
+            clicked = False
+            try:
+                clicked = await _try_cloudflare_click(page)
+            except Exception:
+                clicked = False
+            if clicked:
+                clicked_success_count += 1
+                if callable(on_progress):
+                    try:
+                        await on_progress(f"checkbox 已点击（第 {clicked_success_count} 次），等待 Cloudflare 验证结果", "info")
+                    except Exception:
+                        pass
+                if max_click_success > 0 and clicked_success_count >= max_click_success:
+                    if callable(on_progress):
+                        try:
+                            await on_progress(f"checkbox 成功点击已达上限（{max_click_success} 次），提前结束等待", "warn")
+                        except Exception:
+                            pass
+                    try:
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+                    try:
+                        still_cf_after_limit = await _is_cloudflare_page(page, deep=True)
+                    except Exception:
+                        still_cf_after_limit = True
+                    if not still_cf_after_limit:
                         if callable(on_progress):
                             try:
-                                await on_progress(f"checkbox 已点击（第 {click_succ} 次）", "info")
+                                await on_progress("Cloudflare 已放行", "ok")
                             except Exception:
                                 pass
-                except Exception:
-                    pass
-            await asyncio.sleep(1.5)
+                        return False
+                    return True
+            elif not reported_click_fail:
+                if callable(on_progress):
+                    try:
+                        await on_progress("尚未成功点击 checkbox，继续重试", "warn")
+                    except Exception:
+                        pass
+                reported_click_fail = True
+
+            remain = deadline - time.time()
+            if remain <= 0:
+                break
+            sleep_sec = poll_after_click if clicked else poll_idle
+            try:
+                await asyncio.sleep(min(sleep_sec, max(0.1, remain)))
+            except Exception:
+                break
         if callable(on_progress):
             try:
                 await on_progress("等待超时，Cloudflare 仍存在", "warn")
             except Exception:
                 pass
-        return await _is_cloudflare_page(page, deep=True)
+        return True
 
     async def _reopen_window_and_restore_drafts() -> None:
         """对齐 task_executor：先仅重启窗口，再延迟重连 CDP。"""
@@ -669,12 +778,12 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
     try:
         maybe_cf = await _is_cloudflare_page(drafts_page, deep=False)
         if maybe_cf:
-            await _push_cf_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
             try:
                 await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
             except Exception:
                 pass
             await asyncio.sleep(3.0)
+            await _push_cf_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
             still_cf_after_wait = await _wait_cloudflare_auto_pass(
                 drafts_page,
                 max_wait_seconds=45.0,
