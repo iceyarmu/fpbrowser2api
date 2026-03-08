@@ -1109,18 +1109,33 @@
           const cur = String(sel.dataset.current_account_id || "").trim();
           const curName = String(sel.dataset.current_account || "").trim();
           const curUrl = String(sel.dataset.current_url || "").trim();
-          const curId = parseInt(cur || "0", 10) || 0;
-          const curItem = curId > 0 ? items.find(x => String(x.account_id) === String(curId)) : null;
-          const fallbackCur = (curId > 0 && !curItem)
-            ? `<option value="${escapeHtml(String(curId))}" selected disabled>[未同步] ${escapeHtml(curName || "-")} | ${escapeHtml(curUrl || "-")}</option>`
+          const norm = (s) => String(s || "").trim().toLowerCase();
+          const curId = cur && cur !== "0" ? cur : "";
+          const curItemById = curId ? items.find(x => String(x.account_id || "").trim() === curId) : null;
+          const curNameNorm = norm(curName);
+          const curUrlNorm = norm(curUrl);
+          const curItemByNameUrl = (!curItemById && curNameNorm)
+            ? items.find(x => {
+              const nameOk = norm(x.platform_username) === curNameNorm;
+              const urlOk = !curUrlNorm || norm(x.platform_url) === curUrlNorm;
+              return nameOk && urlOk;
+            })
+            : null;
+          const matchedCurItem = curItemById || curItemByNameUrl;
+          const selectedValue = matchedCurItem ? String(matchedCurItem.account_id) : (curId || "0");
+          const fallbackCur = (curId && !matchedCurItem)
+            ? `<option value="${escapeHtml(curId)}" selected disabled>[未同步] ${escapeHtml(curName || "-")} | ${escapeHtml(curUrl || "-")}</option>`
             : "";
           sel.innerHTML = `
             <option value="0">(不绑定账号)</option>
             ${fallbackCur}
-            ${items.map(a => `<option value="${escapeHtml(String(a.account_id))}">${escapeHtml(accountLabel(a))}</option>`).join("")}
+            ${items.map((a, idx) => `<option value="${escapeHtml(String(a.account_id))}">${escapeHtml(`${idx + 1}. ${accountLabel(a)}`)}</option>`).join("")}
           `;
-          sel.value = String(curId || 0);
+          sel.value = selectedValue;
           if (!sel.value) sel.value = "0";
+          if (matchedCurItem) {
+            sel.dataset.current_account_id = String(matchedCurItem.account_id || "");
+          }
         });
       }
 

@@ -793,61 +793,6 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
             if still_cf_after_wait and await _is_cloudflare_page(drafts_page, deep=True):
                 await _push_cf_progress(drafts_page, "Cloudflare 持续存在，准备重启窗口", level="warn")
                 await _reopen_window_and_restore_drafts()
-
-                # 重启后恢复目标页（不关闭其他页面）
-                ctx_new = getattr(ctx, "context", None)
-                br_new = getattr(ctx, "browser", None)
-                try:
-                    ctxs_new = list(getattr(br_new, "contexts", []) or [])
-                except Exception:
-                    ctxs_new = []
-                if ctx_new is not None and ctx_new not in ctxs_new:
-                    ctxs_new.insert(0, ctx_new)
-
-                all_pages_new: list[Any] = []
-                for c_n in ctxs_new:
-                    try:
-                        ps = list(getattr(c_n, "pages", []) or [])
-                    except Exception:
-                        ps = []
-                    for p_n in ps:
-                        if _is_page_closed(p_n):
-                            continue
-                        all_pages_new.append(p_n)
-
-                target_page_new = None
-                for p_n in all_pages_new:
-                    if _safe_page_url(p_n).startswith(drafts_url):
-                        target_page_new = p_n
-                        break
-                if target_page_new is None:
-                    for p_n in all_pages_new:
-                        try:
-                            h_n = (urlparse(_safe_page_url(p_n)).netloc or "").strip().lower()
-                        except Exception:
-                            h_n = ""
-                        if h_n.endswith(drafts_host):
-                            target_page_new = p_n
-                            break
-                if target_page_new is None and (ctx_new is not None or ctxs_new):
-                    ctx_pref = ctx_new or ctxs_new[0]
-                    try:
-                        target_page_new = await ctx_pref.new_page()
-                        await target_page_new.goto(drafts_url, wait_until="domcontentloaded")
-                    except Exception:
-                        target_page_new = None
-
-                if target_page_new is not None:
-                    try:
-                        ctx.page = target_page_new
-                        drafts_page = target_page_new
-                    except Exception:
-                        pass
-                    try:
-                        await target_page_new.bring_to_front()
-                    except Exception:
-                        pass
-                    await _push_cf_progress(drafts_page, "重启后已恢复目标页面并置前", level="ok")
     except Exception:
         pass
 
@@ -1468,7 +1413,7 @@ async def sora_plus_register(
                 progress_cb=progress_cb,
             )
 
-    page = await _bring_sora_drafts_to_front(ctx, refresh_target=False)
+    
     chatgpt_login_result = await _do_chatgpt_google_login(
         page,
         platform_username=platform_username,
@@ -1477,7 +1422,17 @@ async def sora_plus_register(
         timeout_ms=timeout_ms,
         progress_cb=progress_cb,
     )
-
+    # 打开目标网址 Payload.video_url 的一个新页面（仅打开，不改变后续主操作页）
+    target_video_url = str((source_payload or {}).get("video_url") or "").strip()
+    if target_video_url:
+        try:
+            if ctx.context is not None:
+                preview_page = await ctx.context.new_page()
+                await preview_page.goto(target_video_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                await progress_cb(59, {"stage": "video_url_opened", "url": target_video_url})
+        except Exception as e:
+            await progress_cb(59, {"stage": "video_url_open_failed", "url": target_video_url, "error": str(e)})
+    page = await _bring_sora_drafts_to_front(ctx, refresh_target=False)
     panel_data = {
         "title": "Sora Plus 注册数据",
         "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1495,6 +1450,34 @@ async def sora_plus_register(
         "totpSecret": platform_efa,
     }
     await _show_sticky_copy_panel(ctx.context, page, panel_data=panel_data, progress_cb=progress_cb)
+    # 仅断开本地 CDP 连接，保留指纹浏览器窗口继续打开，降低后续 Cloudflare 触发概率。
+    try:
+        br = getattr(ctx, "browser", None)
+        pw = getattr(ctx, "playwright", None)
+        try:
+            ctx.browser = None
+            ctx.context = None
+            ctx.page = None
+            ctx.cdp_endpoint = None
+        except Exception:
+            pass
+        try:
+            if br is not None:
+                await br.close()
+        except Exception:
+            pass
+        try:
+            if pw is not None:
+                await pw.stop()
+        except Exception:
+            pass
+        try:
+            ctx.playwright = None
+        except Exception:
+            pass
+        await progress_cb(99, {"stage": "cdp_disconnected"})
+    except Exception:
+        pass
 
     return {
         "ok": True,
