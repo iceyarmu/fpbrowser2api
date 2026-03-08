@@ -320,6 +320,431 @@ async def _close_other_pages(context: Any, keep_page: Any) -> int:
     return closed
 
 
+async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) -> Any:
+    """将 `https://chatgpt.com/` 页面置前，不关闭其它页面。"""
+    drafts_url = "https://chatgpt.com/"
+    drafts_host = "chatgpt.com"
+
+    def _is_page_closed(p: Any) -> bool:
+        try:
+            return bool(getattr(p, "is_closed", lambda: False)())
+        except Exception:
+            return False
+
+    def _safe_page_url(p: Any) -> str:
+        try:
+            return str(getattr(p, "url", "") or "").strip()
+        except Exception:
+            return ""
+
+    async def _page_has_transient_error(page: Any) -> bool:
+        """检测常见临时错误页文案，用于触发刷新自愈。"""
+        markers = [
+            "something went wrong. please try again in a few minutes.",
+            "something went wrong",
+            "an error occurred",
+            "发生错误",
+            "出错了",
+        ]
+        try:
+            html = str(await page.content() or "").lower()
+        except Exception:
+            return False
+        return any(m in html for m in markers)
+
+    async def _maybe_click_login_button_if_prompted(page: Any) -> tuple[bool, bool]:
+        """若页面出现登录入口则尝试点击。返回 (clicked, has_login_button)。"""
+        labels = ["Log in", "Sign in", "登录", "登入"]
+        scopes = [page]
+        try:
+            scopes.extend(list(getattr(page, "frames", []) or []))
+        except Exception:
+            pass
+
+        has_login_button = False
+        for sc in scopes:
+            for text in labels:
+                try:
+                    loc = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=text)
+                    if (await loc.count()) > 0:
+                        has_login_button = True
+                        break
+                except Exception:
+                    continue
+            if has_login_button:
+                break
+
+        if not has_login_button:
+            return False, False
+
+        for sc in scopes:
+            for text in labels:
+                if hasattr(sc, "get_by_role"):
+                    try:
+                        await sc.get_by_role("button", name=text).first.click(timeout=2500)
+                        return True, True
+                    except Exception:
+                        pass
+                    try:
+                        await sc.get_by_role("link", name=text).first.click(timeout=2500)
+                        return True, True
+                    except Exception:
+                        pass
+                try:
+                    loc = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=text)
+                    await loc.first.click(timeout=2500)
+                    return True, True
+                except Exception:
+                    continue
+        return False, True
+
+    async def _is_cloudflare_page(page: Any, *, deep: bool = False) -> bool:
+        """检测当前页面是否疑似 Cloudflare 挑战页。"""
+        markers = [
+            "checking your browser before accessing",
+            "verify you are human",
+            "attention required",
+            "cf-challenge",
+            "cloudflare",
+            "ray id",
+        ]
+        try:
+            cur_url = str(getattr(page, "url", "") or "").strip().lower()
+        except Exception:
+            cur_url = ""
+        if "challenges.cloudflare.com" in cur_url or "/cdn-cgi/" in cur_url:
+            return True
+        if not deep:
+            try:
+                title = str(await page.title() or "").lower()
+            except Exception:
+                title = ""
+            return ("cloudflare" in title) or ("attention required" in title)
+        try:
+            html = str(await page.content() or "").lower()
+        except Exception:
+            html = ""
+        if any(m in html for m in markers):
+            return True
+        return False
+
+    cf_panel_seq = 0
+    cf_panel_entries: list[Dict[str, str]] = []
+
+    async def _push_cf_progress(page: Any, text: str, *, level: str = "info") -> None:
+        """向页面注入 Cloudflare 自愈进度面板。"""
+        nonlocal cf_panel_seq, cf_panel_entries
+        if page is None:
+            return
+        cf_panel_seq += 1
+        cf_panel_entries.append(
+            {
+                "idx": str(cf_panel_seq),
+                "ts": time.strftime("%H:%M:%S"),
+                "level": str(level or "info"),
+                "text": str(text or ""),
+            }
+        )
+        if len(cf_panel_entries) > 80:
+            cf_panel_entries = cf_panel_entries[-80:]
+        payload = {
+            "title": "Sora Plus Cloudflare 自愈",
+            "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "entries": list(cf_panel_entries),
+        }
+        try:
+            await page.evaluate(_build_cf_progress_panel_script(), payload)
+        except Exception:
+            pass
+
+    async def _try_cloudflare_click(page: Any) -> bool:
+        """尝试点击 Cloudflare 验证控件（若存在）。"""
+        selectors = [
+            'input[type="checkbox"]',
+            'label:has-text("Verify you are human")',
+            'button:has-text("Verify")',
+            '[data-testid*="challenge"] button',
+            '#challenge-stage button',
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                await loc.click(timeout=1500)
+                return True
+            except Exception:
+                continue
+        return False
+
+    async def _wait_cloudflare_auto_pass(
+        page: Any,
+        *,
+        max_wait_seconds: float,
+        max_success_clicks: int = 3,
+        on_progress: Optional[Any] = None,
+    ) -> bool:
+        """等待 Cloudflare 自动放行；返回 True 表示超时后仍疑似 Cloudflare。"""
+        deadline = time.time() + max(3.0, float(max_wait_seconds))
+        click_succ = 0
+        if callable(on_progress):
+            try:
+                await on_progress("检测到 Cloudflare，开始等待自动放行并尝试点击 checkbox", "warn")
+            except Exception:
+                pass
+        while time.time() < deadline:
+            if not await _is_cloudflare_page(page, deep=False):
+                if callable(on_progress):
+                    try:
+                        await on_progress("Cloudflare 已放行", "ok")
+                    except Exception:
+                        pass
+                return False
+            if click_succ < max(0, int(max_success_clicks)):
+                try:
+                    clicked = await _try_cloudflare_click(page)
+                    if clicked:
+                        click_succ += 1
+                        if callable(on_progress):
+                            try:
+                                await on_progress(f"checkbox 已点击（第 {click_succ} 次）", "info")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            await asyncio.sleep(1.5)
+        if callable(on_progress):
+            try:
+                await on_progress("等待超时，Cloudflare 仍存在", "warn")
+            except Exception:
+                pass
+        return await _is_cloudflare_page(page, deep=True)
+
+    async def _reopen_window_and_restore_drafts() -> None:
+        """对齐 task_executor：先仅重启窗口，再延迟重连 CDP。"""
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+        try:
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+        try:
+            await ctx.fp_client.browser_open(
+                vendor=ctx.vendor,
+                base_url=ctx.base_url,
+                access_key=ctx.access_key,
+                space_id=ctx.space_id,
+                window_key=ctx.window_key,
+                args=[],
+                force_open=False,
+                headless=False,
+            )
+        except Exception:
+            pass
+
+        # 清空旧句柄，避免误复用
+        try:
+            ctx.browser = None
+            ctx.context = None
+            ctx.page = None
+            ctx.cdp_endpoint = None
+        except Exception:
+            pass
+
+        # 给 Cloudflare 验证窗口留出处理时间
+        try:
+            await asyncio.sleep(20.0)
+        except Exception:
+            pass
+
+        # 仅重连 browser/context，不强制探测/创建 page
+        try:
+            await ctx.ensure_open(args=[], force_open=False, headless=False, require_page=False)
+        except Exception:
+            pass
+
+    context = getattr(ctx, "context", None)
+    browser = getattr(ctx, "browser", None)
+    try:
+        ctxs = list(getattr(browser, "contexts", []) or [])
+    except Exception:
+        ctxs = []
+    if context is not None and context not in ctxs:
+        ctxs.insert(0, context)
+
+    if not ctxs:
+        return getattr(ctx, "page", None)
+
+    open_pages: list[tuple[Any, Any, str]] = []
+    for c in ctxs:
+        try:
+            pages = list(getattr(c, "pages", []) or [])
+        except Exception:
+            pages = []
+        for p in pages:
+            if _is_page_closed(p):
+                continue
+            open_pages.append((c, p, _safe_page_url(p)))
+
+    drafts_page = None
+    cur_page = getattr(ctx, "page", None)
+    if cur_page is not None and not _is_page_closed(cur_page):
+        if _safe_page_url(cur_page).startswith(drafts_url):
+            drafts_page = cur_page
+
+    if drafts_page is None:
+        for _c, p, u in open_pages:
+            if u.startswith(drafts_url):
+                drafts_page = p
+                break
+
+    if drafts_page is None:
+        preferred_ctx = context or ctxs[0]
+        try:
+            drafts_page = await preferred_ctx.new_page()
+        except Exception:
+            return cur_page
+        try:
+            await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+        except Exception:
+            pass
+
+    try:
+        ctx.page = drafts_page
+    except Exception:
+        pass
+    try:
+        page_ctx_getter = getattr(drafts_page, "context", None)
+        page_ctx = page_ctx_getter() if callable(page_ctx_getter) else page_ctx_getter
+        if page_ctx is not None:
+            ctx.context = page_ctx
+    except Exception:
+        pass
+    try:
+        await drafts_page.bring_to_front()
+    except Exception:
+        pass
+
+    if refresh_target:
+        try:
+            await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+        except Exception:
+            pass
+        try:
+            await drafts_page.evaluate("() => { try { window.focus(); } catch(e) {} }")
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    # 自愈逻辑：异常页刷新 + 登录入口自动点击（最多重试一次）
+    try:
+        if await _page_has_transient_error(drafts_page):
+            try:
+                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+
+        clicked, has_login_button = await _maybe_click_login_button_if_prompted(drafts_page)
+        if clicked:
+            await asyncio.sleep(2.0)
+            try:
+                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
+        elif has_login_button:
+            try:
+                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            clicked2, _ = await _maybe_click_login_button_if_prompted(drafts_page)
+            if clicked2:
+                await asyncio.sleep(2.0)
+    except Exception:
+        # 自愈失败不阻塞主流程
+        pass
+
+    # Cloudflare 自愈：等待自动放行；若持续拦截则重连窗口并恢复目标页。
+    try:
+        maybe_cf = await _is_cloudflare_page(drafts_page, deep=False)
+        if maybe_cf:
+            await _push_cf_progress(drafts_page, "页面疑似 Cloudflare，进入自愈流程", level="warn")
+            try:
+                await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            await asyncio.sleep(3.0)
+            still_cf_after_wait = await _wait_cloudflare_auto_pass(
+                drafts_page,
+                max_wait_seconds=45.0,
+                max_success_clicks=3,
+                on_progress=lambda text, lv="info": _push_cf_progress(drafts_page, text, level=lv),
+            )
+            if still_cf_after_wait and await _is_cloudflare_page(drafts_page, deep=True):
+                await _push_cf_progress(drafts_page, "Cloudflare 持续存在，准备重启窗口", level="warn")
+                await _reopen_window_and_restore_drafts()
+
+                # 重启后恢复目标页（不关闭其他页面）
+                ctx_new = getattr(ctx, "context", None)
+                br_new = getattr(ctx, "browser", None)
+                try:
+                    ctxs_new = list(getattr(br_new, "contexts", []) or [])
+                except Exception:
+                    ctxs_new = []
+                if ctx_new is not None and ctx_new not in ctxs_new:
+                    ctxs_new.insert(0, ctx_new)
+
+                all_pages_new: list[Any] = []
+                for c_n in ctxs_new:
+                    try:
+                        ps = list(getattr(c_n, "pages", []) or [])
+                    except Exception:
+                        ps = []
+                    for p_n in ps:
+                        if _is_page_closed(p_n):
+                            continue
+                        all_pages_new.append(p_n)
+
+                target_page_new = None
+                for p_n in all_pages_new:
+                    if _safe_page_url(p_n).startswith(drafts_url):
+                        target_page_new = p_n
+                        break
+                if target_page_new is None:
+                    for p_n in all_pages_new:
+                        try:
+                            h_n = (urlparse(_safe_page_url(p_n)).netloc or "").strip().lower()
+                        except Exception:
+                            h_n = ""
+                        if h_n.endswith(drafts_host):
+                            target_page_new = p_n
+                            break
+                if target_page_new is None and (ctx_new is not None or ctxs_new):
+                    ctx_pref = ctx_new or ctxs_new[0]
+                    try:
+                        target_page_new = await ctx_pref.new_page()
+                        await target_page_new.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        target_page_new = None
+
+                if target_page_new is not None:
+                    try:
+                        ctx.page = target_page_new
+                        drafts_page = target_page_new
+                    except Exception:
+                        pass
+                    try:
+                        await target_page_new.bring_to_front()
+                    except Exception:
+                        pass
+                    await _push_cf_progress(drafts_page, "重启后已恢复目标页面并置前", level="ok")
+    except Exception:
+        pass
+
+    return drafts_page
+
+
 def _is_already_logged_in(current_url: str) -> bool:
     """判断当前页面是否已跳转到 Google 账户页（说明已处于登录态）。"""
     u = str(current_url or "").strip().lower()
@@ -637,6 +1062,107 @@ border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:12px;font-fa
 """
 
 
+def _build_cf_progress_panel_script() -> str:
+    """返回 Cloudflare 自愈进度面板脚本（与复制面板独立）。"""
+    return r"""
+(payload) => {
+  try {
+    const PANEL_ID = "__sora_plus_cf_progress_panel__";
+    const STYLE_ID = "__sora_plus_cf_progress_panel_style__";
+    const safe = (v) => (v === null || v === undefined) ? "" : String(v);
+    const data = {
+      title: safe(payload && payload.title),
+      updatedAt: safe(payload && payload.updatedAt),
+      entries: Array.isArray(payload && payload.entries) ? payload.entries.map((x) => ({
+        idx: safe(x && x.idx),
+        ts: safe(x && x.ts),
+        level: safe(x && x.level),
+        text: safe(x && x.text),
+      })) : [],
+    };
+
+    if (!document.getElementById(STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent = `
+#${PANEL_ID}{
+position:fixed;top:16px;left:16px;z-index:2147483646;width:420px;
+background:rgba(15,23,42,.95);color:#e5e7eb;border:1px solid rgba(148,163,184,.35);
+border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:12px;font-family:Arial,sans-serif;
+}
+#${PANEL_ID}.min{width:220px}
+#${PANEL_ID} .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.25)}
+#${PANEL_ID} .ttl{font-weight:700;color:#f8fafc}
+#${PANEL_ID} .btn{background:#334155;color:#f8fafc;border:0;border-radius:8px;padding:4px 8px;cursor:pointer}
+#${PANEL_ID} .bd{padding:10px 12px;max-height:45vh;overflow:auto}
+#${PANEL_ID} .it{padding:7px 8px;margin-bottom:6px;border-radius:8px;background:rgba(30,41,59,.75)}
+#${PANEL_ID} .it.ok{border-left:3px solid #22c55e}
+#${PANEL_ID} .it.warn{border-left:3px solid #f59e0b}
+#${PANEL_ID} .it.err{border-left:3px solid #ef4444}
+#${PANEL_ID} .meta{font-size:11px;color:#94a3b8;margin-bottom:3px}
+#${PANEL_ID} .txt{white-space:pre-wrap;word-break:break-word;line-height:1.4}
+#${PANEL_ID} .fts{padding:8px 12px;border-top:1px solid rgba(148,163,184,.2);color:#94a3b8}
+      `.trim();
+      document.documentElement.appendChild(style);
+    }
+
+    let panel = document.getElementById(PANEL_ID);
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = PANEL_ID;
+      panel.innerHTML = `
+        <div class="hdr">
+          <span class="ttl"></span>
+          <button class="btn tg" type="button">收起</button>
+        </div>
+        <div class="bd"></div>
+        <div class="fts"></div>
+      `;
+      document.documentElement.appendChild(panel);
+    }
+
+    const ttl = panel.querySelector(".ttl");
+    const bd = panel.querySelector(".bd");
+    const fts = panel.querySelector(".fts");
+    const tg = panel.querySelector(".tg");
+    if (!ttl || !bd || !fts || !tg) return;
+
+    ttl.textContent = data.title || "Sora Plus Cloudflare 自愈";
+    bd.innerHTML = "";
+    for (const e of data.entries) {
+      const item = document.createElement("div");
+      const lv = (e.level || "info").toLowerCase();
+      let cls = "it";
+      if (lv === "ok" || lv === "success") cls += " ok";
+      else if (lv === "warn" || lv === "warning") cls += " warn";
+      else if (lv === "err" || lv === "error" || lv === "fail") cls += " err";
+      item.className = cls;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `#${safe(e.idx)}  ${safe(e.ts)}  [${lv || "info"}]`;
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = safe(e.text);
+      item.appendChild(meta);
+      item.appendChild(txt);
+      bd.appendChild(item);
+    }
+    fts.textContent = data.updatedAt ? `更新时间: ${data.updatedAt}` : "";
+    try { bd.scrollTop = bd.scrollHeight; } catch (_e1) {}
+
+    tg.onclick = () => {
+      const min = panel.classList.toggle("min");
+      bd.style.display = min ? "none" : "block";
+      fts.style.display = min ? "none" : "block";
+      tg.textContent = min ? "展开" : "收起";
+    };
+  } catch (_e) {
+    // 忽略注入失败，避免影响主流程。
+  }
+}
+"""
+
+
 async def _show_sticky_copy_panel(
     context: Any,
     page: Any,
@@ -796,6 +1322,7 @@ async def sora_plus_register(
     platform_password = str(creds["platform_password"] or "").strip()
     platform_efa = str(creds["platform_efa"] or "").strip()
 
+    
     ctx = get_or_create_ctx(
         vendor=browser_vendor,
         base_url=browser_base_url,
@@ -832,32 +1359,33 @@ async def sora_plus_register(
                 progress_cb=progress_cb,
             )
 
-        chatgpt_login_result = await _do_chatgpt_google_login(
-            page,
-            platform_username=platform_username,
-            platform_efa=platform_efa,
-            previous_totp_code=last_totp_code,
-            timeout_ms=timeout_ms,
-            progress_cb=progress_cb,
-        )
+    page = await _bring_sora_drafts_to_front(ctx, refresh_target=False)
+    chatgpt_login_result = await _do_chatgpt_google_login(
+        page,
+        platform_username=platform_username,
+        platform_efa=platform_efa,
+        previous_totp_code=last_totp_code,
+        timeout_ms=timeout_ms,
+        progress_cb=progress_cb,
+    )
 
-        panel_data = {
-            "title": "Sora Plus 注册数据",
-            "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "rows": [
-                {"key": "platform_username", "label": "账号邮箱", "value": platform_username},
-                {"key": "platform_password", "label": "平台密码", "value": platform_password},
-                {
-                    "key": "prefetched_totp_code",
-                    "label": "当前2FA验证码",
-                    "value": str((chatgpt_login_result or {}).get("prefetched_totp_code") or ""),
-                },
-                {"key": "new_password_value", "label": "新密码模板", "value": NEW_PASSWORD_VALUE},
-            ]
-            + _build_payload_rows(source_payload),
-            "totpSecret": platform_efa,
-        }
-        await _show_sticky_copy_panel(ctx.context, page, panel_data=panel_data, progress_cb=progress_cb)
+    panel_data = {
+        "title": "Sora Plus 注册数据",
+        "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "rows": [
+            {"key": "platform_username", "label": "账号邮箱", "value": platform_username},
+            {"key": "platform_password", "label": "平台密码", "value": platform_password},
+            {
+                "key": "prefetched_totp_code",
+                "label": "当前2FA验证码",
+                "value": str((chatgpt_login_result or {}).get("prefetched_totp_code") or ""),
+            },
+            {"key": "new_password_value", "label": "新密码模板", "value": NEW_PASSWORD_VALUE},
+        ]
+        + _build_payload_rows(source_payload),
+        "totpSecret": platform_efa,
+    }
+    await _show_sticky_copy_panel(ctx.context, page, panel_data=panel_data, progress_cb=progress_cb)
 
     return {
         "ok": True,

@@ -284,10 +284,44 @@
 
       let state = { projects: [], tree: [] };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
+      const LS_BROWSER_EXPANDED_MAP = "fpbrowser2api.browser_expanded_map";
 
       function currentProjectId() {
         const v = projectSelect.value;
         return v ? parseInt(v, 10) : null;
+      }
+
+      function readBrowserExpandedMap() {
+        try {
+          const raw = localStorage.getItem(LS_BROWSER_EXPANDED_MAP);
+          if (!raw) return {};
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === "object" ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+
+      function writeBrowserExpandedMap(map) {
+        localStorage.setItem(LS_BROWSER_EXPANDED_MAP, JSON.stringify(map && typeof map === "object" ? map : {}));
+      }
+
+      function getExpandedBrowserIds(projectId) {
+        const pid = String(projectId || "");
+        if (!pid) return new Set();
+        const map = readBrowserExpandedMap();
+        const ids = Array.isArray(map[pid]) ? map[pid] : [];
+        return new Set(ids.map(x => String(x)));
+      }
+
+      function saveExpandedBrowserIds(projectId, expandedIds) {
+        const pid = String(projectId || "");
+        if (!pid) return;
+        const map = readBrowserExpandedMap();
+        const arr = Array.from(expandedIds || []).map(x => String(x));
+        if (arr.length) map[pid] = arr;
+        else delete map[pid];
+        writeBrowserExpandedMap(map);
       }
 
       async function loadProjects() {
@@ -339,10 +373,11 @@
         }
 
         const browsers = Array.isArray(p.browsers) ? p.browsers : [];
+        const expandedBrowserIds = getExpandedBrowserIds(currentProjectId());
         const accordionId = "accBrowsers";
         const html = `
           <div class="accordion" id="${accordionId}">
-            ${browsers.length ? browsers.map((b, bi) => renderBrowser(b, accordionId, bi)).join("") : `<div class="text-muted small py-2">该项目暂无指纹浏览器数据（请先新增指纹浏览器/空间，或确认未被删除）。</div>`}
+            ${browsers.length ? browsers.map((b, bi) => renderBrowser(b, accordionId, bi, expandedBrowserIds)).join("") : `<div class="text-muted small py-2">该项目暂无指纹浏览器数据（请先新增指纹浏览器/空间，或确认未被删除）。</div>`}
           </div>
         `;
         treeContainer.innerHTML = html;
@@ -367,15 +402,16 @@
         }, 0);
       }
 
-      function renderBrowser(b, parentId, idx) {
+      function renderBrowser(b, parentId, idx, expandedBrowserIds = new Set()) {
         const bId = `b_${b.id}`;
         const collapseId = `collapse_${bId}`;
         const headingId = `heading_${bId}`;
+        const isExpanded = expandedBrowserIds.has(String(b.id));
         return `
           <div class="accordion-item mb-2 shadow-sm">
             <h2 class="accordion-header" id="${headingId}">
               <div class="browser-header">
-                <button class="accordion-button collapsed browser-trigger" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                <button class="accordion-button ${isExpanded ? "" : "collapsed"} browser-trigger" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
                   <div class="browser-meta w-100">
                     <div class="fw-semibold text-nowrap">${escapeHtml(b.name)}</div>
                     <span class="badge text-bg-light mono border text-nowrap">#${b.id}</span>
@@ -391,7 +427,7 @@
                 </div>
               </div>
             </h2>
-            <div id="${collapseId}" class="accordion-collapse collapse" data-bs-parent="#${parentId}">
+            <div id="${collapseId}" class="accordion-collapse collapse ${isExpanded ? "show" : ""}" data-bs-parent="#${parentId}">
               <div class="accordion-body">
                 ${(b.spaces || []).length ? (b.spaces || []).map(s => renderSpace(s)).join("") : `<div class="text-muted small">暂无空间</div>`}
               </div>
@@ -2324,6 +2360,26 @@
         const btn = e.target?.closest?.("[data-action]");
         if (!btn) return;
         handleAction(btn.dataset.action, btn.dataset, btn);
+      });
+      treeContainer.addEventListener("shown.bs.collapse", (e) => {
+        const el = e.target;
+        if (!el || !el.id || !String(el.id).startsWith("collapse_b_")) return;
+        const browserId = String(el.id).replace("collapse_b_", "");
+        const pid = currentProjectId();
+        if (!pid || !browserId) return;
+        const expanded = getExpandedBrowserIds(pid);
+        expanded.add(browserId);
+        saveExpandedBrowserIds(pid, expanded);
+      });
+      treeContainer.addEventListener("hidden.bs.collapse", (e) => {
+        const el = e.target;
+        if (!el || !el.id || !String(el.id).startsWith("collapse_b_")) return;
+        const browserId = String(el.id).replace("collapse_b_", "");
+        const pid = currentProjectId();
+        if (!pid || !browserId) return;
+        const expanded = getExpandedBrowserIds(pid);
+        expanded.delete(browserId);
+        saveExpandedBrowserIds(pid, expanded);
       });
 
       document.getElementById("btnNewProject").addEventListener("click", () => openProjectModal("new"));
