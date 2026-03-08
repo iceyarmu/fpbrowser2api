@@ -1026,8 +1026,9 @@
       }
 
       function accountLabel(a) {
-        const bound = Number(a.binding_count || 0) > 0 ? "[已绑定]" : "[未绑定]";
-        return `${bound} ${String(a.platform_username || "-").trim() || "-"} | ${String(a.platform_url || "-").trim() || "-"}`;
+        const bindCount = Number(a.binding_count || 0) || 0;
+        const bound = bindCount > 0 ? "[已绑定]" : "[未绑定]";
+        return `${bound}(${bindCount}) ${String(a.platform_username || "-").trim() || "-"} | ${String(a.platform_url || "-").trim() || "-"}`;
       }
 
       function renderAccounts() {

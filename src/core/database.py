@@ -1070,8 +1070,9 @@ class Database:
                         proxy_expire_at=excluded.proxy_expire_at,
                         enabled=excluded.enabled,
                         window_status=COALESCE(excluded.window_status, windows.window_status),
-                        -- 约定：本地标记删除后，不因“同步窗口”而被覆盖为未删除
-                        deleted=CASE WHEN windows.deleted = 1 THEN 1 ELSE excluded.deleted END,
+                        -- 约定：同步窗口时，以指纹浏览器返回的删除状态为准；
+                        -- 若本地曾标记删除但远端仍返回该窗口，则恢复为未删除并展示
+                        deleted=excluded.deleted,
                         raw_json=excluded.raw_json,
                         synced_at=datetime('now','localtime'),
                         updated_at=datetime('now','localtime')
