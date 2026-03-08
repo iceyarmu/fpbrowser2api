@@ -257,6 +257,14 @@ class AutoRefreshErrorLog(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class CardKey(BaseModel):
+    id: Optional[int] = None
+    card_key: str
+    sort_order: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class WindowPickerResult(BaseModel):
     window: WindowInfo
     mapping: TaskTypeWindow

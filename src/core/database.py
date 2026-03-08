@@ -18,6 +18,7 @@ from .models import (
     AdminUser,
     AutoRefreshErrorLog,
     BrowserSpace,
+    CardKey,
     FingerprintBrowser,
     PlatformAccount,
     Project,
@@ -333,6 +334,18 @@ class Database:
                 """
             )
 
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS card_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    card_key TEXT NOT NULL UNIQUE,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
+                )
+                """
+            )
+
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_task_id ON tasks(task_id)")
             # 兼容旧库：可能还未 ADD COLUMN generation_id，此处索引创建允许失败（迁移阶段会再补一次）
             try:
@@ -369,6 +382,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_created_at ON auto_refresh_error_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_mapping_id ON auto_refresh_error_logs(mapping_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_card_keys_sort_order ON card_keys(sort_order, id)")
 
             await db.commit()
 
@@ -1875,6 +1889,65 @@ class Database:
                     int(proxy_id),
                 ),
             )
+            await db.commit()
+            return int(cur.rowcount or 0)
+
+    # ---------- card keys ----------
+    async def list_card_keys(self) -> List[CardKey]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM card_keys ORDER BY sort_order ASC, id ASC")
+            rows = await cur.fetchall()
+            return [CardKey(**dict(r)) for r in rows]
+
+    async def batch_import_card_keys(self, content: str) -> Dict[str, int]:
+        lines = [str(x or "").strip() for x in str(content or "").splitlines()]
+        keys = [x for x in lines if x]
+        if not keys:
+            return {"inserted": 0, "skipped": 0}
+
+        inserted = 0
+        skipped = 0
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT COALESCE(MAX(sort_order), 0) AS mx FROM card_keys")
+            row = await cur.fetchone()
+            next_order = int((row["mx"] if row else 0) or 0) + 1
+            for key in keys:
+                try:
+                    await db.execute(
+                        """
+                        INSERT INTO card_keys (card_key, sort_order, updated_at)
+                        VALUES (?, ?, datetime('now','localtime'))
+                        """,
+                        (key, int(next_order)),
+                    )
+                    inserted += 1
+                    next_order += 1
+                except Exception:
+                    skipped += 1
+            await db.commit()
+        return {"inserted": inserted, "skipped": skipped}
+
+    async def update_card_key(self, card_key_id: int, card_key: str) -> int:
+        new_val = str(card_key or "").strip()
+        if not new_val:
+            raise ValueError("卡密不能为空")
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE card_keys
+                SET card_key = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (new_val, int(card_key_id)),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
+
+    async def delete_card_key(self, card_key_id: int) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute("DELETE FROM card_keys WHERE id = ?", (int(card_key_id),))
             await db.commit()
             return int(cur.rowcount or 0)
 

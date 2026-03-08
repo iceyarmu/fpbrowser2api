@@ -196,6 +196,11 @@ async def admin_test_page():
     return _page(static_dir / "test.html")
 
 
+@app.get("/admin/card-keys", response_class=HTMLResponse)
+async def admin_card_keys_page():
+    return _page(static_dir / "card_keys.html")
+
+
 @app.get("/admin/logs", response_class=HTMLResponse)
 async def admin_logs_page():
     return _page(static_dir / "logs.html")

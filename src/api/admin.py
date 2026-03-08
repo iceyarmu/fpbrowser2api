@@ -153,6 +153,14 @@ class ImportAccountsRequest(BaseModel):
     content: str = Field(min_length=1, description="批量导入文本")
 
 
+class ImportCardKeysRequest(BaseModel):
+    content: str = Field(min_length=1, description="每行一个卡密")
+
+
+class UpdateCardKeyRequest(BaseModel):
+    card_key: str = Field(min_length=1, max_length=256)
+
+
 # -------------------- auth helper --------------------
 def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
     """解析批量账号文本：邮箱——密码——忽略——EFA。"""
@@ -1237,6 +1245,47 @@ async def list_all_windows(project_id: Optional[int] = None, token: str = Depend
                         }
                     )
     return {"success": True, "windows": flat}
+
+
+# -------------------- card keys --------------------
+@router.get("/api/admin/card-keys")
+async def list_card_keys(token: str = Depends(verify_admin_token)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {"success": True, "items": [x.model_dump() for x in await db.list_card_keys()]}
+
+
+@router.post("/api/admin/card-keys/import")
+async def import_card_keys(req: ImportCardKeysRequest, token: str = Depends(verify_admin_token)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    result = await db.batch_import_card_keys(req.content)
+    return {"success": True, **result}
+
+
+@router.put("/api/admin/card-keys/{card_key_id}")
+async def update_card_key(card_key_id: int, req: UpdateCardKeyRequest, token: str = Depends(verify_admin_token)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    try:
+        affected = await db.update_card_key(card_key_id=card_key_id, card_key=req.card_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="card key not found")
+    return {"success": True}
+
+
+@router.delete("/api/admin/card-keys/{card_key_id}")
+async def delete_card_key(card_key_id: int, token: str = Depends(verify_admin_token)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    affected = await db.delete_card_key(card_key_id=card_key_id)
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="card key not found")
+    return {"success": True}
 
 
 # -------------------- task types --------------------
