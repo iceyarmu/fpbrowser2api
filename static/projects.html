@@ -514,11 +514,7 @@
               <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk ?? ""))}">
                 ${windows.map(w => `
                   <tr class="small2">
-                    <td class="mono text-muted">
-                      <div>#${escapeHtml(String((w.window_sort_num ?? w.id) ?? "-"))}</div>
-                      <div class="small text-muted">pk:${escapeHtml(String(w.id ?? "-"))}</div>
-                      <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
-                    </td>
+                    ${renderWindowIdCell(w)}
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
                     <td style="min-width: 280px;">
                       <select class="form-select form-select-sm mono" data-role="accountSelect"
@@ -563,6 +559,16 @@
               </tbody>
             </table>
           </div>
+        `;
+      }
+
+      function renderWindowIdCell(w) {
+        return `
+          <td class="mono text-muted">
+            <div>#${escapeHtml(String((w.window_sort_num ?? w.id) ?? "-"))}</div>
+            <div class="small text-muted">pk:${escapeHtml(String(w.id ?? "-"))}</div>
+            <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
+          </td>
         `;
       }
 
@@ -844,6 +850,7 @@
                   <th>代理</th>
                   <th>到期</th>
                   <th>启用</th>
+                  <th>窗口状态</th>
                   <th>删除</th>
                 </tr>
               </thead>
@@ -857,10 +864,7 @@
       function rowHtmlForWindow(w, spacePk) {
         return `
           <tr class="small2">
-            <td class="mono text-muted">
-              <div>#${escapeHtml(String(w.id ?? "-"))}</div>
-              <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
-            </td>
+            ${renderWindowIdCell(w)}
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
             <td style="min-width: 280px;">
               <select class="form-select form-select-sm mono" data-role="accountSelect"
@@ -891,6 +895,7 @@
             </td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
             <td>${enabledBadge(!!w.enabled)}</td>
+            <td>${windowStatusBadge(w.window_status)}</td>
             <td>
               <button class="btn btn-outline-danger btn-sm" type="button"
                 data-action="delete_window"
