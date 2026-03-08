@@ -1062,7 +1062,22 @@ class Database:
                         window_name=excluded.window_name,
                         platform_account=excluded.platform_account,
                         platform_url=excluded.platform_url,
-                        platform_account_id=COALESCE(excluded.platform_account_id, windows.platform_account_id),
+                        platform_account_id=CASE
+                            -- 远端明确返回 account_id：直接采用
+                            WHEN excluded.platform_account_id IS NOT NULL THEN excluded.platform_account_id
+                            -- 远端未返回任何账号信息：保留本地 id，避免短暂空数据把绑定抹掉
+                            WHEN TRIM(COALESCE(excluded.platform_account, '')) = ''
+                                 AND TRIM(COALESCE(excluded.platform_url, '')) = '' THEN windows.platform_account_id
+                            -- 远端账号名/网址与本地一致：沿用本地 id
+                            WHEN TRIM(COALESCE(excluded.platform_account, '')) = TRIM(COALESCE(windows.platform_account, ''))
+                                 AND (
+                                      TRIM(COALESCE(excluded.platform_url, '')) = ''
+                                   OR TRIM(COALESCE(windows.platform_url, '')) = ''
+                                   OR TRIM(COALESCE(excluded.platform_url, '')) = TRIM(COALESCE(windows.platform_url, ''))
+                                 ) THEN windows.platform_account_id
+                            -- 账号已变化但没有 id：清空旧 id，避免“当前账号”和“绑定账号”不一致
+                            ELSE NULL
+                        END,
                         -- 约定：同步窗口时，若新数据未解析到 proxy_id，则保留已有 proxy_id
                         proxy_id=COALESCE(excluded.proxy_id, windows.proxy_id),
                         proxy_addr=excluded.proxy_addr,

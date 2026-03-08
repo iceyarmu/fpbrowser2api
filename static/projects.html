@@ -1115,14 +1115,26 @@
           const curItemById = curId ? items.find(x => String(x.account_id || "").trim() === curId) : null;
           const curNameNorm = norm(curName);
           const curUrlNorm = norm(curUrl);
-          const curItemByNameUrl = (!curItemById && curNameNorm)
+          const curItemByNameUrl = curNameNorm
             ? items.find(x => {
               const nameOk = norm(x.platform_username) === curNameNorm;
               const urlOk = !curUrlNorm || norm(x.platform_url) === curUrlNorm;
               return nameOk && urlOk;
             })
             : null;
-          const matchedCurItem = curItemById || curItemByNameUrl;
+          // 同步窗口后，若远端返回了新的账号名称/网址但 account_id 为空，
+          // 本地旧 id 可能仍残留。此时优先按“当前账号名称/网址”匹配，避免下拉仍显示旧绑定。
+          const idLooksStale = !!(
+            curItemById
+            && curNameNorm
+            && (
+              norm(curItemById.platform_username) !== curNameNorm
+              || (curUrlNorm && norm(curItemById.platform_url) !== curUrlNorm)
+            )
+          );
+          const matchedCurItem = (idLooksStale && curItemByNameUrl)
+            ? curItemByNameUrl
+            : (curItemById || curItemByNameUrl);
           const selectedValue = matchedCurItem ? String(matchedCurItem.account_id) : (curId || "0");
           const fallbackCur = (curId && !matchedCurItem)
             ? `<option value="${escapeHtml(curId)}" selected disabled>[未同步] ${escapeHtml(curName || "-")} | ${escapeHtml(curUrl || "-")}</option>`

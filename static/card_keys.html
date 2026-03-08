@@ -54,7 +54,7 @@
                   <th style="width: 100px;">序号</th>
                   <th>卡密</th>
                   <th style="width: 220px;">更新时间</th>
-                  <th style="width: 180px;">操作</th>
+                  <th style="width: 260px;">操作</th>
                 </tr>
               </thead>
               <tbody id="tbody"></tbody>
@@ -89,6 +89,7 @@
               <td class="mono">${escapeHtml(key)}</td>
               <td class="mono small">${escapeHtml(String(updatedAt))}</td>
               <td>
+                <button class="btn btn-outline-success btn-sm me-2" data-act="check" data-id="${id}">检测</button>
                 <button class="btn btn-outline-primary btn-sm me-2" data-act="edit" data-id="${id}">修改</button>
                 <button class="btn btn-outline-danger btn-sm" data-act="del" data-id="${id}">删除</button>
               </td>
@@ -157,6 +158,58 @@
         await loadCardKeys();
       }
 
+      function makeSign() {
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+          const random = Math.floor(Math.random() * 16);
+          const value = ch === "x" ? random : ((random & 0x3) | 0x8);
+          return value.toString(16);
+        });
+      }
+
+      async function checkOne(id) {
+        const current = cardKeys.find((x) => Number(x.id) === Number(id));
+        if (!current) {
+          toast("未找到对应卡密", "warn");
+          return;
+        }
+        const cdk = String(current.card_key || "").trim();
+        if (!cdk) {
+          toast("卡密为空，无法检测", "warn");
+          return;
+        }
+        const btn = document.querySelector(`button[data-act="check"][data-id="${id}"]`);
+        const oldText = btn ? btn.textContent : "";
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "检测中...";
+        }
+        try {
+          const resp = await fetch("https://chong.databrain.sbs/api/vip/c", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              cdk,
+              sign: makeSign(),
+              timestamp: Date.now(),
+            }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (resp.ok && Number(data.code) === 1) {
+            toast(`卡密未被使用：${cdk}`, "success");
+          } else {
+            const msg = data.message || "卡密已被使用或不可用";
+            toast(`检测结果：${msg}`, "warn");
+          }
+        } catch (err) {
+          toast(`检测失败：${err?.message || "网络异常"}`, "error");
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = oldText || "检测";
+          }
+        }
+      }
+
       document.getElementById("btnImport").addEventListener("click", importCardKeys);
       document.getElementById("btnRefresh").addEventListener("click", loadCardKeys);
       document.getElementById("tbody").addEventListener("click", async (e) => {
@@ -165,6 +218,7 @@
         const act = btn.getAttribute("data-act");
         const id = Number(btn.getAttribute("data-id") || 0);
         if (!id) return;
+        if (act === "check") await checkOne(id);
         if (act === "edit") await updateOne(id);
         if (act === "del") await deleteOne(id);
       });

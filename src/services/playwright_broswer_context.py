@@ -360,7 +360,7 @@ class PlaywrightBrowserContext:
         if not debugger_address:
             raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
         self.cdp_endpoint = debugger_address
-
+        await asyncio.sleep(15)
         if self.playwright is None:
             self.playwright = await async_playwright().start()
 
