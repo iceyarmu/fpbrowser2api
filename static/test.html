@@ -111,6 +111,7 @@
         testTaskType: `${LS_PREFIX}test.task_type_code`,
         testPrompt: `${LS_PREFIX}test.prompt`,
         testVideoUrl: `${LS_PREFIX}test.video_url`,
+        testFirstImageUrl: `${LS_PREFIX}test.first_image_url`,
         testLastTaskId: `${LS_PREFIX}test.last_task_id`,
       };
       function mappingLsKey(taskTypeCode) {
@@ -341,6 +342,12 @@
         const savedVideoUrl = lsGet(LS_KEYS.testVideoUrl);
         if (savedVideoUrl !== null && videoUrlEl) videoUrlEl.value = savedVideoUrl;
         if (videoUrlEl) videoUrlEl.addEventListener("input", (e) => lsSet(LS_KEYS.testVideoUrl, e.target.value));
+
+        // first_image_url 回填
+        const firstImageUrlEl = document.getElementById("firstImageUrl");
+        const savedFirstImageUrl = lsGet(LS_KEYS.testFirstImageUrl);
+        if (savedFirstImageUrl !== null && firstImageUrlEl) firstImageUrlEl.value = savedFirstImageUrl;
+        if (firstImageUrlEl) firstImageUrlEl.addEventListener("input", (e) => lsSet(LS_KEYS.testFirstImageUrl, e.target.value));
 
         // 任务类型缓存（回填发生在 loadTaskTypes 之后）
         const typeEl = document.getElementById("taskType");

@@ -807,11 +807,15 @@
             ? `<option value="__custom__" selected disabled>(自定义代理) ${escapeHtml(customLabel || "-")}</option>`
             : "";
 
+          const numberedAvailableOptions = available.map((p, idx) => {
+            const label = `${idx + 1}. ${proxyLabel(p, getSuccessCount(p.proxy_id))}`;
+            return `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(label)}</option>`;
+          }).join("");
           sel.innerHTML = `
             ${customOption}
             <option value="0">(不使用代理)</option>
             ${curOption}
-            ${available.map(p => `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(proxyLabel(p, getSuccessCount(p.proxy_id)))}</option>`).join("")}
+            ${numberedAvailableOptions}
           `;
           sel.value = looksCustom ? "__custom__" : String(curIdNum || 0);
         });
