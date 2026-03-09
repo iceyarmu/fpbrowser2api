@@ -268,6 +268,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     code TEXT UNIQUE NOT NULL,
+                    project_id INTEGER,
                     concurrency INTEGER DEFAULT 1,
                     continuous_error_threshold INTEGER DEFAULT 3,
                     continuous_error_close_window_threshold INTEGER DEFAULT 3,
@@ -510,6 +511,7 @@ class Database:
                     ("create_task_handler", "TEXT"),
                     ("refresh_quota_handler", "TEXT"),
                     ("continuous_error_close_window_threshold", "INTEGER DEFAULT 3"),
+                    ("project_id", "INTEGER"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
@@ -2309,6 +2311,7 @@ class Database:
         self,
         name: str,
         code: str,
+        project_id: Optional[int],
         concurrency: int,
         continuous_error_threshold: int,
         continuous_error_close_window_threshold: int,
@@ -2320,15 +2323,16 @@ class Database:
             cur = await db.execute(
                 """
                 INSERT INTO task_types (
-                  name, code, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
+                  name, code, project_id, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
                   create_task_handler, refresh_quota_handler,
                   enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
                     code.strip(),
+                    int(project_id) if project_id is not None else None,
                     int(concurrency),
                     int(continuous_error_threshold),
                     int(continuous_error_close_window_threshold),
@@ -2345,6 +2349,7 @@ class Database:
         task_type_id: int,
         name: str,
         code: str,
+        project_id: Optional[int],
         concurrency: int,
         continuous_error_threshold: int,
         continuous_error_close_window_threshold: int,
@@ -2376,7 +2381,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE task_types
-                SET name=?, code=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
+                SET name=?, code=?, project_id=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
                     create_task_handler=?, refresh_quota_handler=?,
                     enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
@@ -2384,6 +2389,7 @@ class Database:
                 (
                     name.strip(),
                     new_code,
+                    int(project_id) if project_id is not None else None,
                     int(concurrency),
                     int(continuous_error_threshold),
                     int(continuous_error_close_window_threshold),

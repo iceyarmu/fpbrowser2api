@@ -196,6 +196,7 @@ class UpdateSpaceRequest(BaseModel):
 class CreateTaskTypeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
+    project_id: Optional[int] = Field(default=None, ge=1)
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
@@ -207,6 +208,7 @@ class CreateTaskTypeRequest(BaseModel):
 class UpdateTaskTypeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
+    project_id: Optional[int] = Field(default=None, ge=1)
     concurrency: int = Field(default=1, ge=1, le=999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
@@ -1619,6 +1621,15 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     try:
+        user = await _ensure_page_access(token, "task_types")
+        allowed_project_ids = await _get_allowed_project_ids(user)
+        if req.project_id is not None:
+            if allowed_project_ids is not None and int(req.project_id) not in {int(x) for x in allowed_project_ids}:
+                raise HTTPException(status_code=403, detail="无权绑定到该项目")
+            projects = await db.list_projects(allowed_project_ids=allowed_project_ids)
+            if int(req.project_id) not in {int(p.id or 0) for p in projects}:
+                raise HTTPException(status_code=400, detail="绑定项目不存在")
+
         # 校验 handler key（避免保存后运行时报错）
         from ..services.task_handler_registry import get_create_task_handler, get_refresh_quota_handler
 
@@ -1630,6 +1641,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
         tid = await db.create_task_type(
             req.name,
             req.code,
+            req.project_id,
             req.concurrency,
             req.continuous_error_threshold,
             req.continuous_error_close_window_threshold,
@@ -1647,6 +1659,15 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     try:
+        user = await _ensure_page_access(token, "task_types")
+        allowed_project_ids = await _get_allowed_project_ids(user)
+        if req.project_id is not None:
+            if allowed_project_ids is not None and int(req.project_id) not in {int(x) for x in allowed_project_ids}:
+                raise HTTPException(status_code=403, detail="无权绑定到该项目")
+            projects = await db.list_projects(allowed_project_ids=allowed_project_ids)
+            if int(req.project_id) not in {int(p.id or 0) for p in projects}:
+                raise HTTPException(status_code=400, detail="绑定项目不存在")
+
         # 校验 handler key（避免保存后运行时报错）
         from ..services.task_handler_registry import get_create_task_handler, get_refresh_quota_handler
 
@@ -1659,6 +1680,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             task_type_id=task_type_id,
             name=req.name,
             code=req.code,
+            project_id=req.project_id,
             concurrency=req.concurrency,
             continuous_error_threshold=req.continuous_error_threshold,
             continuous_error_close_window_threshold=req.continuous_error_close_window_threshold,

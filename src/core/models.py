@@ -165,6 +165,7 @@ class TaskType(BaseModel):
     id: Optional[int] = None
     name: str
     code: str  # 英文唯一
+    project_id: Optional[int] = None  # 绑定项目（为空表示不限制）
     concurrency: int = 1
     continuous_error_threshold: int = 3
     continuous_error_close_window_threshold: int = 3

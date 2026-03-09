@@ -157,6 +157,13 @@
                   <input class="form-control form-control-sm" id="typeTimeout" type="number" min="10" value="1800" />
                 </div>
                 <div class="col-12 col-md-6">
+                  <label class="form-label form-label-tight">绑定项目</label>
+                  <select class="form-select form-select-sm" id="typeProjectId">
+                    <option value="">（不限制项目）</option>
+                  </select>
+                  <div class="text-muted small">设置后，“添加窗口”弹窗仅显示该项目下的窗口。</div>
+                </div>
+                <div class="col-12 col-md-6">
                   <label class="form-label form-label-tight">创建任务接口函数</label>
                   <select class="form-select form-select-sm mono" id="typeCreateHandler"></select>
                   <div class="text-muted small">根据 task_type_code 动态分发到对应创建任务函数。</div>
@@ -476,6 +483,7 @@
 
       let state = {
         types: [],
+        projects: [],
         current: null,
         mappings: [],
         windows: [],
@@ -1286,6 +1294,26 @@
         renderHandlerSelects();
       }
 
+      function renderProjectSelectOptions() {
+        const sel = document.getElementById("typeProjectId");
+        if (!sel) return;
+        const currentVal = String(sel.value || "").trim();
+        const opts = ['<option value="">（不限制项目）</option>']
+          .concat((state.projects || []).map((p) => `<option value="${escapeHtml(String(p.id))}">${escapeHtml(p.name || `项目#${p.id}`)}</option>`));
+        sel.innerHTML = opts.join("");
+        if (currentVal && (state.projects || []).some((p) => String(p.id) === currentVal)) {
+          sel.value = currentVal;
+        }
+      }
+
+      async function loadProjects() {
+        const r = await adminFetch("/api/admin/projects");
+        if (!r) return;
+        const d = await r.json();
+        state.projects = d.projects || [];
+        renderProjectSelectOptions();
+      }
+
       async function loadUiDefaults() {
         try {
           const r = await adminFetch("/api/admin/ui-defaults");
@@ -1363,6 +1391,8 @@
         document.getElementById("typeId").value = t?.id || "";
         document.getElementById("typeName").value = t?.name || "";
         document.getElementById("typeCode").value = t?.code || "";
+        const projectSel = document.getElementById("typeProjectId");
+        if (projectSel) projectSel.value = (t?.project_id == null ? "" : String(t.project_id));
         document.getElementById("typeConcurrency").value = t?.concurrency ?? 1;
         document.getElementById("typeErrThr").value = t?.continuous_error_threshold ?? 3;
         document.getElementById("typeErrCloseWinThr").value = t?.continuous_error_close_window_threshold ?? 3;
@@ -1388,6 +1418,12 @@
           const payload = {
             name: document.getElementById("typeName").value.trim(),
             code: document.getElementById("typeCode").value.trim(),
+            project_id: (() => {
+              const v = String(document.getElementById("typeProjectId")?.value || "").trim();
+              if (!v) return null;
+              const n = parseInt(v, 10);
+              return Number.isNaN(n) ? null : n;
+            })(),
             concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
             continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
             continuous_error_close_window_threshold: parseInt(document.getElementById("typeErrCloseWinThr").value, 10) || 3,
@@ -2262,7 +2298,12 @@
       async function openWinModal() {
         const id = document.getElementById("typeId").value;
         if (!id) return toast("请先选择任务类型", "error");
-        const r = await adminFetch("/api/admin/windows/all");
+        const currentType = state.current || null;
+        const projectId = parseInt(String(currentType?.project_id ?? ""), 10);
+        const params = new URLSearchParams();
+        if (!Number.isNaN(projectId) && projectId > 0) params.set("project_id", String(projectId));
+        const query = params.toString();
+        const r = await adminFetch(`/api/admin/windows/all${query ? `?${query}` : ""}`);
         if (!r) return;
         const d = await r.json();
         state.windows = d.windows || [];
@@ -2820,6 +2861,7 @@
         .then((u) => { currentUserProfile = u; applyReadonlyByRole(); })
         .then(applyUiDefaultsFromLS)
         .then(loadUiDefaults)
+        .then(loadProjects)
         .then(loadHandlerOptions)
         .then(loadTypes);
     </script>
