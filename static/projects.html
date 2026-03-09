@@ -315,9 +315,18 @@
       const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
 
       let state = { projects: [], tree: [] };
-      let moveWindowState = { sourceSpacePk: 0, windowKey: "", windowName: "", options: [], triggerBtn: null };
+      let moveWindowState = {
+        sourceSpacePk: 0,
+        windowKey: "",
+        windowName: "",
+        windowNum: 0,
+        windowSortNum: 0,
+        options: [],
+        triggerBtn: null,
+      };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
       const LS_BROWSER_EXPANDED_MAP = "fpbrowser2api.browser_expanded_map";
+      const LS_LAST_MOVE_WINDOW_TARGET_SPACE = "fpbrowser2api.last_move_window_target_space_pk";
 
       function currentProjectId() {
         const v = projectSelect.value;
@@ -629,7 +638,9 @@
                         data-action="move_window"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
                         data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
-                        data-window_name="${escapeHtml(String(w.window_name ?? ""))}">转移</button>
+                        data-window_name="${escapeHtml(String(w.window_name ?? ""))}"
+                        data-window_num="${escapeHtml(String(w.id ?? ""))}"
+                        data-window_sort_num="${escapeHtml(String(w.window_sort_num ?? ""))}">转移</button>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_window"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
@@ -667,7 +678,7 @@
         } else if (action === "delete_window") {
           deleteWindow(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, fromEl);
         } else if (action === "move_window") {
-          openMoveWindowModal(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, fromEl);
+          openMoveWindowModal(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, ds.window_num, ds.window_sort_num, fromEl);
         } else if (action === "edit_space") {
           const s = JSON.parse(decodeURIComponent(ds.space));
           openSpaceModal("edit", s);
@@ -762,13 +773,19 @@
             </option>
           `).join("")}
         `;
+        const cachedTargetSpacePk = String(localStorage.getItem(LS_LAST_MOVE_WINDOW_TARGET_SPACE) || "").trim();
+        if (cachedTargetSpacePk && options.some(x => String(x.space_pk) === cachedTargetSpacePk)) {
+          selectEl.value = cachedTargetSpacePk;
+        }
         summaryEl.textContent = `可选目标空间：${options.length} 个`;
       }
 
-      async function openMoveWindowModal(spacePk, windowKey, windowName, fromEl) {
+      async function openMoveWindowModal(spacePk, windowKey, windowName, windowNum, windowSortNum, fromEl) {
         const sourceSpacePk = Number(spacePk || 0) || 0;
         const wk = String(windowKey || "").trim();
         const wn = String(windowName || "").trim() || wk;
+        const num = Number(windowNum || 0) || 0;
+        const sortNum = Number(windowSortNum || 0) || 0;
         if (!sourceSpacePk || !wk) {
           toast("缺少窗口信息，无法转移", "error");
           return;
@@ -778,6 +795,8 @@
           sourceSpacePk,
           windowKey: wk,
           windowName: wn,
+          windowNum: num,
+          windowSortNum: sortNum,
           options: [],
           triggerBtn: fromEl || null,
         };
@@ -787,8 +806,10 @@
         const summaryEl = document.getElementById("moveWindowSummary");
         if (sourceEl) {
           sourceEl.innerHTML = `
+            <div class="mono"><span class="text-muted">窗口sort：</span>${escapeHtml(String(sortNum || "-"))}</div>
             <div><span class="text-muted">窗口：</span><span class="fw-semibold">${escapeHtml(wn)}</span></div>
             <div class="mono"><span class="text-muted">window_key：</span>${escapeHtml(wk)}</div>
+            <div class="mono"><span class="text-muted">window_pk：</span>${escapeHtml(String(num || "-"))}</div>
             <div class="mono"><span class="text-muted">源空间 space_pk：</span>${escapeHtml(String(sourceSpacePk))}</div>
           `;
         }
@@ -824,6 +845,7 @@
         if (!sourceSpacePk || !wk) return toast("缺少源窗口信息", "error");
         if (!targetSpacePk) return toast("请选择目标空间", "error");
         if (targetSpacePk === sourceSpacePk) return toast("目标空间不能与源空间相同", "error");
+        localStorage.setItem(LS_LAST_MOVE_WINDOW_TARGET_SPACE, String(targetSpacePk));
 
         const triggerBtn = moveWindowState.triggerBtn || null;
         try {
@@ -1116,7 +1138,9 @@
                 data-action="move_window"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
                 data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
-                data-window_name="${escapeHtml(String(w.window_name ?? ""))}">转移</button>
+                data-window_name="${escapeHtml(String(w.window_name ?? ""))}"
+                data-window_num="${escapeHtml(String(w.id ?? ""))}"
+                data-window_sort_num="${escapeHtml(String(w.window_sort_num ?? ""))}">转移</button>
               <button class="btn btn-outline-danger btn-sm" type="button"
                 data-action="delete_window"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
@@ -2647,6 +2671,11 @@
 
       document.getElementById("btnSaveSpace").addEventListener("click", saveSpace);
       document.getElementById("btnConfirmMoveWindow").addEventListener("click", submitMoveWindow);
+      document.getElementById("moveWindowTargetSpace").addEventListener("change", (ev) => {
+        const v = String(ev?.target?.value || "").trim();
+        if (!v) return;
+        localStorage.setItem(LS_LAST_MOVE_WINDOW_TARGET_SPACE, v);
+      });
 
       btnRefreshWorkspaceProjects.addEventListener("click", () => {
         if (!workspaceProjectsState.browserId) return;

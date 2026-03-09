@@ -12,6 +12,7 @@
       .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .truncate-err { max-width: 520px; }
       .window-acc { max-width: 360px; }
+      .window-tasks-modal-dialog { max-width: min(1600px, 96vw); }
     </style>
   </head>
   <body class="bg-light">
@@ -212,7 +213,7 @@
 
     <!-- Window Tasks Modal -->
     <div class="modal fade" id="windowTasksModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable window-tasks-modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
             <h5 class="modal-title mono" id="windowTasksModalTitle">窗口任务列表</h5>
