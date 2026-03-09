@@ -510,6 +510,7 @@
 
       let state = {
         types: [],
+        transferAllTypes: [],
         projects: [],
         current: null,
         mappings: [],
@@ -525,12 +526,35 @@
         return !currentUserProfile || !!currentUserProfile.is_admin;
       }
 
+      function canEditTaskTypeConfig() {
+        return !currentUserProfile || !!currentUserProfile.is_admin;
+      }
+
+      function setTaskTypeConfigReadonly(readonly) {
+        [
+          "typeName",
+          "typeCode",
+          "typeProjectId",
+          "typeConcurrency",
+          "typeErrThr",
+          "typeErrCloseWinThr",
+          "typeTimeout",
+          "typeCreateHandler",
+          "typeQuotaHandler",
+          "typeEnabled",
+        ].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.disabled = !!readonly;
+        });
+      }
+
       function applyReadonlyByRole() {
         if (!currentUserProfile || currentUserProfile.is_admin) return;
         ["btnNewType", "btnSaveType", "btnDeleteType"].forEach((id) => {
           const el = document.getElementById(id);
           if (el) el.style.display = "none";
         });
+        setTaskTypeConfigReadonly(true);
       }
 
       // ---- proxies cache（space_pk -> proxies[]）----
@@ -1384,6 +1408,16 @@
         }
       }
 
+      async function loadAllTypesForTransfer() {
+        const r = await adminFetch("/api/admin/task-types?include_all=1");
+        if (!r) return state.types || [];
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.detail || "加载目标任务类型失败");
+        const all = Array.isArray(d.task_types) ? d.task_types : [];
+        state.transferAllTypes = all;
+        return all;
+      }
+
       function renderTypeSelect() {
         const sel = document.getElementById("typeSelect");
         const canCreate = canCreateTaskType();
@@ -1429,7 +1463,10 @@
         document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
-        document.getElementById("typeCode").disabled = false;
+        setTaskTypeConfigReadonly(!canEditTaskTypeConfig());
+        if (canEditTaskTypeConfig()) {
+          document.getElementById("typeCode").disabled = false;
+        }
         const hint = t ? `当前：${t.name} (${t.code})` : "未选择";
         const hintEl = document.getElementById("currentTypeHint");
         const hintTopEl = document.getElementById("currentTypeHintTop");
@@ -1441,6 +1478,7 @@
 
       async function saveType() {
         try {
+          if (!canEditTaskTypeConfig()) throw new Error("当前账号无权修改任务类型配置");
           const id = document.getElementById("typeId").value;
           const oldCode = state.current?.code || "";
           const payload = {
@@ -1484,6 +1522,7 @@
       }
 
       async function deleteType() {
+        if (!canEditTaskTypeConfig()) return toast("当前账号无权删除任务类型", "warning");
         const id = document.getElementById("typeId").value;
         if (!id) return;
         if (!confirm("确定删除该任务类型吗？")) return;
@@ -2104,14 +2143,21 @@
         return d;
       }
 
-      function openMappingTransferModal(mappingId) {
+      async function openMappingTransferModal(mappingId) {
         const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
         if (!m) {
           toast("找不到绑定记录，无法转移", "error");
           return;
         }
         const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
-        const targetTypes = (state.types || []).filter(t => String(t.id || "") !== String(currentTypeId));
+        let allTypes = state.transferAllTypes || [];
+        try {
+          allTypes = await loadAllTypesForTransfer();
+        } catch (e) {
+          allTypes = state.types || [];
+          toast(e.message || "加载目标任务类型失败，已回退当前可见列表", "warning");
+        }
+        const targetTypes = (allTypes || []).filter(t => String(t.id || "") !== String(currentTypeId));
 
         document.getElementById("mapTransferId").value = String(mappingId);
         const hintEl = document.getElementById("mapTransferHint");
@@ -2161,7 +2207,8 @@
             method: "PATCH",
             body: { task_type_id: targetTypeId },
           });
-          const targetType = (state.types || []).find(t => String(t.id || "") === String(targetTypeId));
+          const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
+          const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
           toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
           mappingTransferModal.hide();
           await loadMappings();
