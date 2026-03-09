@@ -802,7 +802,6 @@
           return t != null ? t : 0;
         };
         const available = items
-          .filter(p => !isProxyExpired(p))
           .slice()
           .sort((a, b) => {
             const ta = createdAtMs(a);
@@ -872,11 +871,8 @@
           const customLabel = [dsAddr, dsCountry].filter(Boolean).join(" / ");
 
           const curItem = curIdNum > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum)) : null;
-          const curIsExpired = !!(curItem && isProxyExpired(curItem));
           const getSuccessCount = (pid) => successCounts[String(pid)] ?? successCounts[pid] ?? 0;
-          const curOption = (curIdNum > 0 && curItem && curIsExpired)
-            ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[已过期] ${escapeHtml(proxyLabel(curItem, getSuccessCount(curIdNum)))}</option>`
-            : (curIdNum > 0 && !curItem)
+          const curOption = (curIdNum > 0 && !curItem)
               ? `<option value="${escapeHtml(String(curIdNum))}" selected disabled>[未同步到本地代理列表] proxy_id=${escapeHtml(String(curIdNum))}</option>`
               : "";
           const customOption = looksCustom
@@ -884,7 +880,8 @@
             : "";
 
           const numberedAvailableOptions = available.map((p, idx) => {
-            const label = `${idx + 1}. ${proxyLabel(p, getSuccessCount(p.proxy_id))}`;
+            const expiredPrefix = isProxyExpired(p) ? "[已过期] " : "";
+            const label = `${idx + 1}. ${expiredPrefix}${proxyLabel(p, getSuccessCount(p.proxy_id))}`;
             return `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(label)}</option>`;
           }).join("");
           sel.innerHTML = `

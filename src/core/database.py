@@ -3373,31 +3373,46 @@ class Database:
         - 重置 `task_type_windows.inflight_slots`，避免预占并发槽位在异常退出后“泄漏”
         """
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                UPDATE tasks
-                SET status = 'failed',
-                    error_message = CASE
-                      WHEN error_message IS NULL OR TRIM(error_message) = '' THEN 'server restarted'
-                      ELSE error_message
-                    END,
-                    completed_at = COALESCE(completed_at, datetime('now','localtime'))
-                WHERE status IN ('running', 'queued')
-                """
-            )
-            cur = await db.execute("SELECT changes()")
-            tasks_failed = int(((await cur.fetchone()) or [0])[0] or 0)
+            tasks_failed = 0
+            mapping_slots_reset = 0
 
-            await db.execute(
-                """
-                UPDATE task_type_windows
-                SET inflight_slots = 0,
-                    updated_at = datetime('now','localtime')
-                WHERE COALESCE(inflight_slots, 0) != 0
-                """
-            )
-            cur = await db.execute("SELECT changes()")
-            mapping_slots_reset = int(((await cur.fetchone()) or [0])[0] or 0)
+            # 某些历史库可能仅局部页损坏（可启动但访问特定表时报 malformed）。
+            # 启动清理不应阻断服务，因此这里对 malformed 做降级容错。
+            try:
+                await db.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'failed',
+                        error_message = CASE
+                          WHEN error_message IS NULL OR TRIM(error_message) = '' THEN 'server restarted'
+                          ELSE error_message
+                        END,
+                        completed_at = COALESCE(completed_at, datetime('now','localtime'))
+                    WHERE status IN ('running', 'queued')
+                    """
+                )
+                cur = await db.execute("SELECT changes()")
+                tasks_failed = int(((await cur.fetchone()) or [0])[0] or 0)
+            except Exception as e:
+                if "database disk image is malformed" not in str(e).lower():
+                    raise
+                await db.rollback()
+
+            try:
+                await db.execute(
+                    """
+                    UPDATE task_type_windows
+                    SET inflight_slots = 0,
+                        updated_at = datetime('now','localtime')
+                    WHERE COALESCE(inflight_slots, 0) != 0
+                    """
+                )
+                cur = await db.execute("SELECT changes()")
+                mapping_slots_reset = int(((await cur.fetchone()) or [0])[0] or 0)
+            except Exception as e:
+                if "database disk image is malformed" not in str(e).lower():
+                    raise
+                await db.rollback()
 
             await db.commit()
             return {"tasks_failed": tasks_failed, "mapping_slots_reset": mapping_slots_reset}
