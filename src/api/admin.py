@@ -228,6 +228,7 @@ class AddTaskTypeWindowsRequest(BaseModel):
 class UpdateTaskTypeWindowRequest(BaseModel):
     enabled: Optional[bool] = None
     deleted: Optional[bool] = None
+    task_type_id: Optional[int] = Field(default=None, ge=1)
     daily_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     remaining_quota: Optional[int] = Field(default=None, ge=0, le=100000)
     cooldown_until: Optional[str] = None  # ISO or empty
@@ -2128,17 +2129,48 @@ async def add_task_type_windows(task_type_id: int, req: AddTaskTypeWindowsReques
 async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    await db.update_task_type_window(
-        mapping_id=mapping_id,
-        enabled=req.enabled,
-        deleted=req.deleted,
-        daily_quota=req.daily_quota,
-        remaining_quota=req.remaining_quota,
-        cooldown_until=req.cooldown_until,
-        error_cooldown_until=req.error_cooldown_until,
-        total_errors=req.total_errors,
-        consecutive_errors=req.consecutive_errors,
-    )
+    user = await _ensure_page_access(token, "task_types")
+    if req.task_type_id is not None:
+        ctx = await db.get_task_type_window_context(mapping_id)
+        if not ctx:
+            raise HTTPException(status_code=404, detail="绑定不存在或已删除")
+
+        src_type_id = int(ctx.get("task_type_id") or 0)
+        target_type_id = int(req.task_type_id)
+        if target_type_id != src_type_id:
+            target = await db.get_task_type(target_type_id)
+            if not target:
+                raise HTTPException(status_code=400, detail="目标任务类型不存在")
+
+            allowed_task_type_ids = await _get_allowed_task_type_ids(user)
+            if allowed_task_type_ids is not None:
+                allowed_set = {int(x) for x in allowed_task_type_ids}
+                if src_type_id not in allowed_set or target_type_id not in allowed_set:
+                    raise HTTPException(status_code=403, detail="无权转移到该任务类型")
+
+            same_type_rows = await db.list_task_type_windows(target_type_id)
+            target_has_same_window = any(
+                int(row.get("window_pk") or 0) == int(ctx.get("window_pk") or 0)
+                and int(row.get("id") or 0) != int(mapping_id)
+                for row in (same_type_rows or [])
+            )
+            if target_has_same_window:
+                raise HTTPException(status_code=400, detail="目标任务类型已绑定该窗口")
+    try:
+        await db.update_task_type_window(
+            mapping_id=mapping_id,
+            enabled=req.enabled,
+            deleted=req.deleted,
+            task_type_id=req.task_type_id,
+            daily_quota=req.daily_quota,
+            remaining_quota=req.remaining_quota,
+            cooldown_until=req.cooldown_until,
+            error_cooldown_until=req.error_cooldown_until,
+            total_errors=req.total_errors,
+            consecutive_errors=req.consecutive_errors,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"success": True}
 
 

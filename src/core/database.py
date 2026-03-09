@@ -2618,6 +2618,7 @@ class Database:
         mapping_id: int,
         enabled: Optional[bool] = None,
         deleted: Optional[bool] = None,
+        task_type_id: Optional[int] = None,
         daily_quota: Optional[int] = None,
         remaining_quota: Optional[int] = None,
         sora_remaining_count: Optional[int] = None,
@@ -2645,6 +2646,8 @@ class Database:
             _set("enabled", 1 if enabled else 0)
         if deleted is not None:
             _set("deleted", 1 if deleted else 0)
+        if task_type_id is not None:
+            _set("task_type_id", int(task_type_id))
         if daily_quota is not None:
             _set("daily_quota", int(daily_quota))
         if remaining_quota is not None:

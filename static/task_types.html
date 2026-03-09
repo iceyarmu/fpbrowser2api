@@ -355,6 +355,31 @@
       </div>
     </div>
 
+    <!-- Mapping Transfer Modal -->
+    <div class="modal fade" id="mappingTransferModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">转移窗口到其他任务类型</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="mapTransferId" />
+            <div class="small text-muted mb-2" id="mapTransferHint">-</div>
+            <div>
+              <label class="form-label">目标任务类型</label>
+              <select class="form-select" id="mapTransferTypeId"></select>
+              <div class="form-text">转移后，该窗口会从当前任务类型列表移除，并出现在目标任务类型中。</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" id="btnTransferMapping">确认转移</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Window Error List Modal -->
     <div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -463,6 +488,7 @@
       const LS_PREFIX = "fpbrowser2api.admin.";
       const LS_KEYS = {
         currentTypeId: `${LS_PREFIX}task_types.current_type_id`,
+        transferTargetTypeId: `${LS_PREFIX}task_types.transfer_target_type_id`,
       };
       function lsGet(key) {
         try { return localStorage.getItem(key); } catch { return null; }
@@ -476,6 +502,7 @@
 
       const winModal = new bootstrap.Modal("#winModal");
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
+      const mappingTransferModal = new bootstrap.Modal("#mappingTransferModal");
       const errorModal = new bootstrap.Modal("#errorModal");
       const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
@@ -1098,6 +1125,7 @@
           openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
           startBtn: tr.querySelector(`button[data-act="manualStart"][data-mid="${mappingId}"]`),
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
+          transferBtn: tr.querySelector(`button[data-act="transfer"][data-mid="${mappingId}"]`),
           refreshQuotaBtn: tr.querySelector(`button[data-act="refreshQuota"][data-mid="${mappingId}"]`),
           refreshInviteBtn: tr.querySelector(`button[data-act="refreshInvite"][data-mid="${mappingId}"]`),
           refreshSubBtn: tr.querySelector(`button[data-act="refreshSubscription"][data-mid="${mappingId}"]`),
@@ -1692,6 +1720,7 @@
                   <button class="btn btn-outline-success btn-sm btn-icon" title="打开窗口（禁止自动关闭）" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
+                  <button class="btn btn-outline-warning btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                 </div>
               </div>
               <div class="text-muted truncate-1" title="${escapeHtml(String(m.platform_account || "-") + " · " + String(m.browser_name || "-"))}">
@@ -1951,6 +1980,9 @@
         if (act === "manualClose") {
           return manualCloseWindow(mappingId, el);
         }
+        if (act === "transfer") {
+          return openMappingTransferModal(mappingId);
+        }
         if (act === "refreshQuota") {
           return refreshQuota(mappingId);
         }
@@ -2070,6 +2102,74 @@
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "请求失败");
         return d;
+      }
+
+      function openMappingTransferModal(mappingId) {
+        const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+        if (!m) {
+          toast("找不到绑定记录，无法转移", "error");
+          return;
+        }
+        const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
+        const targetTypes = (state.types || []).filter(t => String(t.id || "") !== String(currentTypeId));
+
+        document.getElementById("mapTransferId").value = String(mappingId);
+        const hintEl = document.getElementById("mapTransferHint");
+        if (hintEl) {
+          const winSortNum = (m.window_sort_num == null || String(m.window_sort_num).trim() === "") ? "-" : String(m.window_sort_num);
+          hintEl.textContent = `窗口#：${winSortNum} · 窗口：${m.window_name || "-"} · 账号：${m.platform_account || "-"} · 当前类型：${state.current?.name || "-"} (${state.current?.code || "-"})`;
+        }
+
+        const sel = document.getElementById("mapTransferTypeId");
+        if (!sel) return;
+        if (!targetTypes.length) {
+          sel.innerHTML = `<option value="">暂无可转移目标</option>`;
+          sel.value = "";
+          sel.disabled = true;
+          const btn = document.getElementById("btnTransferMapping");
+          if (btn) btn.disabled = true;
+          return mappingTransferModal.show();
+        }
+
+        sel.disabled = false;
+        sel.innerHTML = targetTypes
+          .map(t => `<option value="${t.id}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`)
+          .join("");
+        const cachedTargetTypeId = parseInt(lsGet(LS_KEYS.transferTargetTypeId) || "", 10);
+        const hit = targetTypes.find(t => Number(t.id) === cachedTargetTypeId);
+        sel.value = String(hit?.id || targetTypes[0].id);
+        const btn = document.getElementById("btnTransferMapping");
+        if (btn) btn.disabled = false;
+        mappingTransferModal.show();
+      }
+
+      async function transferMappingToOtherType() {
+        const btn = document.getElementById("btnTransferMapping");
+        try {
+          const mappingId = parseInt(document.getElementById("mapTransferId").value, 10);
+          const targetTypeId = parseInt(document.getElementById("mapTransferTypeId").value, 10);
+          if (Number.isNaN(mappingId) || mappingId <= 0) throw new Error("mapping_id 无效");
+          if (Number.isNaN(targetTypeId) || targetTypeId <= 0) throw new Error("请选择目标任务类型");
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (!m) throw new Error("找不到绑定记录，可能已被删除");
+          const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
+          if (currentTypeId && currentTypeId === targetTypeId) throw new Error("目标任务类型不能与当前类型相同");
+
+          setBtnBusy(btn, true, { loadingText: "转移中" });
+          lsSet(LS_KEYS.transferTargetTypeId, String(targetTypeId));
+          await postJson(`/api/admin/task-type-windows/${mappingId}`, {
+            method: "PATCH",
+            body: { task_type_id: targetTypeId },
+          });
+          const targetType = (state.types || []).find(t => String(t.id || "") === String(targetTypeId));
+          toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
+          mappingTransferModal.hide();
+          await loadMappings();
+        } catch (e) {
+          toast(e.message || "转移失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
       }
 
       function openTokenModal(mappingId) {
@@ -2424,6 +2524,11 @@
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
       document.getElementById("btnSaveMapping").addEventListener("click", saveMappingFromModal);
+      document.getElementById("btnTransferMapping")?.addEventListener("click", transferMappingToOtherType);
+      document.getElementById("mapTransferTypeId")?.addEventListener("change", (e) => {
+        const id = parseInt(String(e.target?.value || ""), 10);
+        if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.transferTargetTypeId, String(id));
+      });
       document.getElementById("btnUpdateToken").addEventListener("click", updateTokenByAutoFetch);
       document.getElementById("btnConvertToken").addEventListener("click", convertAndSaveToken);
       document.getElementById("typeSelect").addEventListener("change", (e) => {
