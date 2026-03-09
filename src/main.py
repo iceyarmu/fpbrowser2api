@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -127,7 +128,11 @@ async def request_logger(request: Request, call_next):
                 "/api/logout",
                 "/api/admin/change-password",
             }
-            if path not in bypass_paths:
+            non_admin_write_allow_patterns = [
+                r"^/api/admin/task-types/\d+/windows$",
+            ]
+            allow_non_admin_write = any(re.match(p, path) for p in non_admin_write_allow_patterns)
+            if path not in bypass_paths and not allow_non_admin_write:
                 authorization = request.headers.get("authorization") or ""
                 if not authorization.startswith("Bearer "):
                     return Response(content='{"detail":"Missing authorization"}', media_type="application/json", status_code=401)

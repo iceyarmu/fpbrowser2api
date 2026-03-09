@@ -487,7 +487,7 @@
 
       function applyReadonlyByRole() {
         if (!currentUserProfile || currentUserProfile.is_admin) return;
-        ["btnNewType", "btnSaveType", "btnDeleteType", "btnAddWindows", "btnBindWindows"].forEach((id) => {
+        ["btnNewType", "btnSaveType", "btnDeleteType"].forEach((id) => {
           const el = document.getElementById(id);
           if (el) el.style.display = "none";
         });

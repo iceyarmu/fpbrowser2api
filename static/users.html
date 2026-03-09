@@ -96,12 +96,12 @@
 
               <div class="mb-2">
                 <label class="form-label">可管理项目（不选=默认全部可见）</label>
-                <select class="form-select mono" id="editProjectIds" multiple size="6"></select>
+                <div id="editProjectIdsBox" class="border rounded p-2" style="max-height: 180px; overflow: auto;"></div>
               </div>
 
               <div class="mb-2">
                 <label class="form-label">可管理任务类型（不选=默认全部可见）</label>
-                <select class="form-select mono" id="editTaskTypeIds" multiple size="6"></select>
+                <div id="editTaskTypeIdsBox" class="border rounded p-2" style="max-height: 180px; overflow: auto;"></div>
               </div>
 
               <div class="mb-3">
@@ -134,14 +134,16 @@
         pageOptions: [],
       };
 
-      function selectedValues(selectEl) {
-        return Array.from(selectEl.selectedOptions || []).map((o) => parseInt(o.value, 10)).filter((x) => !Number.isNaN(x));
+      function selectedValuesByClass(className) {
+        return Array.from(document.querySelectorAll(`.${className}:checked`))
+          .map((el) => parseInt(el.value, 10))
+          .filter((x) => !Number.isNaN(x));
       }
 
-      function setSelectedValues(selectEl, ids) {
+      function setCheckedValues(className, ids) {
         const set = new Set((ids || []).map((x) => String(x)));
-        Array.from(selectEl.options || []).forEach((o) => {
-          o.selected = set.has(String(o.value));
+        Array.from(document.querySelectorAll(`.${className}`)).forEach((el) => {
+          el.checked = set.has(String(el.value));
         });
       }
 
@@ -182,19 +184,34 @@
       }
 
       function fillSelectOptions() {
-        const psel = document.getElementById("editProjectIds");
-        psel.innerHTML = state.projects.map((p) => `<option value="${p.id}">#${p.id} ${escapeHtml(p.name || "-")}</option>`).join("");
-        const tsel = document.getElementById("editTaskTypeIds");
-        tsel.innerHTML = state.taskTypes.map((t) => `<option value="${t.id}">#${t.id} ${escapeHtml(t.name || t.code || "-")} (${escapeHtml(t.code || "-")})</option>`).join("");
+        const pbox = document.getElementById("editProjectIdsBox");
+        pbox.innerHTML = state.projects.map((p) => `
+          <div class="form-check">
+            <input class="form-check-input edit-project-id" type="checkbox" id="pid_${p.id}" value="${p.id}" />
+            <label class="form-check-label mono" for="pid_${p.id}">#${p.id} ${escapeHtml(p.name || "-")}</label>
+          </div>
+        `).join("");
+        const tbox = document.getElementById("editTaskTypeIdsBox");
+        tbox.innerHTML = state.taskTypes.map((t) => `
+          <div class="form-check">
+            <input class="form-check-input edit-task-type-id" type="checkbox" id="ttid_${t.id}" value="${t.id}" />
+            <label class="form-check-label mono" for="ttid_${t.id}">#${t.id} ${escapeHtml(t.name || t.code || "-")} (${escapeHtml(t.code || "-")})</label>
+          </div>
+        `).join("");
       }
 
       function fillEditForm(user) {
         document.getElementById("editUserId").value = String(user.id || "");
         document.getElementById("currentUserHint").textContent = `当前用户：${user.username || "-"}（ID=${user.id}）`;
         document.getElementById("editIsAdmin").checked = !!user.is_admin;
-        setSelectedValues(document.getElementById("editProjectIds"), user.project_ids || []);
-        setSelectedValues(document.getElementById("editTaskTypeIds"), user.task_type_ids || []);
+        setCheckedValues("edit-project-id", user.project_ids || []);
+        setCheckedValues("edit-task-type-id", user.task_type_ids || []);
         renderPagePerms(user.page_permissions || []);
+      }
+
+      function getCurrentEditUserId() {
+        const uid = parseInt(document.getElementById("editUserId").value, 10);
+        return Number.isNaN(uid) ? null : uid;
       }
 
       async function loadBasics() {
@@ -213,7 +230,7 @@
         fillSelectOptions();
       }
 
-      async function loadUsers() {
+      async function loadUsers(preferredUserId = null) {
         const r = await adminFetch("/api/admin/users");
         if (!r) return;
         const d = await r.json();
@@ -221,7 +238,15 @@
         state.users = Array.isArray(d.items) ? d.items : [];
         state.pageOptions = Array.isArray(d.page_options) ? d.page_options : [];
         renderUserTable();
-        if (state.users[0]) fillEditForm(state.users[0]);
+        const targetUserId = preferredUserId ?? getCurrentEditUserId();
+        const targetUser = targetUserId == null
+          ? null
+          : state.users.find((u) => Number(u.id) === Number(targetUserId));
+        if (targetUser) {
+          fillEditForm(targetUser);
+        } else if (state.users[0]) {
+          fillEditForm(state.users[0]);
+        }
       }
 
       async function createUser() {
@@ -248,8 +273,8 @@
         if (!uid) throw new Error("请先选择用户");
         const isAdmin = document.getElementById("editIsAdmin").checked;
         const pagePermissions = Array.from(document.querySelectorAll(".page-perm:checked")).map((el) => String(el.value || "").trim()).filter(Boolean);
-        const projectIds = selectedValues(document.getElementById("editProjectIds"));
-        const taskTypeIds = selectedValues(document.getElementById("editTaskTypeIds"));
+        const projectIds = selectedValuesByClass("edit-project-id");
+        const taskTypeIds = selectedValuesByClass("edit-task-type-id");
         const r = await adminFetch(`/api/admin/users/${uid}/permissions`, {
           method: "PUT",
           body: JSON.stringify({
@@ -263,7 +288,7 @@
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "保存权限失败");
         toast("权限已保存", "success");
-        await loadUsers();
+        await loadUsers(uid);
       }
 
       async function resetPassword() {

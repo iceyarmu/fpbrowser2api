@@ -40,7 +40,7 @@
       </div>
     </nav>
 
-    <div class="container py-4">
+    <div class="container-fluid py-4 px-3 px-lg-4">
       <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
         <div class="me-2 fw-semibold">项目</div>
         <select id="projectSelect" class="form-select" style="max-width: 320px;"></select>
@@ -266,6 +266,33 @@
       </div>
     </div>
 
+    <!-- Move Window Modal -->
+    <div class="modal fade" id="moveWindowModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">转移窗口到其他空间</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-light border small mb-3" id="moveWindowSourceInfo">-</div>
+            <div class="mb-3">
+              <label class="form-label">目标空间</label>
+              <select class="form-select mono" id="moveWindowTargetSpace">
+                <option value="">请选择目标空间</option>
+              </select>
+              <div class="form-text">仅转移本地数据库记录，不会调用指纹浏览器接口。</div>
+            </div>
+            <div class="small text-muted" id="moveWindowSummary"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnConfirmMoveWindow">确认转移</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml, initAdminPage, getAdminProfile } from "/assets/app.js";
@@ -285,8 +312,10 @@
       const proxiesModal = new bootstrap.Modal("#proxiesModal");
       const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
       const accountsModal = new bootstrap.Modal("#accountsModal");
+      const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
 
       let state = { projects: [], tree: [] };
+      let moveWindowState = { sourceSpacePk: 0, windowKey: "", windowName: "", options: [], triggerBtn: null };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
       const LS_BROWSER_EXPANDED_MAP = "fpbrowser2api.browser_expanded_map";
 
@@ -556,7 +585,7 @@
                   <th>到期</th>
                   <th>启用</th>
                   <th>窗口状态</th>
-                  <th>删除</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk ?? ""))}">
@@ -596,6 +625,11 @@
                     <td>${enabledBadge(!!w.enabled)}</td>
                     <td>${windowStatusBadge(w.window_status)}</td>
                     <td>
+                      <button class="btn btn-outline-warning btn-sm me-1" type="button"
+                        data-action="move_window"
+                        data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+                        data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                        data-window_name="${escapeHtml(String(w.window_name ?? ""))}">转移</button>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_window"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
@@ -632,6 +666,8 @@
           openWorkspaceProjectsModal(parseInt(ds.browser_id, 10), fromEl);
         } else if (action === "delete_window") {
           deleteWindow(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, fromEl);
+        } else if (action === "move_window") {
+          openMoveWindowModal(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, fromEl);
         } else if (action === "edit_space") {
           const s = JSON.parse(decodeURIComponent(ds.space));
           openSpaceModal("edit", s);
@@ -677,6 +713,137 @@
           toast(e.message || "删除失败", "error");
         } finally {
           setBtnBusy(btn, false);
+        }
+      }
+
+      function collectAllSpacesFromTree(tree) {
+        const out = [];
+        const projects = Array.isArray(tree) ? tree : [];
+        for (const p of projects) {
+          const browsers = Array.isArray(p?.browsers) ? p.browsers : [];
+          for (const b of browsers) {
+            const spaces = Array.isArray(b?.spaces) ? b.spaces : [];
+            for (const s of spaces) {
+              out.push({
+                project_id: Number(p?.id || 0) || 0,
+                project_name: String(p?.name || "").trim(),
+                browser_id: Number(b?.id || 0) || 0,
+                browser_name: String(b?.name || "").trim(),
+                space_pk: Number(s?.id || 0) || 0,
+                space_name: String(s?.name || "").trim(),
+                space_id: String(s?.space_id || "").trim(),
+              });
+            }
+          }
+        }
+        return out.filter(x => x.space_pk > 0);
+      }
+
+      function renderMoveWindowOptions() {
+        const sourceSpacePk = Number(moveWindowState.sourceSpacePk || 0) || 0;
+        const selectEl = document.getElementById("moveWindowTargetSpace");
+        const summaryEl = document.getElementById("moveWindowSummary");
+        if (!selectEl || !summaryEl) return;
+
+        const options = (moveWindowState.options || []).filter(x => Number(x.space_pk || 0) > 0 && Number(x.space_pk) !== sourceSpacePk);
+        if (!options.length) {
+          selectEl.innerHTML = `<option value="">无可用目标空间</option>`;
+          selectEl.disabled = true;
+          summaryEl.textContent = "没有可转移的目标空间（可能仅有当前空间，或暂无权限查看其他项目空间）。";
+          return;
+        }
+
+        selectEl.disabled = false;
+        selectEl.innerHTML = `
+          <option value="">请选择目标空间</option>
+          ${options.map(x => `
+            <option value="${escapeHtml(String(x.space_pk))}">
+              ${escapeHtml(`#${x.space_pk} | 项目#${x.project_id} ${x.project_name} | 浏览器#${x.browser_id} ${x.browser_name} | 空间:${x.space_name} | space_id:${x.space_id}`)}
+            </option>
+          `).join("")}
+        `;
+        summaryEl.textContent = `可选目标空间：${options.length} 个`;
+      }
+
+      async function openMoveWindowModal(spacePk, windowKey, windowName, fromEl) {
+        const sourceSpacePk = Number(spacePk || 0) || 0;
+        const wk = String(windowKey || "").trim();
+        const wn = String(windowName || "").trim() || wk;
+        if (!sourceSpacePk || !wk) {
+          toast("缺少窗口信息，无法转移", "error");
+          return;
+        }
+
+        moveWindowState = {
+          sourceSpacePk,
+          windowKey: wk,
+          windowName: wn,
+          options: [],
+          triggerBtn: fromEl || null,
+        };
+
+        const sourceEl = document.getElementById("moveWindowSourceInfo");
+        const selectEl = document.getElementById("moveWindowTargetSpace");
+        const summaryEl = document.getElementById("moveWindowSummary");
+        if (sourceEl) {
+          sourceEl.innerHTML = `
+            <div><span class="text-muted">窗口：</span><span class="fw-semibold">${escapeHtml(wn)}</span></div>
+            <div class="mono"><span class="text-muted">window_key：</span>${escapeHtml(wk)}</div>
+            <div class="mono"><span class="text-muted">源空间 space_pk：</span>${escapeHtml(String(sourceSpacePk))}</div>
+          `;
+        }
+        if (selectEl) {
+          selectEl.disabled = true;
+          selectEl.innerHTML = `<option value="">正在加载空间列表...</option>`;
+        }
+        if (summaryEl) summaryEl.textContent = "正在读取全部项目空间...";
+        moveWindowModal.show();
+
+        try {
+          const r = await adminFetch("/api/admin/tree");
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "读取项目树失败");
+          moveWindowState.options = collectAllSpacesFromTree(d.tree || []);
+          renderMoveWindowOptions();
+        } catch (e) {
+          if (selectEl) {
+            selectEl.disabled = true;
+            selectEl.innerHTML = `<option value="">读取失败</option>`;
+          }
+          if (summaryEl) summaryEl.textContent = `读取失败：${e.message || "未知错误"}`;
+        }
+      }
+
+      async function submitMoveWindow() {
+        const selectEl = document.getElementById("moveWindowTargetSpace");
+        const confirmBtn = document.getElementById("btnConfirmMoveWindow");
+        const sourceSpacePk = Number(moveWindowState.sourceSpacePk || 0) || 0;
+        const wk = String(moveWindowState.windowKey || "").trim();
+        const targetSpacePk = selectEl ? (parseInt(String(selectEl.value || "0"), 10) || 0) : 0;
+        if (!sourceSpacePk || !wk) return toast("缺少源窗口信息", "error");
+        if (!targetSpacePk) return toast("请选择目标空间", "error");
+        if (targetSpacePk === sourceSpacePk) return toast("目标空间不能与源空间相同", "error");
+
+        const triggerBtn = moveWindowState.triggerBtn || null;
+        try {
+          setBtnBusy(confirmBtn, true, { loadingText: "转移中" });
+          setBtnBusy(triggerBtn, true, { loadingText: "转移中" });
+          const r = await adminFetch(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(wk)}/move`, {
+            method: "POST",
+            body: JSON.stringify({ target_space_pk: targetSpacePk }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "转移失败");
+          moveWindowModal.hide();
+          toast(d.message || "窗口已转移", "success");
+          await loadTree();
+        } catch (e) {
+          toast(e.message || "转移失败", "error");
+        } finally {
+          setBtnBusy(confirmBtn, false);
+          setBtnBusy(triggerBtn, false);
         }
       }
 
@@ -899,7 +1066,7 @@
                   <th>到期</th>
                   <th>启用</th>
                   <th>窗口状态</th>
-                  <th>删除</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk))}"></tbody>
@@ -945,6 +1112,11 @@
             <td>${enabledBadge(!!w.enabled)}</td>
             <td>${windowStatusBadge(w.window_status)}</td>
             <td>
+              <button class="btn btn-outline-warning btn-sm me-1" type="button"
+                data-action="move_window"
+                data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
+                data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                data-window_name="${escapeHtml(String(w.window_name ?? ""))}">转移</button>
               <button class="btn btn-outline-danger btn-sm" type="button"
                 data-action="delete_window"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
@@ -2431,6 +2603,7 @@
       document.getElementById("btnSaveBrowser").addEventListener("click", saveBrowser);
 
       document.getElementById("btnSaveSpace").addEventListener("click", saveSpace);
+      document.getElementById("btnConfirmMoveWindow").addEventListener("click", submitMoveWindow);
 
       btnRefreshWorkspaceProjects.addEventListener("click", () => {
         if (!workspaceProjectsState.browserId) return;

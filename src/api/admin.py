@@ -251,6 +251,12 @@ class UpdateWindowAccountRequest(BaseModel):
     account_id: int = Field(ge=0, description="本地账号列表中的 account_id；0 表示清空窗口账号")
 
 
+class MoveWindowRequest(BaseModel):
+    """把本地窗口转移到另一个空间。"""
+
+    target_space_pk: int = Field(ge=1, description="目标空间主键")
+
+
 class ImportAccountsRequest(BaseModel):
     content: str = Field(min_length=1, description="批量导入文本")
 
@@ -1387,6 +1393,52 @@ async def delete_window_local(space_pk: int, window_key: str, token: str = Depen
     return {"success": True, "message": "已在本地标记删除（不会同步到指纹浏览器）", "affected": affected}
 
 
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/move")
+async def move_window_local(space_pk: int, window_key: str, req: MoveWindowRequest, token: str = Depends(verify_admin_token)):
+    """仅本地转移窗口到另一个空间（不调用指纹浏览器接口）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    source_space = await db.get_space(space_pk)
+    if not source_space:
+        raise HTTPException(status_code=404, detail="source space not found")
+
+    target_space_pk = int(req.target_space_pk or 0)
+    if target_space_pk <= 0:
+        raise HTTPException(status_code=400, detail="target_space_pk is required")
+    if target_space_pk == int(space_pk):
+        raise HTTPException(status_code=400, detail="目标空间不能与源空间相同")
+
+    target_space = await db.get_space(target_space_pk)
+    if not target_space:
+        raise HTTPException(status_code=404, detail="target space not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    try:
+        affected = await db.move_window_to_space(
+            source_space_pk=int(space_pk),
+            target_space_pk=target_space_pk,
+            window_key=wk,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="move window failed")
+
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="window not found or already deleted")
+    return {
+        "success": True,
+        "message": f"窗口已转移到目标空间（space_pk={target_space_pk}）",
+        "affected": affected,
+        "source_space_pk": int(space_pk),
+        "target_space_pk": target_space_pk,
+    }
+
+
 @router.get("/api/admin/browsers/{browser_id}/workspace-projects")
 async def get_browser_workspace_projects(browser_id: int, token: str = Depends(verify_admin_token)):
     """读取指纹浏览器的“空间 + 项目列表”（只读展示，不落库）。"""
@@ -1456,11 +1508,32 @@ async def get_project_tree(project_id: Optional[int] = None, token: str = Depend
 @router.get("/api/admin/windows/all")
 async def list_all_windows(project_id: Optional[int] = None, token: str = Depends(verify_admin_token)):
     """用于“选择窗口绑定任务类型”的弹窗数据源。"""
-    await _ensure_page_access(token, "task_types")
+    user = await _ensure_page_access(token, "task_types")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
-    tree = (await get_project_tree(project_id=project_id, token=token))["tree"]
+    allowed_ids = await _get_allowed_project_ids(user)
+    projects = await db.list_projects(allowed_project_ids=allowed_ids)
+    if project_id is not None:
+        projects = [p for p in projects if int(p.id or 0) == int(project_id)]
+    tree: List[Dict[str, Any]] = []
+    for p in projects:
+        browsers = await db.list_browsers(int(p.id or 0))
+        b_items: List[Dict[str, Any]] = []
+        for b in browsers:
+            spaces = await db.list_spaces(int(b.id or 0))
+            s_items: List[Dict[str, Any]] = []
+            for s in spaces:
+                win_items = await db.list_windows(int(s.id or 0))
+                s_items.append(
+                    {
+                        **s.model_dump(),
+                        "windows": [w.model_dump(exclude={"raw"}) for w in win_items],
+                    }
+                )
+            b_items.append({**b.model_dump(), "spaces": s_items})
+        tree.append({**p.model_dump(), "browsers": b_items})
+
     flat: List[Dict[str, Any]] = []
     for p in tree:
         for b in p.get("browsers", []):
@@ -2002,8 +2075,23 @@ async def list_task_type_windows(task_type_id: int, token: str = Depends(verify_
 
 @router.post("/api/admin/task-types/{task_type_id}/windows")
 async def add_task_type_windows(task_type_id: int, req: AddTaskTypeWindowsRequest, token: str = Depends(verify_admin_token)):
+    user = await _ensure_page_access(token, "task_types")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
+    allowed_task_type_ids = await _get_allowed_task_type_ids(user)
+    if allowed_task_type_ids is not None and int(task_type_id) not in {int(x) for x in allowed_task_type_ids}:
+        raise HTTPException(status_code=403, detail="无权操作该任务类型")
+
+    allowed_project_ids = await _get_allowed_project_ids(user)
+    if allowed_project_ids is not None:
+        pairs = await db.list_window_project_pairs([int(x) for x in (req.window_pks or [])])
+        missing = [int(x) for x in (req.window_pks or []) if int(x) not in pairs]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"窗口不存在或已删除: {missing[:5]}")
+        allowed_set = {int(x) for x in allowed_project_ids}
+        denied = [wid for wid, pid in pairs.items() if int(pid) not in allowed_set]
+        if denied:
+            raise HTTPException(status_code=403, detail=f"无权绑定这些窗口: {denied[:5]}")
     affected = await db.add_task_type_windows(
         task_type_id=task_type_id,
         window_pks=req.window_pks,

@@ -1175,6 +1175,47 @@ class Database:
                 result.append(WindowInfo(**d))
             return result
 
+    async def list_window_project_pairs(self, window_pks: List[int]) -> Dict[int, int]:
+        ids: List[int] = []
+        for x in (window_pks or []):
+            try:
+                v = int(x)
+            except Exception:
+                continue
+            if v > 0:
+                ids.append(v)
+        ids = sorted(set(ids))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"""
+                SELECT
+                  w.id AS window_pk,
+                  p.id AS project_id
+                FROM windows w
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                JOIN projects p ON p.id = b.project_id
+                WHERE w.deleted = 0
+                  AND s.deleted = 0
+                  AND b.deleted = 0
+                  AND p.deleted = 0
+                  AND w.id IN ({placeholders})
+                """,
+                ids,
+            )
+            rows = await cur.fetchall()
+            out: Dict[int, int] = {}
+            for r in rows:
+                try:
+                    out[int(r["window_pk"])] = int(r["project_id"])
+                except Exception:
+                    continue
+            return out
+
     async def upsert_windows(self, space_pk: int, windows: List[Dict[str, Any]]) -> int:
         """把同步到的窗口信息保存到 DB（按 space_pk+window_key 唯一 upsert）。
 
@@ -1474,6 +1515,72 @@ class Database:
             cur = await db.execute(
                 "UPDATE windows SET deleted = 1, updated_at=datetime('now','localtime') WHERE space_pk = ? AND window_key = ? AND deleted = 0",
                 (int(space_pk), str(window_key).strip()),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
+    async def move_window_to_space(self, *, source_space_pk: int, target_space_pk: int, window_key: str) -> int:
+        """把窗口从 source_space_pk 转移到 target_space_pk（仅本地 DB）。
+
+        说明：
+        - 仅迁移本地窗口记录，不调用指纹浏览器接口。
+        - 迁移后会清空账号/代理绑定，避免跨空间引用无效数据。
+        - 若目标空间已存在同 window_key 的有效窗口，抛出 ValueError。
+        """
+        src = int(source_space_pk)
+        dst = int(target_space_pk)
+        wk = str(window_key or "").strip()
+        if src <= 0 or dst <= 0 or not wk:
+            return 0
+        if src == dst:
+            raise ValueError("目标空间不能与源空间相同")
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            cur_space = await db.execute("SELECT id FROM spaces WHERE id = ? AND deleted = 0", (dst,))
+            dst_row = await cur_space.fetchone()
+            if not dst_row:
+                raise ValueError("目标空间不存在或已删除")
+
+            cur_src = await db.execute(
+                "SELECT id FROM windows WHERE space_pk = ? AND window_key = ? AND deleted = 0 LIMIT 1",
+                (src, wk),
+            )
+            src_row = await cur_src.fetchone()
+            if not src_row:
+                return 0
+
+            cur_conflict = await db.execute(
+                "SELECT id, deleted FROM windows WHERE space_pk = ? AND window_key = ? LIMIT 1",
+                (dst, wk),
+            )
+            conflict = await cur_conflict.fetchone()
+            if conflict and int(conflict["deleted"] or 0) == 0:
+                raise ValueError("目标空间已存在相同窗口ID")
+            if conflict and int(conflict["deleted"] or 0) == 1:
+                # 唯一键是 (space_pk, window_key)，删除已逻辑删除的旧记录后再迁移。
+                await db.execute("DELETE FROM windows WHERE id = ?", (int(conflict["id"]),))
+
+            cur = await db.execute(
+                """
+                UPDATE windows
+                SET space_pk = ?,
+                    platform_account_id = NULL,
+                    platform_account = NULL,
+                    platform_url = NULL,
+                    proxy_id = NULL,
+                    proxy_addr = NULL,
+                    proxy_country = NULL,
+                    proxy_expire_at = NULL,
+                    window_status = 0,
+                    updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (dst, int(src_row["id"])),
             )
             await db.commit()
             try:
