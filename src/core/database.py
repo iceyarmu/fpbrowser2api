@@ -1885,10 +1885,10 @@ class Database:
             cur = await db.execute(
                 """
                 SELECT * FROM platform_accounts
-                WHERE deleted = 0 AND space_pk = ? AND account_id = ?
+                WHERE deleted = 0 AND account_id = ?
                 LIMIT 1
                 """,
-                (int(space_pk), int(account_id)),
+                (int(account_id)),
             )
             row = await cur.fetchone()
             if not row:
