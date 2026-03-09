@@ -1888,7 +1888,7 @@ class Database:
                 WHERE deleted = 0 AND account_id = ?
                 LIMIT 1
                 """,
-                (int(account_id)),
+                (int(account_id),),
             )
             row = await cur.fetchone()
             if not row:
