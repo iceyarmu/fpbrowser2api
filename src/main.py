@@ -116,6 +116,29 @@ async def request_logger(request: Request, call_next):
             except Exception:
                 pass
 
+        # 非管理员只允许读取管理台接口；写操作统一仅管理员可执行
+        path = request.url.path
+        method = (request.method or "").upper()
+        if path.startswith("/api/admin") and method in {"POST", "PUT", "PATCH", "DELETE"}:
+            bypass_paths = {
+                "/api/admin/login",
+                "/api/login",
+                "/api/admin/logout",
+                "/api/logout",
+                "/api/admin/change-password",
+            }
+            if path not in bypass_paths:
+                authorization = request.headers.get("authorization") or ""
+                if not authorization.startswith("Bearer "):
+                    return Response(content='{"detail":"Missing authorization"}', media_type="application/json", status_code=401)
+                token = authorization[7:]
+                username = admin.active_admin_tokens.get(token)
+                if not username:
+                    return Response(content='{"detail":"Invalid or expired admin token"}', media_type="application/json", status_code=401)
+                user = await db.get_admin_user(username)
+                if not user or not bool(getattr(user, "is_admin", False)):
+                    return Response(content='{"detail":"仅管理员可执行此操作"}', media_type="application/json", status_code=403)
+
         response: Response = await call_next(request)
         status_code = response.status_code
         return response
@@ -204,4 +227,9 @@ async def admin_card_keys_page():
 @app.get("/admin/logs", response_class=HTMLResponse)
 async def admin_logs_page():
     return _page(static_dir / "logs.html")
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page():
+    return _page(static_dir / "users.html")
 

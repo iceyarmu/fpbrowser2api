@@ -70,8 +70,45 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
+                    is_admin BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_page_permissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    page_key TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    UNIQUE (user_id, page_key),
+                    FOREIGN KEY (user_id) REFERENCES admin_users(id) ON DELETE CASCADE
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_project_permissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    project_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    UNIQUE (user_id, project_id),
+                    FOREIGN KEY (user_id) REFERENCES admin_users(id) ON DELETE CASCADE
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_task_type_permissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    task_type_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    UNIQUE (user_id, task_type_id),
+                    FOREIGN KEY (user_id) REFERENCES admin_users(id) ON DELETE CASCADE
                 )
                 """
             )
@@ -383,6 +420,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_created_at ON auto_refresh_error_logs(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_auto_refresh_err_mapping_id ON auto_refresh_error_logs(mapping_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_card_keys_sort_order ON card_keys(sort_order, id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_user_page_permissions_user_id ON user_page_permissions(user_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_user_project_permissions_user_id ON user_project_permissions(user_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_user_task_type_permissions_user_id ON user_task_type_permissions(user_id)")
 
             await db.commit()
 
@@ -414,11 +454,17 @@ class Database:
             password_hash = AuthManager.hash_password(password)
             await db.execute(
                 """
-                INSERT INTO admin_users (username, password_hash)
-                VALUES (?, ?)
+                INSERT INTO admin_users (username, password_hash, is_admin)
+                VALUES (?, ?, 1)
                 """,
                 (username, password_hash),
             )
+        else:
+            # 兼容历史库：确保至少有 1 个管理员
+            cur = await db.execute("SELECT COUNT(*) FROM admin_users WHERE is_admin = 1")
+            admin_cnt = int((await cur.fetchone())[0] or 0)
+            if admin_cnt <= 0:
+                await db.execute("UPDATE admin_users SET is_admin = 1 WHERE id = (SELECT id FROM admin_users ORDER BY id ASC LIMIT 1)")
 
         # 默认任务类型（仅补缺）
         defaults: List[Tuple[str, str, int, int, int]] = [
@@ -453,6 +499,10 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "system_config", col_name):
                         await db.execute(f"ALTER TABLE system_config ADD COLUMN {col_name} {col_type}")
+
+            if await self._table_exists(db, "admin_users"):
+                if not await self._column_exists(db, "admin_users", "is_admin"):
+                    await db.execute("ALTER TABLE admin_users ADD COLUMN is_admin BOOLEAN DEFAULT 0")
 
             # task_types: 动态 handler 字段
             if await self._table_exists(db, "task_types"):
@@ -772,6 +822,46 @@ class Database:
                 return AdminUser(**dict(row))
             return None
 
+    async def get_admin_user_by_id(self, user_id: int) -> Optional[AdminUser]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM admin_users WHERE id = ?", (int(user_id),))
+            row = await cur.fetchone()
+            if row:
+                return AdminUser(**dict(row))
+            return None
+
+    async def list_admin_users(self) -> List[AdminUser]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM admin_users ORDER BY id ASC")
+            rows = await cur.fetchall()
+            return [AdminUser(**dict(r)) for r in rows]
+
+    async def create_admin_user(self, username: str, password_hash: str, is_admin: bool = False) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                INSERT INTO admin_users (username, password_hash, is_admin)
+                VALUES (?, ?, ?)
+                """,
+                (username.strip(), password_hash, 1 if is_admin else 0),
+            )
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def update_admin_user_role(self, user_id: int, is_admin: bool) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE admin_users
+                SET is_admin = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (1 if is_admin else 0, int(user_id)),
+            )
+            await db.commit()
+
     async def update_admin_password(self, username: str, new_password_hash: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -794,6 +884,106 @@ class Database:
                 """,
                 (new_username, old_username),
             )
+            await db.commit()
+
+    async def update_admin_password_by_id(self, user_id: int, new_password_hash: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE admin_users
+                SET password_hash = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (new_password_hash, int(user_id)),
+            )
+            await db.commit()
+
+    async def get_user_page_permissions(self, user_id: int) -> List[str]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT page_key FROM user_page_permissions WHERE user_id = ? ORDER BY page_key ASC",
+                (int(user_id),),
+            )
+            rows = await cur.fetchall()
+            return [str(x[0]) for x in rows if x and x[0]]
+
+    async def get_user_project_permissions(self, user_id: int) -> List[int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT project_id FROM user_project_permissions WHERE user_id = ? ORDER BY project_id ASC",
+                (int(user_id),),
+            )
+            rows = await cur.fetchall()
+            out: List[int] = []
+            for x in rows:
+                try:
+                    out.append(int(x[0]))
+                except Exception:
+                    continue
+            return out
+
+    async def get_user_task_type_permissions(self, user_id: int) -> List[int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT task_type_id FROM user_task_type_permissions WHERE user_id = ? ORDER BY task_type_id ASC",
+                (int(user_id),),
+            )
+            rows = await cur.fetchall()
+            out: List[int] = []
+            for x in rows:
+                try:
+                    out.append(int(x[0]))
+                except Exception:
+                    continue
+            return out
+
+    async def set_user_page_permissions(self, user_id: int, page_keys: List[str]) -> None:
+        clean = sorted({str(x or "").strip() for x in (page_keys or []) if str(x or "").strip()})
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM user_page_permissions WHERE user_id = ?", (int(user_id),))
+            for k in clean:
+                await db.execute(
+                    "INSERT INTO user_page_permissions (user_id, page_key) VALUES (?, ?)",
+                    (int(user_id), k),
+                )
+            await db.commit()
+
+    async def set_user_project_permissions(self, user_id: int, project_ids: List[int]) -> None:
+        clean_set: set[int] = set()
+        for x in (project_ids or []):
+            try:
+                v = int(x)
+            except Exception:
+                continue
+            if v > 0:
+                clean_set.add(v)
+        clean = sorted(clean_set)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM user_project_permissions WHERE user_id = ?", (int(user_id),))
+            for pid in clean:
+                await db.execute(
+                    "INSERT INTO user_project_permissions (user_id, project_id) VALUES (?, ?)",
+                    (int(user_id), int(pid)),
+                )
+            await db.commit()
+
+    async def set_user_task_type_permissions(self, user_id: int, task_type_ids: List[int]) -> None:
+        clean_set: set[int] = set()
+        for x in (task_type_ids or []):
+            try:
+                v = int(x)
+            except Exception:
+                continue
+            if v > 0:
+                clean_set.add(v)
+        clean = sorted(clean_set)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM user_task_type_permissions WHERE user_id = ?", (int(user_id),))
+            for tid in clean:
+                await db.execute(
+                    "INSERT INTO user_task_type_permissions (user_id, task_type_id) VALUES (?, ?)",
+                    (int(user_id), int(tid)),
+                )
             await db.commit()
 
     # ---------- request logs ----------
@@ -824,10 +1014,20 @@ class Database:
             await db.commit()
 
     # ---------- projects ----------
-    async def list_projects(self) -> List[Project]:
+    async def list_projects(self, allowed_project_ids: Optional[List[int]] = None) -> List[Project]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM projects WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
+            if allowed_project_ids is None:
+                cur = await db.execute("SELECT * FROM projects WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
+            else:
+                safe_ids = [int(x) for x in allowed_project_ids if int(x) > 0]
+                if not safe_ids:
+                    return []
+                placeholders = ",".join("?" for _ in safe_ids)
+                cur = await db.execute(
+                    f"SELECT * FROM projects WHERE deleted = 0 AND id IN ({placeholders}) ORDER BY updated_at DESC, id DESC",
+                    safe_ids,
+                )
             rows = await cur.fetchall()
             return [Project(**dict(r)) for r in rows]
 
@@ -1968,18 +2168,40 @@ class Database:
             return int(cur.rowcount or 0)
 
     # ---------- task types ----------
-    async def list_task_types(self) -> List[TaskType]:
+    async def list_task_types(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskType]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
+            if allowed_task_type_ids is None:
+                cur = await db.execute("SELECT * FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
+            else:
+                safe_ids = [int(x) for x in allowed_task_type_ids if int(x) > 0]
+                if not safe_ids:
+                    return []
+                placeholders = ",".join("?" for _ in safe_ids)
+                cur = await db.execute(
+                    f"SELECT * FROM task_types WHERE deleted = 0 AND id IN ({placeholders}) ORDER BY updated_at DESC, id DESC",
+                    safe_ids,
+                )
             rows = await cur.fetchall()
             return [TaskType(**dict(r)) for r in rows]
 
     
-    async def list_task_types_public(self) -> List[TaskTypePublic]:
+    async def list_task_types_public(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskTypePublic]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT id, name, code,timeout_seconds, created_at,enabled FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
+            if allowed_task_type_ids is None:
+                cur = await db.execute(
+                    "SELECT id, name, code,timeout_seconds, created_at,enabled FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC"
+                )
+            else:
+                safe_ids = [int(x) for x in allowed_task_type_ids if int(x) > 0]
+                if not safe_ids:
+                    return []
+                placeholders = ",".join("?" for _ in safe_ids)
+                cur = await db.execute(
+                    f"SELECT id, name, code,timeout_seconds, created_at,enabled FROM task_types WHERE deleted = 0 AND id IN ({placeholders}) ORDER BY updated_at DESC, id DESC",
+                    safe_ids,
+                )
             rows = await cur.fetchall()
             return [TaskTypePublic(**dict(r)) for r in rows]
 

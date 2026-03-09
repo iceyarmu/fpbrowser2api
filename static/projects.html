@@ -33,6 +33,7 @@
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
           <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
+          <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
@@ -267,13 +268,15 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
-      import { adminFetch, toast, setActiveNav, logout, escapeHtml } from "/assets/app.js";
+      import { adminFetch, toast, setActiveNav, logout, escapeHtml, initAdminPage, getAdminProfile } from "/assets/app.js";
 
+      initAdminPage("projects");
       setActiveNav("projects");
       document.getElementById("btnLogout").addEventListener("click", logout);
 
       const projectSelect = document.getElementById("projectSelect");
       const treeContainer = document.getElementById("treeContainer");
+      let currentUserProfile = null;
 
       const projectModal = new bootstrap.Modal("#projectModal");
       const browserModal = new bootstrap.Modal("#browserModal");
@@ -345,6 +348,14 @@
         }
 
         if (projectSelect.value) localStorage.setItem(LS_LAST_PROJECT_ID, projectSelect.value);
+      }
+
+      function applyReadonlyByRole() {
+        if (!currentUserProfile || currentUserProfile.is_admin) return;
+        ["btnNewProject", "btnEditProject", "btnDeleteProject", "btnNewBrowser"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.style.display = "none";
+        });
       }
 
       async function loadTree() {
@@ -2436,6 +2447,8 @@
       });
 
       async function init() {
+        currentUserProfile = await getAdminProfile();
+        applyReadonlyByRole();
         await loadProjects();
         await loadTree();
       }

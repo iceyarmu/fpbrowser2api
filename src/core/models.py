@@ -17,6 +17,7 @@ class AdminUser(BaseModel):
     id: Optional[int] = None
     username: str
     password_hash: str
+    is_admin: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

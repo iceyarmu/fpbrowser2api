@@ -10,6 +10,8 @@ export function setAdminToken(token) {
 
 export function clearAdminToken() {
   localStorage.removeItem("adminToken");
+  adminProfileCache = null;
+  adminProfilePromise = null;
 }
 
 export function requireAdminAuth() {
@@ -77,6 +79,89 @@ export function setActiveNav(id) {
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.remove("active"));
   const el = document.querySelector(`[data-nav="${id}"]`);
   if (el) el.classList.add("active");
+}
+
+const PAGE_PATHS = {
+  system: "/admin/system",
+  projects: "/admin/projects",
+  task_types: "/admin/task-types",
+  tasks: "/admin/tasks",
+  tasks_gantt: "/admin/tasks-gantt",
+  test: "/admin/test",
+  card_keys: "/admin/card-keys",
+  logs: "/admin/logs",
+  users: "/admin/users",
+};
+
+let adminProfileCache = null;
+let adminProfilePromise = null;
+
+function normalizePagePermissions(user) {
+  const list = Array.isArray(user?.page_permissions) ? user.page_permissions : [];
+  return new Set(list.map((x) => String(x || "").trim()).filter(Boolean));
+}
+
+export function isPageAllowed(user, pageKey) {
+  if (!user) return false;
+  if (user.is_admin) return true;
+  const s = normalizePagePermissions(user);
+  if (s.size === 0) return true; // 未设置时默认全部可见
+  return s.has(String(pageKey || "").trim());
+}
+
+export async function getAdminProfile(forceRefresh = false) {
+  if (forceRefresh) {
+    adminProfileCache = null;
+    adminProfilePromise = null;
+  }
+  if (adminProfileCache) return adminProfileCache;
+  if (adminProfilePromise) return adminProfilePromise;
+
+  adminProfilePromise = (async () => {
+    const r = await adminFetch("/api/admin/me");
+    if (!r) return null;
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d?.user) throw new Error(d?.detail || "读取当前用户失败");
+    adminProfileCache = d.user;
+    return adminProfileCache;
+  })();
+
+  try {
+    return await adminProfilePromise;
+  } finally {
+    adminProfilePromise = null;
+  }
+}
+
+function firstAllowedPagePath(user) {
+  for (const [k, p] of Object.entries(PAGE_PATHS)) {
+    if (isPageAllowed(user, k)) return p;
+  }
+  return "/login";
+}
+
+export function applyNavPermissions(user) {
+  document.querySelectorAll("[data-nav]").forEach((el) => {
+    const key = String(el.getAttribute("data-nav") || "").trim();
+    const allowed = isPageAllowed(user, key);
+    if (allowed) {
+      el.classList.remove("d-none");
+    } else {
+      el.classList.add("d-none");
+      if (el.classList.contains("active")) el.classList.remove("active");
+    }
+  });
+}
+
+export async function initAdminPage(pageKey) {
+  const user = await getAdminProfile();
+  if (!user) return null;
+  applyNavPermissions(user);
+  if (!isPageAllowed(user, pageKey)) {
+    window.location.href = firstAllowedPagePath(user);
+    return null;
+  }
+  return user;
 }
 
 function pad2(n) {

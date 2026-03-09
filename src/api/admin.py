@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import secrets
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header
@@ -24,10 +24,92 @@ db: Database | None = None
 
 active_admin_tokens: dict[str, str] = {}  # token -> username
 
+PAGE_KEYS: Set[str] = {
+    "system",
+    "projects",
+    "task_types",
+    "tasks",
+    "tasks_gantt",
+    "test",
+    "card_keys",
+    "logs",
+    "users",
+}
+
 
 def set_dependencies(database: Database) -> None:
     global db
     db = database
+
+
+async def _get_user_by_token(token: str):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    username = active_admin_tokens.get(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    user = await db.get_admin_user(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+async def _user_is_admin(user) -> bool:
+    return bool(getattr(user, "is_admin", False))
+
+
+async def _get_allowed_page_keys(user) -> Set[str]:
+    if await _user_is_admin(user):
+        return set(PAGE_KEYS)
+    if not db:
+        return set()
+    rows = await db.get_user_page_permissions(int(user.id or 0))
+    if not rows:
+        return set(PAGE_KEYS)
+    return {x for x in rows if x in PAGE_KEYS}
+
+
+async def _ensure_page_access(token: str, page_key: str):
+    user = await _get_user_by_token(token)
+    pages = await _get_allowed_page_keys(user)
+    if page_key not in pages:
+        raise HTTPException(status_code=403, detail="无权访问该页面")
+    return user
+
+
+async def _ensure_any_page_access(token: str, page_keys: Set[str]):
+    user = await _get_user_by_token(token)
+    pages = await _get_allowed_page_keys(user)
+    if not any((k in pages) for k in page_keys):
+        raise HTTPException(status_code=403, detail="无权访问该页面")
+    return user
+
+
+async def _get_allowed_project_ids(user) -> Optional[List[int]]:
+    if await _user_is_admin(user):
+        return None
+    if not db:
+        return []
+    rows = await db.get_user_project_permissions(int(user.id or 0))
+    # 未设置则默认全可见
+    return rows or None
+
+
+async def _get_allowed_task_type_ids(user) -> Optional[List[int]]:
+    if await _user_is_admin(user):
+        return None
+    if not db:
+        return []
+    rows = await db.get_user_task_type_permissions(int(user.id or 0))
+    # 未设置则默认全可见
+    return rows or None
+
+
+async def _ensure_admin_user(token: str):
+    user = await _get_user_by_token(token)
+    if not await _user_is_admin(user):
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+    return user
 
 
 # -------------------- models --------------------
@@ -40,6 +122,26 @@ class ChangePasswordRequest(BaseModel):
     username: Optional[str] = None
     old_password: str
     new_password: str = Field(min_length=4)
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=64)
+    password: str = Field(min_length=4, max_length=128)
+    is_admin: bool = False
+    page_permissions: List[str] = Field(default_factory=list)
+    project_ids: List[int] = Field(default_factory=list)
+    task_type_ids: List[int] = Field(default_factory=list)
+
+
+class UpdateUserPermissionsRequest(BaseModel):
+    is_admin: bool = False
+    page_permissions: List[str] = Field(default_factory=list)
+    project_ids: List[int] = Field(default_factory=list)
+    task_type_ids: List[int] = Field(default_factory=list)
+
+
+class UpdateUserPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=4, max_length=128)
 
 
 class UpdateAPIKeyRequest(BaseModel):
@@ -298,7 +400,12 @@ async def admin_login(req: LoginRequest):
 
     session_token = f"admin-{secrets.token_urlsafe(32)}"
     active_admin_tokens[session_token] = user.username
-    return {"success": True, "token": session_token, "username": user.username}
+    return {
+        "success": True,
+        "token": session_token,
+        "username": user.username,
+        "is_admin": bool(getattr(user, "is_admin", False)),
+    }
 
 
 @router.post("/api/login")
@@ -347,9 +454,126 @@ async def change_password(req: ChangePasswordRequest, token: str = Depends(verif
     return {"success": True, "message": "密码修改成功，请重新登录"}
 
 
+@router.get("/api/admin/me")
+async def admin_me(token: str = Depends(verify_admin_token)):
+    user = await _get_user_by_token(token)
+    page_permissions = sorted(list(await _get_allowed_page_keys(user)))
+    project_ids = await _get_allowed_project_ids(user)
+    task_type_ids = await _get_allowed_task_type_ids(user)
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "is_admin": bool(getattr(user, "is_admin", False)),
+            "page_permissions": page_permissions,
+            "project_ids": [] if project_ids is None else project_ids,
+            "task_type_ids": [] if task_type_ids is None else task_type_ids,
+            "all_projects": project_ids is None,
+            "all_task_types": task_type_ids is None,
+        },
+        "page_options": sorted(list(PAGE_KEYS)),
+    }
+
+
+@router.get("/api/admin/users")
+async def list_users(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "users")
+    await _ensure_admin_user(token)
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    users = await db.list_admin_users()
+    out: List[Dict[str, Any]] = []
+    for u in users:
+        page_keys = await db.get_user_page_permissions(int(u.id or 0))
+        project_ids = await db.get_user_project_permissions(int(u.id or 0))
+        task_type_ids = await db.get_user_task_type_permissions(int(u.id or 0))
+        out.append(
+            {
+                "id": u.id,
+                "username": u.username,
+                "is_admin": bool(getattr(u, "is_admin", False)),
+                # 密码不明文展示；保留固定占位，避免泄露 hash
+                "password_display": "******",
+                "page_permissions": page_keys,
+                "project_ids": project_ids,
+                "task_type_ids": task_type_ids,
+                "all_pages": len(page_keys) == 0 or bool(getattr(u, "is_admin", False)),
+                "all_projects": len(project_ids) == 0 or bool(getattr(u, "is_admin", False)),
+                "all_task_types": len(task_type_ids) == 0 or bool(getattr(u, "is_admin", False)),
+            }
+        )
+    return {"success": True, "items": out, "page_options": sorted(list(PAGE_KEYS))}
+
+
+@router.post("/api/admin/users")
+async def create_user(req: CreateUserRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_admin_user(token)
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    username = req.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="用户名不能为空")
+    if await db.get_admin_user(username):
+        raise HTTPException(status_code=400, detail="用户名已存在")
+
+    invalid_pages = [x for x in (req.page_permissions or []) if x not in PAGE_KEYS]
+    if invalid_pages:
+        raise HTTPException(status_code=400, detail=f"无效页面权限: {', '.join(invalid_pages)}")
+
+    uid = await db.create_admin_user(
+        username=username,
+        password_hash=AuthManager.hash_password(req.password),
+        is_admin=bool(req.is_admin),
+    )
+    await db.set_user_page_permissions(uid, list(req.page_permissions or []))
+    await db.set_user_project_permissions(uid, [int(x) for x in (req.project_ids or [])])
+    await db.set_user_task_type_permissions(uid, [int(x) for x in (req.task_type_ids or [])])
+    return {"success": True, "user_id": uid}
+
+
+@router.put("/api/admin/users/{user_id}/password")
+async def update_user_password(user_id: int, req: UpdateUserPasswordRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_admin_user(token)
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    user = await db.get_admin_user_by_id(int(user_id))
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    await db.update_admin_password_by_id(int(user_id), AuthManager.hash_password(req.new_password))
+    return {"success": True}
+
+
+@router.put("/api/admin/users/{user_id}/permissions")
+async def update_user_permissions(user_id: int, req: UpdateUserPermissionsRequest, token: str = Depends(verify_admin_token)):
+    current = await _ensure_admin_user(token)
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    target = await db.get_admin_user_by_id(int(user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 避免把自己降权导致系统无管理员可维护
+    if int(current.id or 0) == int(user_id) and not bool(req.is_admin):
+        raise HTTPException(status_code=400, detail="不能取消当前登录管理员的管理员权限")
+
+    invalid_pages = [x for x in (req.page_permissions or []) if x not in PAGE_KEYS]
+    if invalid_pages:
+        raise HTTPException(status_code=400, detail=f"无效页面权限: {', '.join(invalid_pages)}")
+
+    await db.update_admin_user_role(int(user_id), bool(req.is_admin))
+    await db.set_user_page_permissions(int(user_id), list(req.page_permissions or []))
+    await db.set_user_project_permissions(int(user_id), [int(x) for x in (req.project_ids or [])])
+    await db.set_user_task_type_permissions(int(user_id), [int(x) for x in (req.task_type_ids or [])])
+    return {"success": True}
+
+
 # -------------------- system config --------------------
 @router.get("/api/admin/system-config")
 async def get_system_config(token: str = Depends(verify_admin_token)):
+    await _ensure_any_page_access(token, {"system", "test"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     syscfg = await db.get_system_config()
@@ -370,6 +594,7 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
 
 @router.get("/api/admin/ui-defaults")
 async def get_ui_defaults(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "task_types")
     """给管理台前端提供的默认值（避免页面写死 magic number）。"""
     try:
         # dataclass 字段默认值，无需实例化（SoraSession 需要 pw_ctx 参数）
@@ -390,6 +615,8 @@ async def get_ui_defaults(token: str = Depends(verify_admin_token)):
 
 @router.post("/api/admin/system-config")
 async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "system")
+    await _ensure_admin_user(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -408,6 +635,8 @@ async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depe
 
 @router.post("/api/admin/api-key")
 async def update_api_key(req: UpdateAPIKeyRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "system")
+    await _ensure_admin_user(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     await db.update_system_config(api_key=req.api_key.strip())
@@ -418,13 +647,17 @@ async def update_api_key(req: UpdateAPIKeyRequest, token: str = Depends(verify_a
 # -------------------- project management --------------------
 @router.get("/api/admin/projects")
 async def list_projects(token: str = Depends(verify_admin_token)):
+    user = await _ensure_page_access(token, "projects")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    return {"success": True, "projects": [p.model_dump() for p in await db.list_projects()]}
+    allowed_ids = await _get_allowed_project_ids(user)
+    return {"success": True, "projects": [p.model_dump() for p in await db.list_projects(allowed_project_ids=allowed_ids)]}
 
 
 @router.post("/api/admin/projects")
 async def create_project(req: CreateProjectRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "projects")
+    await _ensure_admin_user(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     pid = await db.create_project(req.name)
@@ -433,6 +666,8 @@ async def create_project(req: CreateProjectRequest, token: str = Depends(verify_
 
 @router.put("/api/admin/projects/{project_id}")
 async def update_project(project_id: int, req: UpdateProjectRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "projects")
+    await _ensure_admin_user(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     await db.update_project(project_id, req.name)
@@ -441,6 +676,8 @@ async def update_project(project_id: int, req: UpdateProjectRequest, token: str 
 
 @router.delete("/api/admin/projects/{project_id}")
 async def delete_project(project_id: int, token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "projects")
+    await _ensure_admin_user(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     await db.delete_project(project_id)
@@ -1184,11 +1421,15 @@ async def get_project_tree(project_id: Optional[int] = None, token: str = Depend
 
     UI 侧可据此实现：项目切换、浏览器折叠/展开、空间加载窗口、以及“一键展开全部”。
     """
+    user = await _ensure_page_access(token, "projects")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
-    projects = await db.list_projects()
+    allowed_ids = await _get_allowed_project_ids(user)
+    projects = await db.list_projects(allowed_project_ids=allowed_ids)
     if project_id is not None:
+        if allowed_ids is not None and int(project_id) not in {int(x) for x in allowed_ids}:
+            raise HTTPException(status_code=403, detail="无权访问该项目")
         projects = [p for p in projects if p.id == project_id]
 
     out: List[Dict[str, Any]] = []
@@ -1215,6 +1456,7 @@ async def get_project_tree(project_id: Optional[int] = None, token: str = Depend
 @router.get("/api/admin/windows/all")
 async def list_all_windows(project_id: Optional[int] = None, token: str = Depends(verify_admin_token)):
     """用于“选择窗口绑定任务类型”的弹窗数据源。"""
+    await _ensure_page_access(token, "task_types")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -1250,6 +1492,7 @@ async def list_all_windows(project_id: Optional[int] = None, token: str = Depend
 # -------------------- card keys --------------------
 @router.get("/api/admin/card-keys")
 async def list_card_keys(token: str = Depends(verify_admin_token)):
+    await _ensure_any_page_access(token, {"card_keys", "test"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     return {"success": True, "items": [x.model_dump() for x in await db.list_card_keys()]}
@@ -1291,9 +1534,11 @@ async def delete_card_key(card_key_id: int, token: str = Depends(verify_admin_to
 # -------------------- task types --------------------
 @router.get("/api/admin/task-types")
 async def list_task_types(token: str = Depends(verify_admin_token)):
+    user = await _ensure_any_page_access(token, {"task_types", "tasks", "tasks_gantt", "test", "users"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    return {"success": True, "task_types": [t.model_dump() for t in await db.list_task_types()]}
+    allowed_ids = await _get_allowed_task_type_ids(user)
+    return {"success": True, "task_types": [t.model_dump() for t in await db.list_task_types(allowed_task_type_ids=allowed_ids)]}
 
 
 @router.post("/api/admin/task-types")
@@ -1357,6 +1602,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
 # -------------------- task type dynamic handlers --------------------
 @router.get("/api/admin/task-type-handler-options")
 async def list_task_type_handler_options(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "task_types")
     from ..services.task_handler_registry import list_create_task_handler_options, list_refresh_quota_handler_options
 
     return {
@@ -1514,6 +1760,7 @@ async def list_auto_refresh_errors(
     mapping_id: Optional[int] = None,
     token: str = Depends(verify_admin_token),
 ):
+    await _ensure_page_access(token, "task_types")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     items = await db.list_auto_refresh_error_logs(limit=limit, offset=offset, task_type_id=task_type_id, mapping_id=mapping_id)
@@ -1744,8 +1991,12 @@ async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_
 
 @router.get("/api/admin/task-types/{task_type_id}/windows")
 async def list_task_type_windows(task_type_id: int, token: str = Depends(verify_admin_token)):
+    user = await _ensure_any_page_access(token, {"task_types", "test"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
+    allowed_ids = await _get_allowed_task_type_ids(user)
+    if allowed_ids is not None and int(task_type_id) not in {int(x) for x in allowed_ids}:
+        raise HTTPException(status_code=403, detail="无权查看该任务类型")
     return {"success": True, "items": await db.list_task_type_windows(task_type_id)}
 
 
@@ -1793,6 +2044,7 @@ async def list_tasks(
     q: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
+    await _ensure_page_access(token, "tasks")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -1823,6 +2075,7 @@ async def list_task_success_fail_timeline(
     end_at: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
+    await _ensure_page_access(token, "tasks_gantt")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -1850,6 +2103,7 @@ async def list_task_timeline_items(
     task_type_code: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
+    await _ensure_page_access(token, "tasks_gantt")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     if not str(bucket_start or "").strip():
@@ -1870,6 +2124,7 @@ async def list_task_timeline_items(
 # -------------------- logs --------------------
 @router.get("/api/admin/logs")
 async def get_logs(limit: int = 200, token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "logs")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     return {"success": True, "logs": await db.get_request_logs(limit=limit)}
