@@ -1527,7 +1527,8 @@ class Database:
 
         说明：
         - 仅迁移本地窗口记录，不调用指纹浏览器接口。
-        - 迁移后会清空账号/代理绑定，避免跨空间引用无效数据。
+        - 迁移后保留账号绑定信息，避免 UI 中“当前账号”被意外清空。
+        - 迁移后清空代理绑定，避免跨空间引用无效代理数据。
         - 若目标空间已存在同 window_key 的有效窗口，抛出 ValueError。
         """
         src = int(source_space_pk)
@@ -1569,14 +1570,6 @@ class Database:
                 """
                 UPDATE windows
                 SET space_pk = ?,
-                    platform_account_id = NULL,
-                    platform_account = NULL,
-                    platform_url = NULL,
-                    proxy_id = NULL,
-                    proxy_addr = NULL,
-                    proxy_country = NULL,
-                    proxy_expire_at = NULL,
-                    window_status = 0,
                     updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,

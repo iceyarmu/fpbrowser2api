@@ -1197,6 +1197,12 @@
       function normalizeAccounts(arr) {
         const xs = Array.isArray(arr) ? arr : [];
         return xs.filter(x => x && typeof x === "object").map(x => ({
+          space_pk: Number(x.space_pk ?? x.spacePk ?? 0) || 0,
+          project_id: Number(x.project_id ?? x.projectId ?? 0) || 0,
+          project_name: String(x.project_name ?? x.projectName ?? "").trim(),
+          browser_id: Number(x.browser_id ?? x.browserId ?? 0) || 0,
+          browser_name: String(x.browser_name ?? x.browserName ?? "").trim(),
+          space_name: String(x.space_name ?? x.spaceName ?? "").trim(),
           account_id: x.account_id ?? x.id ?? 0,
           platform_url: x.platform_url ?? x.platformUrl ?? "",
           platform_username: x.platform_username ?? x.platformUserName ?? "",
@@ -1220,7 +1226,7 @@
         let filtered = items;
         if (q) {
           filtered = items.filter(a => {
-            const hay = `${a.account_id} ${a.platform_username} ${a.platform_url} ${a.platform_efa} ${a.binding_windows}`.toLowerCase();
+            const hay = `${a.space_pk} ${a.project_name} ${a.browser_name} ${a.space_name} ${a.account_id} ${a.platform_username} ${a.platform_url} ${a.platform_efa} ${a.binding_windows}`.toLowerCase();
             return hay.includes(q);
           });
         }
@@ -1234,6 +1240,7 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
+                  <th>归属</th>
                   <th>account_id</th>
                   <th>账号</th>
                   <th>网址</th>
@@ -1246,6 +1253,10 @@
               <tbody>
                 ${filtered.map(a => `
                   <tr class="small2">
+                    <td class="small">
+                      <div class="mono text-muted">space_pk=${escapeHtml(String(a.space_pk || "-"))}</div>
+                      <div>${escapeHtml(a.project_name || "-")} / ${escapeHtml(a.browser_name || "-")} / ${escapeHtml(a.space_name || "-")}</div>
+                    </td>
                     <td class="mono">#${escapeHtml(String(a.account_id || "-"))}</td>
                     <td class="mono">${escapeHtml(a.platform_username || "-")}</td>
                     <td class="mono">${renderLink(a.platform_url)}</td>
@@ -1255,7 +1266,7 @@
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_account"
-                        data-space_pk="${escapeHtml(String(accountsState.spacePk ?? ""))}"
+                        data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
                         data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
                         data-binding_count="${escapeHtml(String(a.binding_count ?? 0))}">删除</button>
                     </td>
@@ -1284,6 +1295,38 @@
         } catch (_e) {
           // ignore
         }
+      }
+
+      async function loadAllProjectAccounts({ force } = { force: false }) {
+        const r = await adminFetch("/api/admin/tree");
+        if (!r) return [];
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取项目树失败");
+        const spaces = collectAllSpacesFromTree(d.tree || []);
+        if (!spaces.length) return [];
+
+        const merged = [];
+        await Promise.all(spaces.map(async (s) => {
+          const spk = Number(s.space_pk || 0) || 0;
+          if (!spk) return;
+          try {
+            const items = await loadLocalAccounts(spk, { force });
+            for (const a of normalizeAccounts(items)) {
+              merged.push({
+                ...a,
+                space_pk: spk,
+                project_id: Number(s.project_id || 0) || 0,
+                project_name: String(s.project_name || "").trim(),
+                browser_id: Number(s.browser_id || 0) || 0,
+                browser_name: String(s.browser_name || "").trim(),
+                space_name: String(s.space_name || "").trim(),
+              });
+            }
+          } catch (_e) {
+            // ignore single-space failures, keep others available
+          }
+        }));
+        return merged;
       }
 
       function fillAccountSelects(spacePk) {
@@ -1337,7 +1380,7 @@
 
       async function openAccountsModal(spacePk) {
         accountsState.spacePk = spacePk;
-        document.getElementById("accountsModalTitle").textContent = `账号管理（space_pk=${spacePk}）`;
+        document.getElementById("accountsModalTitle").textContent = `账号管理（全部项目账号，当前空间space_pk=${spacePk}）`;
         if (accountsFilter) accountsFilter.value = "";
         if (accountsImportText) accountsImportText.value = "";
         accountsModal.show();
@@ -1347,7 +1390,7 @@
       async function refreshAccounts(spacePk) {
         try {
           setAccountsLoading(true);
-          const items = await loadLocalAccounts(spacePk, { force: true });
+          const items = await loadAllProjectAccounts({ force: true });
           accountsState.accounts = items;
           renderAccounts();
           fillAccountSelects(spacePk);
