@@ -1609,11 +1609,11 @@ async def delete_card_key(card_key_id: int, token: str = Depends(verify_admin_to
 
 # -------------------- task types --------------------
 @router.get("/api/admin/task-types")
-async def list_task_types(token: str = Depends(verify_admin_token)):
+async def list_task_types(include_all: bool = False, token: str = Depends(verify_admin_token)):
     user = await _ensure_any_page_access(token, {"task_types", "tasks", "tasks_gantt", "test", "users"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    allowed_ids = await _get_allowed_task_type_ids(user)
+    allowed_ids = None if include_all else await _get_allowed_task_type_ids(user)
     return {"success": True, "task_types": [t.model_dump() for t in await db.list_task_types(allowed_task_type_ids=allowed_ids)]}
 
 
@@ -1622,7 +1622,8 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     try:
-        user = await _ensure_page_access(token, "task_types")
+        await _ensure_page_access(token, "task_types")
+        user = await _ensure_admin_user(token)
         allowed_project_ids = await _get_allowed_project_ids(user)
         if req.project_id is not None:
             if allowed_project_ids is not None and int(req.project_id) not in {int(x) for x in allowed_project_ids}:
@@ -1660,7 +1661,8 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     try:
-        user = await _ensure_page_access(token, "task_types")
+        await _ensure_page_access(token, "task_types")
+        user = await _ensure_admin_user(token)
         allowed_project_ids = await _get_allowed_project_ids(user)
         if req.project_id is not None:
             if allowed_project_ids is not None and int(req.project_id) not in {int(x) for x in allowed_project_ids}:
@@ -2079,6 +2081,7 @@ async def manual_start_mapping_window(mapping_id: int, token: str = Depends(veri
 
 @router.delete("/api/admin/task-types/{task_type_id}")
 async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_token)):
+    await _ensure_admin_user(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     await db.delete_task_type(task_type_id)
@@ -2129,7 +2132,7 @@ async def add_task_type_windows(task_type_id: int, req: AddTaskTypeWindowsReques
 async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    user = await _ensure_page_access(token, "task_types")
+    await _ensure_page_access(token, "task_types")
     if req.task_type_id is not None:
         ctx = await db.get_task_type_window_context(mapping_id)
         if not ctx:
@@ -2141,12 +2144,6 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
             target = await db.get_task_type(target_type_id)
             if not target:
                 raise HTTPException(status_code=400, detail="目标任务类型不存在")
-
-            allowed_task_type_ids = await _get_allowed_task_type_ids(user)
-            if allowed_task_type_ids is not None:
-                allowed_set = {int(x) for x in allowed_task_type_ids}
-                if src_type_id not in allowed_set or target_type_id not in allowed_set:
-                    raise HTTPException(status_code=403, detail="无权转移到该任务类型")
 
             same_type_rows = await db.list_task_type_windows(target_type_id)
             target_has_same_window = any(
