@@ -485,6 +485,10 @@
       };
       let currentUserProfile = null;
 
+      function canCreateTaskType() {
+        return !currentUserProfile || !!currentUserProfile.is_admin;
+      }
+
       function applyReadonlyByRole() {
         if (!currentUserProfile || currentUserProfile.is_admin) return;
         ["btnNewType", "btnSaveType", "btnDeleteType"].forEach((id) => {
@@ -1325,14 +1329,19 @@
 
       function renderTypeSelect() {
         const sel = document.getElementById("typeSelect");
+        const canCreate = canCreateTaskType();
         if (!state.types.length) {
-          sel.innerHTML = `<option value="">暂无任务类型（点击右侧“新增”创建）</option>`;
+          sel.innerHTML = canCreate
+            ? `<option value="">暂无任务类型（点击右侧“新增”创建）</option>`
+            : `<option value="">暂无可用任务类型</option>`;
           sel.value = "";
           sel.disabled = true;
           return;
         }
         sel.disabled = false;
-        const opts = [`<option value="">（未选择 / 新建）</option>`].concat(
+        const opts = [canCreate
+          ? `<option value="">（未选择 / 新建）</option>`
+          : `<option value="">（未选择）</option>`].concat(
           state.types.map(t => `<option value="${t.id}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`)
         );
         sel.innerHTML = opts.join("");
