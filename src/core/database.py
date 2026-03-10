@@ -1890,7 +1890,8 @@ class Database:
                 d = dict(r)
                 if d.get("raw_json"):
                     try:
-                        d["raw"] = json.loads(d["raw_json"])
+                        raw_obj = json.loads(d["raw_json"])
+                        d["raw"] = raw_obj if isinstance(raw_obj, dict) else None
                     except Exception:
                         d["raw"] = None
                 d.pop("raw_json", None)
@@ -2016,7 +2017,8 @@ class Database:
             d = dict(row)
             if d.get("raw_json"):
                 try:
-                    d["raw"] = json.loads(d["raw_json"])
+                    raw_obj = json.loads(d["raw_json"])
+                    d["raw"] = raw_obj if isinstance(raw_obj, dict) else None
                 except Exception:
                     d["raw"] = None
             d.pop("raw_json", None)
