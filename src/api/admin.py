@@ -274,6 +274,10 @@ class UpdateAccountRemarkRequest(BaseModel):
     platform_remarks: Optional[str] = Field(default="", description="本地备注")
 
 
+class SyncAccountsRequest(BaseModel):
+    keep_local_deleted: bool = Field(default=True, description="同步时保留本地已删除账号状态")
+
+
 class ImportCardKeysRequest(BaseModel):
     content: str = Field(min_length=1, description="每行一个卡密")
 
@@ -977,7 +981,11 @@ async def list_local_accounts(space_pk: int, token: str = Depends(verify_admin_t
 
 
 @router.post("/api/admin/spaces/{space_pk}/sync-accounts")
-async def sync_space_accounts(space_pk: int, token: str = Depends(verify_admin_token)):
+async def sync_space_accounts(
+    space_pk: int,
+    req: Optional[SyncAccountsRequest] = None,
+    token: str = Depends(verify_admin_token),
+):
     """同步某个空间的平台账号列表（从指纹浏览器拉取后写入本地 DB）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -1001,7 +1009,12 @@ async def sync_space_accounts(space_pk: int, token: str = Depends(verify_admin_t
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    affected = await db.upsert_platform_accounts(space_pk=space_pk, accounts=accounts)
+    keep_local_deleted = True if req is None else bool(req.keep_local_deleted)
+    affected = await db.upsert_platform_accounts(
+        space_pk=space_pk,
+        accounts=accounts,
+        restore_deleted=(not keep_local_deleted),
+    )
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条账号记录", "affected": affected}
 
 
@@ -1099,6 +1112,8 @@ async def delete_space_account(space_pk: int, account_id: int, token: str = Depe
 
     syscfg = await db.get_system_config()
     client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    remote_err = ""
+    rsp: Dict[str, Any] = {}
     try:
         rsp = await client.delete_accounts(
             vendor=browser.vendor,
@@ -1108,13 +1123,19 @@ async def delete_space_account(space_pk: int, account_id: int, token: str = Depe
             account_ids=[int(account_id)],
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if int((rsp or {}).get("code") or -1) != 0:
-        raise HTTPException(status_code=400, detail=str((rsp or {}).get("msg") or "删除账号失败"))
+        remote_err = str(e)
+    if not remote_err and int((rsp or {}).get("code") or -1) != 0:
+        remote_err = str((rsp or {}).get("msg") or "删除账号失败")
 
     await db.delete_platform_account(space_pk=space_pk, account_id=int(account_id))
     await db.clear_window_platform_binding_by_account(space_pk=space_pk, account_id=int(account_id))
-    return {"success": True, "message": "账号已删除并同步到指纹浏览器"}
+    if remote_err:
+        return {
+            "success": True,
+            "message": f"本地账号已删除；远端删除失败：{remote_err}",
+            "remote_deleted": False,
+        }
+    return {"success": True, "message": "账号已删除并同步到指纹浏览器", "remote_deleted": True}
 
 
 @router.post("/api/admin/spaces/{space_pk}/accounts/{account_id}/remark")

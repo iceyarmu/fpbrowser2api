@@ -1897,12 +1897,20 @@ class Database:
                 result.append(PlatformAccount(**d))
             return result
 
-    async def upsert_platform_accounts(self, space_pk: int, accounts: List[Dict[str, Any]], *, full_replace: bool = True) -> int:
+    async def upsert_platform_accounts(
+        self,
+        space_pk: int,
+        accounts: List[Dict[str, Any]],
+        *,
+        full_replace: bool = True,
+        restore_deleted: bool = True,
+    ) -> int:
         """保存平台账号列表（按 space_pk+account_id upsert）。
 
         参数：
         - full_replace=True：以输入结果为准，未出现账号会标记 deleted=1（全量同步）
         - full_replace=False：仅增量写入，不删除其他本地账号（适合导入后回填）
+        - restore_deleted=False：若本地账号已被手动删除（deleted=1），同步时保持删除状态
         """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys=ON")
@@ -1939,7 +1947,11 @@ class Database:
                         platform_efa=excluded.platform_efa,
                         -- 同步账号时保留本地备注，避免被远端返回值覆盖
                         platform_remarks=platform_accounts.platform_remarks,
-                        deleted=excluded.deleted,
+                        deleted=CASE
+                          WHEN ? = 1 THEN excluded.deleted
+                          WHEN platform_accounts.deleted = 1 THEN 1
+                          ELSE excluded.deleted
+                        END,
                         raw_json=excluded.raw_json,
                         synced_at=datetime('now','localtime'),
                         updated_at=datetime('now','localtime')
@@ -1952,6 +1964,7 @@ class Database:
                         str(platform_password).strip() if platform_password is not None else None,
                         str(platform_efa).strip() if platform_efa is not None else None,
                         str(platform_remarks).strip() if platform_remarks is not None else None,
+                        int(1 if restore_deleted else 0),
                         raw_json,
                     ),
                 )
