@@ -1512,17 +1512,34 @@ async def delete_window_local(space_pk: int, window_key: str, token: str = Depen
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if int((roxy_rsp or {}).get("code") or -1) != 0:
-        raise HTTPException(status_code=400, detail=str((roxy_rsp or {}).get("msg") or "指纹浏览器删除窗口失败"))
+    roxy_msg = str((roxy_rsp or {}).get("msg") or "").strip()
+    try:
+        roxy_code = int((roxy_rsp or {}).get("code") or -1)
+    except Exception:
+        roxy_code = -1
+
+    # 远端已不存在时，不阻断本地删除（常见于远端已手工删除或状态不同步）。
+    roxy_not_found_hints = (
+        "待删除的窗口不存在",
+        "窗口不存在",
+        "window not found",
+        "not found",
+    )
+    remote_already_missing = (roxy_code != 0) and any(k in roxy_msg.lower() for k in (s.lower() for s in roxy_not_found_hints))
+    if roxy_code != 0 and not remote_already_missing:
+        raise HTTPException(status_code=400, detail=roxy_msg or "指纹浏览器删除窗口失败")
 
     affected = await db.delete_window_by_key(space_pk=space_pk, window_key=wk)
     window_affected = int((affected or {}).get("window_affected") or 0)
     task_type_window_affected = int((affected or {}).get("task_type_window_affected") or 0)
     if window_affected <= 0:
         raise HTTPException(status_code=404, detail="window not found or already deleted")
+    final_message = "窗口已删除（远程 + 本地），并级联标记 task_type_window 删除"
+    if remote_already_missing:
+        final_message = "远端窗口已不存在，已完成本地删除，并级联标记 task_type_window 删除"
     return {
         "success": True,
-        "message": "窗口已删除（远程 + 本地），并级联标记 task_type_window 删除",
+        "message": final_message,
         "affected": window_affected,
         "task_type_window_affected": task_type_window_affected,
         "roxy_response": roxy_rsp,
