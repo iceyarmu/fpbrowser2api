@@ -1679,19 +1679,19 @@ class Database:
                                 ELSE NULL
                               END
                             FROM proxies p
-                            WHERE p.space_pk = ? AND p.proxy_id = ? AND p.deleted = 0
+                            WHERE p.proxy_id = ? AND p.deleted = 0
                             LIMIT 1
                         ),
                         proxy_country = (
                             SELECT NULLIF(TRIM(COALESCE(p.last_country, '')), '')
                             FROM proxies p
-                            WHERE p.space_pk = ? AND p.proxy_id = ? AND p.deleted = 0
+                            WHERE p.proxy_id = ? AND p.deleted = 0
                             LIMIT 1
                         ),
                         updated_at=datetime('now','localtime')
                     WHERE space_pk = ? AND window_key = ? AND deleted = 0
                     """,
-                    (pid, spk, pid, spk, pid, spk, wk),
+                    (pid, pid, pid, spk, wk),
                 )
             await db.commit()
             try:

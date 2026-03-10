@@ -1340,6 +1340,43 @@ async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProx
     return {"success": True, "message": "已提交修改窗口代理请求", "roxy_response": rsp}
 
 
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/sync-proxy-addr")
+async def sync_window_proxy_addr_local(space_pk: int, window_key: str, token: str = Depends(verify_admin_token)):
+    """按窗口当前绑定的 proxy_id 回填本地 proxy_addr/proxy_country。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    windows = await db.list_windows(space_pk)
+    target = next((w for w in (windows or []) if str(getattr(w, "window_key", "") or "").strip() == wk), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="window not found")
+
+    proxy_id = int(getattr(target, "proxy_id", 0) or 0)
+    affected = await db.update_window_proxy_id(space_pk=int(space_pk), window_key=wk, proxy_id=proxy_id)
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="window not found or already deleted")
+
+    updated_windows = await db.list_windows(space_pk)
+    updated = next((w for w in (updated_windows or []) if str(getattr(w, "window_key", "") or "").strip() == wk), None)
+    print(updated)
+    return {
+        "success": True,
+        "message": "窗口代理信息已同步到本地",
+        "affected": int(affected or 0),
+        "proxy_id": proxy_id,
+        "proxy_addr": (str(getattr(updated, "proxy_addr", "") or "").strip() or None) if updated else None,
+        "proxy_country": (str(getattr(updated, "proxy_country", "") or "").strip() or None) if updated else None,
+    }
+
+
 @router.post("/api/admin/spaces/{space_pk}/sync-windows")
 async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
     """同步某个空间的窗口信息（从指纹浏览器拉取后写入本地 DB）。"""

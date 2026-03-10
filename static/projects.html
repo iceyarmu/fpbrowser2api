@@ -708,6 +708,15 @@
                         <option value="">(加载代理中...)</option>
                       </select>
                       <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
+                      <div class="mt-1">
+                        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                          type="button"
+                          title="按绑定的 proxy_id 同步本地代理信息"
+                          aria-label="同步本地代理信息"
+                          data-action="sync_window_proxy_addr"
+                          data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+                          data-window_key="${escapeHtml(String(w.window_key ?? ""))}">&#x21bb;</button>
+                      </div>
                       <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
                     </td>
                     <td>${enabledBadge(!!w.enabled)}</td>
@@ -755,6 +764,8 @@
           });
         } else if (action === "move_window") {
           openMoveWindowModal(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, ds.window_num, ds.window_sort_num, fromEl);
+        } else if (action === "sync_window_proxy_addr") {
+          syncWindowProxyAddr(parseInt(ds.space_pk, 10), ds.window_key, fromEl);
         } else if (action === "edit_space") {
           const s = JSON.parse(decodeURIComponent(ds.space));
           openSpaceModal("edit", s);
@@ -796,6 +807,45 @@
           await renderWindowsIncrementally(spacePk, d2.windows || []);
         } catch (e) {
           toast(e.message || "删除失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      async function syncWindowProxyAddr(spacePk, windowKey, fromEl) {
+        const wk = String(windowKey || "").trim();
+        if (!spacePk || !wk) return toast("缺少窗口标识(window_key/dirId)，无法同步代理信息", "error");
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "同步中" });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/sync-proxy-addr`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "同步代理信息失败");
+
+          const row = btn ? btn.closest("tr") : null;
+          const sel = row ? row.querySelector(`select[data-role="proxySelect"]`) : null;
+          const infoEl = row ? row.querySelector(`[data-role="proxySyncedInfo"]`) : null;
+          const syncedAddr = String(d.proxy_addr || "").trim();
+          const syncedCountry = String(d.proxy_country || "").trim();
+          const syncedProxyId = parseInt(String(d.proxy_id || "0"), 10) || 0;
+
+          if (sel) {
+            sel.dataset.current_proxy_id = String(syncedProxyId);
+            sel.dataset.proxy_addr = syncedAddr;
+            sel.dataset.proxy_country = syncedCountry;
+          }
+          if (infoEl) {
+            infoEl.textContent = `同步到的代理信息：${syncedAddr || "-"} / ${syncedCountry || "-"}`;
+          }
+
+          fillProxySelects(spacePk);
+          toast(d.message || "窗口代理信息已同步", "success");
+        } catch (e) {
+          toast(e.message || "同步代理信息失败", "error");
         } finally {
           setBtnBusy(btn, false);
         }
@@ -1334,6 +1384,15 @@
                 data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                 <option value="">(加载代理中...)</option>
               </select>
+              <div class="mt-1">
+                <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                  type="button"
+                  title="按绑定的 proxy_id 同步本地代理信息"
+                  aria-label="同步本地代理信息"
+                  data-action="sync_window_proxy_addr"
+                  data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
+                  data-window_key="${escapeHtml(String(w.window_key ?? ""))}">&#x21bb;</button>
+              </div>
               <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
             </td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
