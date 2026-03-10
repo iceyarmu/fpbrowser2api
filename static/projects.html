@@ -725,13 +725,6 @@
           <td class="mono text-muted">
             <div>#${escapeHtml(String((w.window_sort_num ?? w.id) ?? "-"))}
                 <span class="small text-muted">pk:${escapeHtml(String(w.id ?? "-"))}</span>
-                <button class="btn btn-outline-warning btn-sm small2" type="button"
-                data-action="move_window"
-                data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
-                data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
-                data-window_name="${escapeHtml(String(w.window_name ?? ""))}"
-                data-window_num="${escapeHtml(String(w.id ?? ""))}"
-                data-window_sort_num="${escapeHtml(String(w.window_sort_num ?? ""))}">转移</button>
             </div>
             <div class="small text-muted">dirId:${escapeHtml(String(w.window_key ?? "-"))}</div>
           </td>
