@@ -1823,17 +1823,27 @@ class Database:
             return None
 
     # ---------- platform accounts ----------
-    async def list_platform_accounts(self, space_pk: int) -> List[PlatformAccount]:
+    async def list_platform_accounts(self, space_pk: int, *, include_deleted: bool = False) -> List[PlatformAccount]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                """
-                SELECT * FROM platform_accounts
-                WHERE deleted = 0 AND space_pk = ?
-                ORDER BY updated_at DESC, id DESC
-                """,
-                (int(space_pk),),
-            )
+            if include_deleted:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM platform_accounts
+                    WHERE space_pk = ?
+                    ORDER BY updated_at DESC, id DESC
+                    """,
+                    (int(space_pk),),
+                )
+            else:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM platform_accounts
+                    WHERE deleted = 0 AND space_pk = ?
+                    ORDER BY updated_at DESC, id DESC
+                    """,
+                    (int(space_pk),),
+                )
             rows = await cur.fetchall()
             result: List[PlatformAccount] = []
             for r in rows:

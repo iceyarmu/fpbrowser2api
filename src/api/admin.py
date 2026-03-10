@@ -960,7 +960,7 @@ async def list_local_accounts(space_pk: int, token: str = Depends(verify_admin_t
     """查看本地 DB 保存的平台账号列表（按空间维度）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    rows = [a.model_dump(exclude={"raw"}) for a in await db.list_platform_accounts(space_pk)]
+    rows = [a.model_dump(exclude={"raw"}) for a in await db.list_platform_accounts(space_pk, include_deleted=True)]
     bindings = await db.list_account_bindings(space_pk)
     merged: List[Dict[str, Any]] = []
     for x in rows:
