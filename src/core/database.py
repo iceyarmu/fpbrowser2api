@@ -1640,19 +1640,59 @@ class Database:
                 return 0
 
     async def update_window_proxy_id(self, *, space_pk: int, window_key: str, proxy_id: Optional[int]) -> int:
-        """仅更新本地窗口记录的 proxy_id（用于 UI 立即生效的“当前代理”显示/统计）。
+        """更新本地窗口代理字段（proxy_id + proxy_addr/proxy_country）。
+
+        说明：
+        - proxy_id <= 0：视为不使用代理，清空 proxy_addr/proxy_country。
+        - proxy_id > 0：从同空间 proxies 表回填 proxy_addr/proxy_country，避免 tasks.window_ip 为空或陈旧。
 
         返回：影响行数（0 表示未找到或已删除）。
         """
+        spk = int(space_pk)
+        wk = str(window_key).strip()
+        pid = int(proxy_id or 0)
         async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                """
-                UPDATE windows
-                SET proxy_id = ?, updated_at=datetime('now','localtime')
-                WHERE space_pk = ? AND window_key = ? AND deleted = 0
-                """,
-                (proxy_id, int(space_pk), str(window_key).strip()),
-            )
+            if pid <= 0:
+                cur = await db.execute(
+                    """
+                    UPDATE windows
+                    SET proxy_id = 0,
+                        proxy_addr = NULL,
+                        proxy_country = NULL,
+                        updated_at=datetime('now','localtime')
+                    WHERE space_pk = ? AND window_key = ? AND deleted = 0
+                    """,
+                    (spk, wk),
+                )
+            else:
+                cur = await db.execute(
+                    """
+                    UPDATE windows
+                    SET proxy_id = ?,
+                        proxy_addr = (
+                            SELECT
+                              CASE
+                                WHEN TRIM(COALESCE(p.last_ip, '')) <> '' THEN TRIM(p.last_ip)
+                                WHEN TRIM(COALESCE(p.host, '')) <> '' AND TRIM(COALESCE(p.port, '')) <> ''
+                                  THEN TRIM(p.host) || ':' || TRIM(p.port)
+                                WHEN TRIM(COALESCE(p.host, '')) <> '' THEN TRIM(p.host)
+                                ELSE NULL
+                              END
+                            FROM proxies p
+                            WHERE p.space_pk = ? AND p.proxy_id = ? AND p.deleted = 0
+                            LIMIT 1
+                        ),
+                        proxy_country = (
+                            SELECT NULLIF(TRIM(COALESCE(p.last_country, '')), '')
+                            FROM proxies p
+                            WHERE p.space_pk = ? AND p.proxy_id = ? AND p.deleted = 0
+                            LIMIT 1
+                        ),
+                        updated_at=datetime('now','localtime')
+                    WHERE space_pk = ? AND window_key = ? AND deleted = 0
+                    """,
+                    (pid, spk, pid, spk, pid, spk, wk),
+                )
             await db.commit()
             try:
                 return int(cur.rowcount or 0)
