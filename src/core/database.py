@@ -1897,7 +1897,8 @@ class Database:
                         platform_username=excluded.platform_username,
                         platform_password=excluded.platform_password,
                         platform_efa=excluded.platform_efa,
-                        platform_remarks=excluded.platform_remarks,
+                        -- 同步账号时保留本地备注，避免被远端返回值覆盖
+                        platform_remarks=platform_accounts.platform_remarks,
                         deleted=excluded.deleted,
                         raw_json=excluded.raw_json,
                         synced_at=datetime('now','localtime'),

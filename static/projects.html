@@ -1870,6 +1870,7 @@
       function normalizeProxies(arr) {
         const xs = Array.isArray(arr) ? arr : [];
         return xs.filter(x => x && typeof x === "object").map(x => ({
+          id: Number(x.id ?? 0) || 0,
           proxy_id: x.proxy_id ?? x.id ?? 0,
           purchase_type: x.purchase_type ?? x.purchaseType ?? "",
           created_at: x.created_at ?? x.create_time ?? x.createTime ?? x.createdAt ?? "",
@@ -1932,7 +1933,7 @@
       }
 
       function buildProxyDisplayOrder(items) {
-        // 与 task_types.html 的代理序号规则一致
+        // 与 task_types.html 的代理序号规则一致（展示 proxies.id）
         const createdAtMs = (p) => {
           const v = p?.created_at ?? "";
           if (!v) return 0;
@@ -1953,9 +1954,10 @@
             return idB - idA;
           });
         const rankByProxyId = new Map();
-        ordered.forEach((p, idx) => {
+        ordered.forEach((p) => {
           const pid = parseInt(String(p?.proxy_id ?? p?.id ?? 0), 10) || 0;
-          if (pid > 0 && !rankByProxyId.has(pid)) rankByProxyId.set(pid, idx + 1);
+          const displayId = parseInt(String(p?.id ?? 0), 10) || 0;
+          if (pid > 0 && !rankByProxyId.has(pid)) rankByProxyId.set(pid, displayId > 0 ? displayId : 0);
         });
         return { ordered, rankByProxyId };
       }

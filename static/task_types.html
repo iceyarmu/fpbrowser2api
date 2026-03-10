@@ -674,6 +674,7 @@
       function normalizeProxies(arr) {
         const xs = Array.isArray(arr) ? arr : [];
         return xs.filter(x => x && typeof x === "object").map(x => ({
+          id: Number(x.id ?? 0) || 0,
           proxy_id: x.proxy_id ?? x.id ?? 0,
           expire_at: x.expire_at ?? x.expireAt ?? x.expire_time ?? x.expireTime ?? x.endTime ?? x.end_time ?? "",
           host: x.host ?? "",
@@ -825,7 +826,7 @@
       }
 
       function buildProxyDisplayOrder(items) {
-        // 与代理下拉左侧序号保持一致：优先按 created_at 新到旧，再按 proxy_id 大到小
+        // 与代理下拉左侧序号保持一致（展示 proxies.id）：优先按 created_at 新到旧，再按 proxy_id 大到小
         const createdAtMs = (p) => {
           const v = p?.created_at ?? "";
           if (!v) return 0;
@@ -846,9 +847,10 @@
             return idB - idA;
           });
         const rankByProxyId = new Map();
-        ordered.forEach((p, idx) => {
+        ordered.forEach((p) => {
           const pid = parseInt(String(p?.proxy_id ?? p?.id ?? 0), 10) || 0;
-          if (pid > 0 && !rankByProxyId.has(pid)) rankByProxyId.set(pid, idx + 1);
+          const displayId = parseInt(String(p?.id ?? 0), 10) || 0;
+          if (pid > 0 && !rankByProxyId.has(pid)) rankByProxyId.set(pid, displayId > 0 ? displayId : Number.MAX_SAFE_INTEGER);
         });
         return { ordered, rankByProxyId };
       }
@@ -925,9 +927,10 @@
             ? `<option value="__custom__" selected disabled>(自定义代理) ${escapeHtml(customLabel || "-")}</option>`
             : "";
 
-          const numberedAvailableOptions = available.map((p, idx) => {
+          const numberedAvailableOptions = available.map((p) => {
             const expiredPrefix = isProxyExpired(p) ? "[已过期] " : "";
-            const label = `${idx + 1}. ${expiredPrefix}${proxyLabel(p, getSuccessCount(p.proxy_id))}`;
+            const displayId = parseInt(String(p.id || 0), 10) || 0;
+            const label = `${displayId > 0 ? displayId : "-"}. ${expiredPrefix}${proxyLabel(p, getSuccessCount(p.proxy_id))}`;
             return `<option value="${escapeHtml(String(p.proxy_id))}">${escapeHtml(label)}</option>`;
           }).join("");
           sel.innerHTML = `
