@@ -208,6 +208,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     space_pk INTEGER NOT NULL,
                     proxy_id INTEGER NOT NULL,
+                    purchase_type TEXT,
                     expire_at TEXT,
                     ip_type TEXT,
                     risk_level TEXT,
@@ -609,6 +610,7 @@ class Database:
             # proxies: expire_at（代理过期时间，用于 UI 过滤/展示）
             if await self._table_exists(db, "proxies"):
                 columns_to_add = [
+                    ("purchase_type", "TEXT"),
                     ("expire_at", "TEXT"),
                     ("risk_level", "TEXT"),
                     ("asn_type", "TEXT"),
@@ -1918,6 +1920,22 @@ class Database:
             except Exception:
                 return 0
 
+    async def update_platform_account_remark(self, *, space_pk: int, account_id: int, remark: str) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE platform_accounts
+                SET platform_remarks = ?, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND account_id = ? AND deleted = 0
+                """,
+                (str(remark or "").strip(), int(space_pk), int(account_id)),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
     async def list_account_bindings(self, space_pk: int) -> Dict[int, Dict[str, Any]]:
         """返回账号绑定信息：account_id -> {count, windows}。"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -2020,10 +2038,11 @@ class Database:
                     or p.get("endTime")
                     or p.get("end_time")
                     or p.get("dueTime")
-                    or p.get("due_time")
+                    or p.get("expireDate")
                 )
 
                 ip_type = (p.get("ipType") or p.get("ip_type"))
+                purchase_type = p.get("purchase_type") or p.get("purchaseType")
                 # 这两个字段由“IP检测接口”写入；同步指纹浏览器代理时默认不覆盖已有值
                 risk_level = p.get("riskLevel") or p.get("risk_level")
                 asn_type = p.get("asnType") or p.get("asn_type")
@@ -2051,6 +2070,7 @@ class Database:
                     """
                     INSERT INTO proxies (
                         space_pk, proxy_id,
+                        purchase_type,
                         expire_at,
                         ip_type, risk_level, asn_type, protocol, host, port,
                         proxy_username, proxy_password, refresh_url, remark,
@@ -2058,8 +2078,9 @@ class Database:
                         last_ip, last_country, last_state, last_city,
                         check_time, create_time, update_time,
                         deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now','localtime'), datetime('now','localtime'))
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, proxy_id) DO UPDATE SET
+                        purchase_type=excluded.purchase_type,
                         expire_at=excluded.expire_at,
                         ip_type=excluded.ip_type,
                         protocol=excluded.protocol,
@@ -2087,6 +2108,7 @@ class Database:
                     (
                         int(space_pk),
                         int(proxy_id),
+                        str(purchase_type).strip() if purchase_type is not None else None,
                         str(expire_at).strip() if expire_at is not None else None,
                         str(ip_type).strip() if ip_type is not None else None,
                         str(risk_level).strip() if risk_level is not None else None,

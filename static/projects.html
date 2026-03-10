@@ -16,6 +16,8 @@
       .browser-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .browser-lan { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .browser-actions { flex: 0 0 auto; display: flex; gap: 6px; }
+      #proxiesModal .modal-dialog { max-width: 96vw; }
+      #accountsModal .modal-dialog { max-width: 98vw; }
     </style>
   </head>
   <body class="bg-light">
@@ -175,7 +177,7 @@
 
     <!-- Proxies Modal -->
     <div class="modal fade" id="proxiesModal" tabindex="-1">
-      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-dialog modal-dialog-scrollable">
         <div class="modal-content">
           <div class="modal-header">
             <h5 class="modal-title" id="proxiesModalTitle">代理列表</h5>
@@ -183,7 +185,7 @@
           </div>
           <div class="modal-body">
             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
-              <input class="form-control form-control-sm" id="proxiesFilter" placeholder="搜索：host / 端口 / 最后IP / 国家 / 备注 / proxy_id" style="max-width: 460px;" />
+              <input class="form-control form-control-sm" id="proxiesFilter" placeholder="搜索：host / 端口 / 最后IP / 国家 / 备注 / 创建时间 / 过期时间" style="max-width: 560px;" />
               <button class="btn btn-outline-secondary btn-sm" id="btnRefreshProxies">刷新</button>
               <button class="btn btn-primary btn-sm" id="btnSyncProxies">同步该空间代理到本地</button>
               <button class="btn btn-outline-primary btn-sm" id="btnAnalyzeAllProxies">一键检测全部代理</button>
@@ -244,7 +246,7 @@
           </div>
           <div class="modal-body">
             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
-              <input class="form-control form-control-sm" id="accountsFilter" placeholder="搜索：账号 / URL / EFA / account_id" style="max-width: 420px;" />
+              <input class="form-control form-control-sm" id="accountsFilter" placeholder="搜索：账号 / URL / EFA / account_id / 备注" style="max-width: 520px;" />
               <button class="btn btn-outline-secondary btn-sm" id="btnRefreshAccounts">刷新</button>
               <span class="text-muted small ms-auto" id="accountsSummary"></span>
             </div>
@@ -261,6 +263,28 @@
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account Remark Modal -->
+    <div class="modal fade" id="accountRemarkModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="accountRemarkModalTitle">修改账号备注</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="text-muted small mb-2" id="accountRemarkMeta">-</div>
+            <label class="form-label">备注</label>
+            <textarea class="form-control form-control-sm" id="accountRemarkInput" rows="4" placeholder="请输入本地备注"></textarea>
+            <div class="form-text">仅更新本地备注，不会同步到指纹浏览器。</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveAccountRemark">保存</button>
           </div>
         </div>
       </div>
@@ -312,6 +336,7 @@
       const proxiesModal = new bootstrap.Modal("#proxiesModal");
       const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
       const accountsModal = new bootstrap.Modal("#accountsModal");
+      const accountRemarkModal = new bootstrap.Modal("#accountRemarkModal");
       const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
 
       let state = { projects: [], tree: [] };
@@ -1193,8 +1218,13 @@
       const btnSyncAccounts = document.getElementById("btnSyncAccounts");
       const btnImportAccounts = document.getElementById("btnImportAccounts");
       const accountsImportText = document.getElementById("accountsImportText");
+      const accountRemarkModalTitle = document.getElementById("accountRemarkModalTitle");
+      const accountRemarkMeta = document.getElementById("accountRemarkMeta");
+      const accountRemarkInput = document.getElementById("accountRemarkInput");
+      const btnSaveAccountRemark = document.getElementById("btnSaveAccountRemark");
 
       let accountsState = { spacePk: null, accounts: [], loading: false };
+      let accountRemarkState = { spacePk: 0, accountId: 0 };
       const accountsCache = new Map(); // spacePk -> accounts[]
 
       function setAccountsLoading(loading) {
@@ -1244,7 +1274,7 @@
         let filtered = items;
         if (q) {
           filtered = items.filter(a => {
-            const hay = `${a.space_pk} ${a.project_name} ${a.browser_name} ${a.space_name} ${a.account_id} ${a.platform_username} ${a.platform_url} ${a.platform_efa} ${a.binding_windows}`.toLowerCase();
+            const hay = `${a.space_pk} ${a.project_name} ${a.browser_name} ${a.space_name} ${a.account_id} ${a.platform_username} ${a.platform_url} ${a.platform_efa} ${a.platform_remarks} ${a.binding_windows}`.toLowerCase();
             return hay.includes(q);
           });
         }
@@ -1264,7 +1294,9 @@
                   <th>网址</th>
                   <th>密码</th>
                   <th>EFA</th>
+                  <th>备注</th>
                   <th>绑定窗口(#)</th>
+                  <th>修改</th>
                   <th>删除</th>
                 </tr>
               </thead>
@@ -1280,7 +1312,19 @@
                     <td class="mono">${renderLink(a.platform_url)}</td>
                     <td class="mono">${escapeHtml(a.platform_password || "-")}</td>
                     <td class="mono">${escapeHtml(a.platform_efa || "-")}</td>
+                    <td class="mono" style="max-width: 260px;">
+                      <div class="truncate-1" title="${escapeHtml(a.platform_remarks || "")}">${escapeHtml(a.platform_remarks || "-")}</div>
+                    </td>
                     <td class="mono">${escapeHtml(a.binding_windows || "-")}</td>
+                    <td>
+                      <button class="btn btn-outline-primary btn-sm" type="button"
+                        data-action="update_account_remark"
+                        data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
+                        data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
+                        data-platform_username="${escapeHtml(a.platform_username || "")}"
+                        data-platform_url="${escapeHtml(a.platform_url || "")}"
+                        data-platform_remarks="${escapeHtml(a.platform_remarks || "")}">修改</button>
+                    </td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_account"
@@ -1489,6 +1533,48 @@
         }
       }
 
+      async function updateAccountRemark(spacePk, accountId, remark, fromEl) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const aid = parseInt(String(accountId || "0"), 10) || 0;
+        if (!spk || !aid) return;
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "修改中" });
+          const r = await adminFetch(`/api/admin/spaces/${spk}/accounts/${aid}/remark`, {
+            method: "POST",
+            body: JSON.stringify({ platform_remarks: String(remark || "").trim() }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "修改备注失败");
+          toast(d.message || "备注已更新", "success");
+          await refreshAccounts(accountsState.spacePk);
+        } catch (e) {
+          toast(e.message || "修改备注失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      function openAccountRemarkModal({ spacePk, accountId, username, url, remark }) {
+        accountRemarkState.spacePk = parseInt(String(spacePk || "0"), 10) || 0;
+        accountRemarkState.accountId = parseInt(String(accountId || "0"), 10) || 0;
+        if (!accountRemarkState.spacePk || !accountRemarkState.accountId) return;
+        if (accountRemarkModalTitle) {
+          accountRemarkModalTitle.textContent = `修改账号备注 · #${accountRemarkState.accountId}`;
+        }
+        if (accountRemarkMeta) {
+          accountRemarkMeta.textContent = `账号：${String(username || "-").trim() || "-"} | URL：${String(url || "-").trim() || "-"}`;
+        }
+        if (accountRemarkInput) {
+          accountRemarkInput.value = String(remark || "");
+          setTimeout(() => {
+            try { accountRemarkInput.focus(); } catch (_e) {}
+          }, 0);
+        }
+        accountRemarkModal.show();
+      }
+
       if (btnRefreshAccounts) {
         btnRefreshAccounts.addEventListener("click", async () => {
           if (!accountsState.spacePk) return;
@@ -1514,11 +1600,31 @@
           const btn = t && typeof t.closest === "function" ? t.closest("[data-action]") : null;
           if (!btn) return;
           const action = btn.getAttribute("data-action");
-          if (action !== "delete_account") return;
-          const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
-          const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
-          const bindingCount = parseInt(btn.getAttribute("data-binding_count") || "0", 10) || 0;
-          await deleteAccount(spacePk, accountId, bindingCount, btn);
+          if (action === "delete_account") {
+            const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
+            const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
+            const bindingCount = parseInt(btn.getAttribute("data-binding_count") || "0", 10) || 0;
+            await deleteAccount(spacePk, accountId, bindingCount, btn);
+            return;
+          }
+          if (action === "update_account_remark") {
+            const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
+            const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
+            const username = btn.getAttribute("data-platform_username") || "";
+            const url = btn.getAttribute("data-platform_url") || "";
+            const remark = btn.getAttribute("data-platform_remarks") || "";
+            openAccountRemarkModal({ spacePk, accountId, username, url, remark });
+          }
+        });
+      }
+      if (btnSaveAccountRemark) {
+        btnSaveAccountRemark.addEventListener("click", async () => {
+          const spacePk = parseInt(String(accountRemarkState.spacePk || "0"), 10) || 0;
+          const accountId = parseInt(String(accountRemarkState.accountId || "0"), 10) || 0;
+          const remark = accountRemarkInput ? String(accountRemarkInput.value || "").trim() : "";
+          if (!spacePk || !accountId) return;
+          await updateAccountRemark(spacePk, accountId, remark, btnSaveAccountRemark);
+          accountRemarkModal.hide();
         });
       }
 
@@ -1571,6 +1677,8 @@
         const xs = Array.isArray(arr) ? arr : [];
         return xs.filter(x => x && typeof x === "object").map(x => ({
           proxy_id: x.proxy_id ?? x.id ?? 0,
+          purchase_type: x.purchase_type ?? x.purchaseType ?? "",
+          created_at: x.created_at ?? x.create_time ?? x.createTime ?? x.createdAt ?? "",
           expire_at: x.expire_at ?? x.expireAt ?? x.expire_time ?? x.expireTime ?? x.expireTimeStr ?? x.endTime ?? x.end_time ?? x.dueTime ?? x.due_time ?? "",
           host: x.host ?? "",
           port: x.port ?? "",
@@ -1617,9 +1725,9 @@
         return ms !== null && ms > 0 && ms < Date.now();
       }
 
-      function formatExpireAt(v) {
+      function formatProxyTime(v) {
         const raw = String(v || "").trim();
-        if (!raw) return "";
+        if (!raw) return "-";
         const ms = parseTimeMs(v);
         if (ms === null) return raw;
         try {
@@ -1798,7 +1906,7 @@
         let filtered = sortedItems;
         if (q) {
           filtered = sortedItems.filter(p => {
-            const hay = `${p.proxy_id} ${p.host} ${p.port} ${p.last_ip} ${p.last_country} ${p.remark} ${p.protocol} ${p.ip_type} ${p.risk_level || ""} ${p.asn_type || ""} ${p.expire_at || ""}`.toLowerCase();
+            const hay = `${p.proxy_id} ${p.purchase_type || ""} ${p.host} ${p.port} ${p.last_ip} ${p.last_country} ${p.remark} ${p.protocol} ${p.ip_type} ${p.risk_level || ""} ${p.asn_type || ""} ${p.created_at || ""} ${p.expire_at || ""}`.toLowerCase();
             return hay.includes(q);
           });
         }
@@ -1809,23 +1917,23 @@
           return;
         }
 
-        const showExpire = items.some(p => String(p.expire_at || "").trim());
         proxiesBody.innerHTML = `
           <div class="table-responsive">
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
                   <th>序号</th>
-                  <th>proxy_id</th>
                   <th>地址</th>
                   <th>协议/IP类型</th>
+                  <th>购买类型</th>
                   <th>最后IP</th>
                   <th>国家</th>
                   <th>安全级别</th>
                   <th>IP类型</th>
                   <th>绑定数</th>
                   <th>任务统计</th>
-                  ${showExpire ? `<th>到期</th>` : ""}
+                  <th>创建时间</th>
+                  <th>过期时间</th>
                   <th>状态</th>
                   <th>备注</th>
                   <th>检测</th>
@@ -1836,9 +1944,9 @@
                 ${filtered.map(p => `
                   <tr class="small2">
                     <td class="mono">${escapeHtml(String(rankByProxyId.get(parseInt(String(p.proxy_id || 0), 10) || 0) || "-"))}</td>
-                    <td class="mono">#${escapeHtml(String(p.proxy_id || "-"))}</td>
                     <td class="mono">${escapeHtml(`${p.host || "-"}:${p.port || "-"}`)}</td>
                     <td class="mono">${escapeHtml([p.protocol, p.ip_type].filter(Boolean).join("/") || "-")}</td>
+                    <td class="mono">${escapeHtml(p.purchase_type || "-")}</td>
                     <td class="mono">${escapeHtml(p.last_ip || "-")}</td>
                     <td>${escapeHtml(p.last_country || "-")}</td>
                     <td class="mono">${escapeHtml(p.risk_level || "-")}</td>
@@ -1860,7 +1968,8 @@
                         `;
                       })()}
                     </td>
-                    ${showExpire ? `<td class="mono">${escapeHtml(formatExpireAt(p.expire_at) || "")}</td>` : ""}
+                    <td class="mono">${escapeHtml(formatProxyTime(p.created_at))}</td>
+                    <td class="mono">${escapeHtml(formatProxyTime(p.expire_at))}</td>
                     <td class="mono">${escapeHtml(p.check_status ?? "-")}</td>
                     <td>${escapeHtml(p.remark || "-")}</td>
                     <td>

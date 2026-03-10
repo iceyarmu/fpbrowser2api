@@ -787,7 +787,7 @@ class FPBrowserClient:
         rows = [x for x in rows if isinstance(x, dict)]
         return total, rows
 
-    async def _roxy_get_proxy_list_page(
+    async def _roxy_get_proxy_bought_list_page(
         self,
         *,
         base_url: str,
@@ -800,6 +800,33 @@ class FPBrowserClient:
             base_url,
             token,
             "/proxy/bought_list",
+            {
+                "workspaceId": int(workspace_id),
+                "page_index": int(page_index),
+                "page_size": int(page_size),
+            },
+        )
+        if (rsp or {}).get("code") != 0:
+            raise RuntimeError(f"Roxy proxy/list 失败：{(rsp or {}).get('msg')}")
+        data = (rsp or {}).get("data") or {}
+        total = int(data.get("total") or 0)
+        rows = data.get("rows") or []
+        rows = [x for x in rows if isinstance(x, dict)]
+        return total, rows
+
+    async def _roxy_get_proxy_list_page(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        workspace_id: int,
+        page_index: int,
+        page_size: int,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        rsp = await self._roxy_get(
+            base_url,
+            token,
+            "/proxy/list",
             {
                 "workspaceId": int(workspace_id),
                 "page_index": int(page_index),
@@ -845,29 +872,61 @@ class FPBrowserClient:
     async def _roxy_list_proxies(self, *, base_url: str, token: Optional[str], workspace_id: int) -> List[Dict[str, Any]]:
         base_url = (base_url or "").strip().rstrip("/")
         page_size = 100
-        page_index = 1
-        total = 0
-        all_rows: List[Dict[str, Any]] = []
+        by_proxy_id: Dict[int, Dict[str, Any]] = {}
+        without_proxy_id: List[Dict[str, Any]] = []
 
-        while True:
-            t, rows = await self._roxy_get_proxy_list_page(
-                base_url=base_url,
-                token=token,
-                workspace_id=workspace_id,
-                page_index=page_index,
-                page_size=page_size,
-            )
-            if total <= 0:
-                total = t
-            if not rows:
-                break
-            all_rows.extend(rows)
-            if total > 0 and len(all_rows) >= total:
-                break
-            page_index += 1
-            if page_index > 200:
-                break
-        return all_rows
+        def append_proxy_row(row: Dict[str, Any], purchase_type: str) -> None:
+            tagged = dict(row or {})
+            tagged["purchase_type"] = purchase_type
+            proxy_id_raw = tagged.get("id") if tagged.get("id") is not None else tagged.get("proxy_id")
+            try:
+                proxy_id = int(proxy_id_raw)
+            except Exception:
+                proxy_id = 0
+            if proxy_id <= 0:
+                without_proxy_id.append(tagged)
+                return
+            prev = by_proxy_id.get(proxy_id)
+            if not prev:
+                by_proxy_id[proxy_id] = tagged
+                return
+            prev_type = str(prev.get("purchase_type") or "").strip()
+            # 两个接口都返回同一个 proxy_id 时，优先保留“内部购买”标记。
+            if purchase_type == "内部购买" and prev_type != "内部购买":
+                by_proxy_id[proxy_id] = tagged
+                return
+            if prev_type == purchase_type:
+                by_proxy_id[proxy_id] = tagged
+
+        async def collect_pages(purchase_type: str, page_fetcher) -> None:
+            page_index = 1
+            total = 0
+            collected = 0
+            while True:
+                t, rows = await page_fetcher(
+                    base_url=base_url,
+                    token=token,
+                    workspace_id=workspace_id,
+                    page_index=page_index,
+                    page_size=page_size,
+                )
+                if total <= 0:
+                    total = t
+                if not rows:
+                    break
+                for row in rows:
+                    append_proxy_row(row, purchase_type)
+                collected += len(rows)
+                if total > 0 and collected >= total:
+                    break
+                page_index += 1
+                if page_index > 200:
+                    break
+
+        await collect_pages("内部购买", self._roxy_get_proxy_bought_list_page)
+        await collect_pages("外部购买", self._roxy_get_proxy_list_page)
+
+        return list(by_proxy_id.values()) + without_proxy_id
 
     async def _roxy_list_accounts(self, *, base_url: str, token: Optional[str], workspace_id: int) -> List[Dict[str, Any]]:
         """兼容两套接口：

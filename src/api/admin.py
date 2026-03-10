@@ -264,6 +264,10 @@ class ImportAccountsRequest(BaseModel):
     content: str = Field(min_length=1, description="批量导入文本")
 
 
+class UpdateAccountRemarkRequest(BaseModel):
+    platform_remarks: Optional[str] = Field(default="", description="本地备注")
+
+
 class ImportCardKeysRequest(BaseModel):
     content: str = Field(min_length=1, description="每行一个卡密")
 
@@ -1105,6 +1109,38 @@ async def delete_space_account(space_pk: int, account_id: int, token: str = Depe
     await db.delete_platform_account(space_pk=space_pk, account_id=int(account_id))
     await db.clear_window_platform_binding_by_account(space_pk=space_pk, account_id=int(account_id))
     return {"success": True, "message": "账号已删除并同步到指纹浏览器"}
+
+
+@router.post("/api/admin/spaces/{space_pk}/accounts/{account_id}/remark")
+async def update_space_account_remark(
+    space_pk: int,
+    account_id: int,
+    req: UpdateAccountRemarkRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """仅更新本地账号备注，不同步到指纹浏览器。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    if int(account_id) <= 0:
+        raise HTTPException(status_code=400, detail="invalid account_id")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+
+    row = await db.get_platform_account(space_pk=space_pk, account_id=int(account_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="account not found")
+
+    remark = str(req.platform_remarks or "").strip()
+    affected = await db.update_platform_account_remark(
+        space_pk=space_pk,
+        account_id=int(account_id),
+        remark=remark,
+    )
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="account not found")
+    return {"success": True, "message": "本地备注已更新", "affected": int(affected)}
 
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-account")
