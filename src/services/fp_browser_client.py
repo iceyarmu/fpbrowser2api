@@ -1093,6 +1093,21 @@ class FPBrowserClient:
             return data
         return {}
 
+    def _is_retryable_detail_error(self, err: Exception) -> bool:
+        """识别可重试的明细请求错误（常见是 Roxy 内部 15s 超时）。"""
+        msg = str(err or "").strip().lower()
+        if not msg:
+            return False
+        keywords = (
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "temporarily unavailable",
+            "network",
+        )
+        return any(k in msg for k in keywords)
+
     def _pick_platform(self, detail: Dict[str, Any]) -> Tuple[Optional[int], Optional[str], Optional[str]]:
         lst = detail.get("windowPlatformList") or []
         if isinstance(lst, list):
@@ -1160,12 +1175,27 @@ class FPBrowserClient:
             dir_id = (r.get("dirId") or "").strip()
             if not dir_id:
                 continue
-            detail = await self._roxy_get_browser_detail(
-                base_url=base_url,
-                token=token,
-                workspace_id=workspace_id,
-                dir_id=dir_id,
-            )
+            detail: Dict[str, Any] = {}
+            detail_error: Optional[str] = None
+            for attempt in range(2):
+                try:
+                    detail = await self._roxy_get_browser_detail(
+                        base_url=base_url,
+                        token=token,
+                        workspace_id=workspace_id,
+                        dir_id=dir_id,
+                    )
+                    detail_error = None
+                    break
+                except Exception as e:
+                    detail_error = str(e or "").strip() or "unknown detail error"
+                    # 仅在常见网络/超时场景下做一次快速重试，避免临时抖动导致整批失败。
+                    if attempt == 0 and self._is_retryable_detail_error(e):
+                        await asyncio.sleep(0.2)
+                        continue
+                    # 兜底：单个窗口 detail 失败时降级使用 list_v3 基础数据，继续同步其余窗口。
+                    detail = {}
+                    break
             window_name = (detail.get("windowName") or r.get("windowName") or "").strip() or dir_id
 
             platform_account_id, platform_user, platform_url = self._pick_platform(detail)
@@ -1213,6 +1243,7 @@ class FPBrowserClient:
                 "proxyUserName": str(proxy_username).strip() if proxy_username is not None else None,
                 "proxyPassword": str(proxy_password).strip() if proxy_password is not None else None,
                 "proxyRefreshUrl": str(proxy_refresh_url).strip() if proxy_refresh_url is not None else None,
+                "detailError": detail_error,
             }
 
             proxy_addr = str(last_ip).strip() if last_ip is not None else None
