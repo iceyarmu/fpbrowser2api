@@ -1424,7 +1424,7 @@ async def sync_window_status(space_pk: int, token: str = Depends(verify_admin_to
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/delete")
 async def delete_window_local(space_pk: int, window_key: str, token: str = Depends(verify_admin_token)):
-    """仅本地标记删除窗口（不调用指纹浏览器的删除接口）。"""
+    """删除窗口（先删指纹浏览器远端，再本地标记 deleted=1）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -1432,16 +1432,42 @@ async def delete_window_local(space_pk: int, window_key: str, token: str = Depen
     if not space:
         raise HTTPException(status_code=404, detail="space not found")
 
-    affected = await db.delete_window_by_key(space_pk=space_pk, window_key=window_key)
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        roxy_rsp = await client.delete_windows(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            window_keys=[wk],
+            is_soft_deleted=False,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if int((roxy_rsp or {}).get("code") or -1) != 0:
+        raise HTTPException(status_code=400, detail=str((roxy_rsp or {}).get("msg") or "指纹浏览器删除窗口失败"))
+
+    affected = await db.delete_window_by_key(space_pk=space_pk, window_key=wk)
     window_affected = int((affected or {}).get("window_affected") or 0)
     task_type_window_affected = int((affected or {}).get("task_type_window_affected") or 0)
     if window_affected <= 0:
         raise HTTPException(status_code=404, detail="window not found or already deleted")
     return {
         "success": True,
-        "message": "已在本地标记删除窗口，并级联标记 task_type_window 删除",
+        "message": "窗口已删除（远程 + 本地），并级联标记 task_type_window 删除",
         "affected": window_affected,
         "task_type_window_affected": task_type_window_affected,
+        "roxy_response": roxy_rsp,
     }
 
 

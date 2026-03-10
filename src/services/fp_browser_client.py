@@ -418,6 +418,40 @@ class FPBrowserClient:
         }
         return await self._roxy_account_delete(base_url=base_url, token=access_key, data=payload)
 
+    async def delete_windows(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        window_keys: List[str],
+        is_soft_deleted: bool = False,
+    ) -> Dict[str, Any]:
+        """删除浏览器窗口（RoxyBrowser：POST /browser/delete，支持批量）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            raise RuntimeError("delete_windows 参数不足：base_url/space_id 不能为空")
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 delete_windows，请设置为 roxy")
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        dir_ids = [str(x or "").strip() for x in (window_keys or []) if str(x or "").strip()]
+        if not dir_ids:
+            raise RuntimeError("delete_windows 参数不足：window_keys 不能为空")
+
+        payload = {
+            "workspaceId": int(workspace_id),
+            "dirIds": dir_ids,
+            "isSoftDeleted": bool(is_soft_deleted),
+        }
+        return await self._roxy_browser_delete(base_url=base_url, token=access_key, data=payload)
+
     async def find_accounts_by_keys(
         self,
         *,
@@ -974,6 +1008,9 @@ class FPBrowserClient:
 
     async def _roxy_account_delete(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
         return await self._roxy_post(base_url, token, "/account/delete", data or {})
+
+    async def _roxy_browser_delete(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._roxy_post(base_url, token, "/browser/delete", data or {})
 
     async def _roxy_get_workspace_projects_page(
         self,

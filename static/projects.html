@@ -848,7 +848,7 @@
             <div class="mono"><span class="text-muted">窗口sort：</span>${escapeHtml(ws)}</div>
             <div><span class="text-muted">窗口：</span><span class="fw-semibold">${escapeHtml(wn)}</span></div>
             <div class="mono"><span class="text-muted">dirId：</span>${escapeHtml(wk)}</div>
-            <div class="small text-muted">说明：窗口删除仅在本地 DB 标记 deleted=1，不会调用指纹浏览器删除窗口。</div>
+            <div class="small text-muted">说明：会先调用指纹浏览器接口删除远程窗口，再在本地 DB 标记 deleted=1。</div>
           `;
         }
         if (chk) {
