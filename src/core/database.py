@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import aiosqlite
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -3583,20 +3584,41 @@ class Database:
             return int(cur.lastrowid)
 
     async def get_task(self, task_id: str) -> Optional[Task]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id.strip(),))
-            row = await cur.fetchone()
-            if not row:
-                return None
-            d = dict(row)
-            if d.get("result_json"):
-                try:
-                    d["result"] = json.loads(d["result_json"])
-                except Exception:
-                    d["result"] = None
-            d.pop("result_json", None)
-            return Task(**d)
+        tid = task_id.strip()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (tid,))
+                row = await cur.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                if d.get("result_json"):
+                    try:
+                        d["result"] = json.loads(d["result_json"])
+                    except Exception:
+                        d["result"] = None
+                d.pop("result_json", None)
+                return Task(**d)
+        except RuntimeError as e:
+            # 在极端线程资源不足时，aiosqlite 无法启动工作线程。
+            # 这里回退到一次性同步查询，避免任务查询接口直接 500。
+            if "can't start new thread" not in str(e):
+                raise
+            with sqlite3.connect(self.db_path) as sdb:
+                sdb.row_factory = sqlite3.Row
+                cur = sdb.execute("SELECT * FROM tasks WHERE task_id = ?", (tid,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                if d.get("result_json"):
+                    try:
+                        d["result"] = json.loads(d["result_json"])
+                    except Exception:
+                        d["result"] = None
+                d.pop("result_json", None)
+                return Task(**d)
 
     async def count_tasks(
         self,
