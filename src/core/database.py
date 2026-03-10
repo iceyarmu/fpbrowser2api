@@ -182,6 +182,7 @@ class Database:
                     window_key TEXT NOT NULL,
                     window_sort_num INTEGER,
                     window_name TEXT NOT NULL,
+                    window_remark TEXT,
                     platform_account TEXT,
                     platform_url TEXT,
                     platform_account_id INTEGER,
@@ -546,6 +547,7 @@ class Database:
             if await self._table_exists(db, "windows"):
                 columns_to_add = [
                     ("window_sort_num", "INTEGER"),
+                    ("window_remark", "TEXT"),
                     ("platform_account_id", "INTEGER"),
                     ("proxy_id", "INTEGER"),
                     ("window_status", "INTEGER DEFAULT 0"),
@@ -1249,6 +1251,8 @@ class Database:
                     window_sort_num = None
 
                 window_name = str(w.get("window_name") or w.get("name") or window_key).strip()
+                window_remark = (w.get("window_remark") if w.get("window_remark") is not None else w.get("remark"))
+                window_remark = (str(window_remark).strip() if window_remark is not None else None)
                 platform_account = (w.get("platform_account") or w.get("account") or w.get("username"))
                 platform_url = (w.get("platform_url") or w.get("url"))
                 platform_account_id_raw = (
@@ -1296,15 +1300,19 @@ class Database:
                 await db.execute(
                     """
                     INSERT INTO windows (
-                        space_pk, window_key, window_sort_num, window_name,
+                        space_pk, window_key, window_sort_num, window_name, window_remark,
                         platform_account, platform_url, platform_account_id,
                         proxy_id,
                         proxy_addr, proxy_country, proxy_expire_at,
                         enabled, window_status, deleted, raw_json, synced_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
                     ON CONFLICT(space_pk, window_key) DO UPDATE SET
                         window_sort_num=excluded.window_sort_num,
                         window_name=excluded.window_name,
+                        window_remark=CASE
+                            WHEN excluded.window_remark IS NULL OR TRIM(COALESCE(excluded.window_remark, '')) = '' THEN windows.window_remark
+                            ELSE excluded.window_remark
+                        END,
                         platform_account=excluded.platform_account,
                         platform_url=excluded.platform_url,
                         platform_account_id=CASE
@@ -1342,6 +1350,7 @@ class Database:
                         window_key,
                         window_sort_num,
                         window_name,
+                        window_remark,
                         platform_account,
                         platform_url,
                         platform_account_id,
@@ -1358,6 +1367,26 @@ class Database:
                 affected += 1
             await db.commit()
             return affected
+
+    async def update_window_remark(self, *, space_pk: int, window_key: str, remark: str) -> int:
+        wk = str(window_key or "").strip()
+        if not wk:
+            return 0
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE windows
+                SET window_remark = ?, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND window_key = ? AND deleted = 0
+                """,
+                (
+                    (str(remark or "").strip() or None),
+                    int(space_pk),
+                    wk,
+                ),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
 
     async def count_proxy_bindings(self, space_pk: int) -> Dict[int, int]:
         """统计某个空间下：每个 proxy_id 被多少个“本地未删除窗口”绑定。
@@ -1510,21 +1539,46 @@ class Database:
             d.pop("raw_json", None)
             return WindowInfo(**d)
 
-    async def delete_window_by_key(self, *, space_pk: int, window_key: str) -> int:
+    async def delete_window_by_key(self, *, space_pk: int, window_key: str) -> Dict[str, int]:
         """本地标记删除窗口（不物理删除）。
 
-        返回：影响行数（0 表示未找到该窗口或已被删除）。
+        同时级联逻辑删除 task_type_windows 关联记录（deleted=1）。
+
+        返回：
+        - window_affected: windows 表影响行数（0 表示未找到该窗口或已被删除）
+        - task_type_window_affected: task_type_windows 表影响行数
         """
         async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                "UPDATE windows SET deleted = 1, updated_at=datetime('now','localtime') WHERE space_pk = ? AND window_key = ? AND deleted = 0",
+            db.row_factory = aiosqlite.Row
+            cur_win = await db.execute(
+                "SELECT id FROM windows WHERE space_pk = ? AND window_key = ? AND deleted = 0 LIMIT 1",
                 (int(space_pk), str(window_key).strip()),
+            )
+            row = await cur_win.fetchone()
+            if not row:
+                return {"window_affected": 0, "task_type_window_affected": 0}
+
+            window_pk = int(row["id"])
+            cur = await db.execute(
+                "UPDATE windows SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ? AND deleted = 0",
+                (window_pk,),
+            )
+            cur_m = await db.execute(
+                """
+                UPDATE task_type_windows
+                SET deleted = 1, updated_at = datetime('now','localtime')
+                WHERE window_pk = ? AND deleted = 0
+                """,
+                (window_pk,),
             )
             await db.commit()
             try:
-                return int(cur.rowcount or 0)
+                return {
+                    "window_affected": int(cur.rowcount or 0),
+                    "task_type_window_affected": int(cur_m.rowcount or 0),
+                }
             except Exception:
-                return 0
+                return {"window_affected": 0, "task_type_window_affected": 0}
 
     async def move_window_to_space(self, *, source_space_pk: int, target_space_pk: int, window_key: str) -> int:
         """把窗口从 source_space_pk 转移到 target_space_pk（仅本地 DB）。

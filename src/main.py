@@ -133,6 +133,7 @@ async def request_logger(request: Request, call_next):
                 r"^/api/admin/task-type-windows/\d+$",
                 r"^/api/admin/spaces/\d+/windows/[^/]+/set-proxy$",
                 r"^/api/admin/spaces/\d+/windows/[^/]+/move$",
+                r"^/api/admin/spaces/\d+/windows/[^/]+/remark$",
             ]
             allow_non_admin_write = any(re.match(p, path) for p in non_admin_write_allow_patterns)
             if path not in bypass_paths and not allow_non_admin_write:

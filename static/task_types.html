@@ -320,6 +320,7 @@
             <input type="hidden" id="mapEditId" />
             <div class="mb-2">
               <div class="text-muted small">窗口</div>
+              <div class="mono text-muted small mb-1">窗口排序号：<span id="mapEditWinSortNum">-</span></div>
               <div class="fw-semibold" id="mapEditWinName">-</div>
               <div class="text-muted small mono" id="mapEditSpace">-</div>
             </div>
@@ -352,6 +353,7 @@
           </div>
           <div class="modal-footer">
             <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-outline-danger me-auto" id="btnDeleteMapping">删除</button>
             <button class="btn btn-primary" id="btnSaveMapping">保存</button>
           </div>
         </div>
@@ -378,6 +380,35 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
             <button type="button" class="btn btn-primary" id="btnTransferMapping">确认转移</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mapping Rollback Modal -->
+    <div class="modal fade" id="mappingRollbackModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">回退窗口到其他任务类型</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="mapRollbackId" />
+            <div class="small text-muted mb-2" id="mapRollbackHint">-</div>
+            <div class="mb-3">
+              <label class="form-label">回退目标任务类型</label>
+              <select class="form-select" id="mapRollbackTypeId"></select>
+              <div class="form-text">回退后，该窗口会从当前任务类型移除，并加入目标任务类型。</div>
+            </div>
+            <div>
+              <label class="form-label">回退原因</label>
+              <textarea class="form-control" id="mapRollbackReason" rows="3" placeholder="请输入回退原因（将写入窗口备注）"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" id="btnRollbackMapping">确认回退</button>
           </div>
         </div>
       </div>
@@ -492,6 +523,7 @@
       const LS_KEYS = {
         currentTypeId: `${LS_PREFIX}task_types.current_type_id`,
         transferTargetTypeId: `${LS_PREFIX}task_types.transfer_target_type_id`,
+        rollbackTargetTypeId: `${LS_PREFIX}task_types.rollback_target_type_id`,
       };
       function lsGet(key) {
         try { return localStorage.getItem(key); } catch { return null; }
@@ -506,6 +538,7 @@
       const winModal = new bootstrap.Modal("#winModal");
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
       const mappingTransferModal = new bootstrap.Modal("#mappingTransferModal");
+      const mappingRollbackModal = new bootstrap.Modal("#mappingRollbackModal");
       const errorModal = new bootstrap.Modal("#errorModal");
       const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
@@ -1160,6 +1193,7 @@
           startBtn: tr.querySelector(`button[data-act="manualStart"][data-mid="${mappingId}"]`),
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
           transferBtn: tr.querySelector(`button[data-act="transfer"][data-mid="${mappingId}"]`),
+          rollbackBtn: tr.querySelector(`button[data-act="rollback"][data-mid="${mappingId}"]`),
           refreshQuotaBtn: tr.querySelector(`button[data-act="refreshQuota"][data-mid="${mappingId}"]`),
           refreshInviteBtn: tr.querySelector(`button[data-act="refreshInvite"][data-mid="${mappingId}"]`),
           refreshSubBtn: tr.querySelector(`button[data-act="refreshSubscription"][data-mid="${mappingId}"]`),
@@ -1784,6 +1818,7 @@
 
       function renderMappings() {
         const body = document.getElementById("mappingBody");
+        const canEditMapping = canEditTaskTypeConfig();
         updateMappingsHeaderSummaryUI();
         if (!state.mappings.length) {
           body.innerHTML = `<tr><td colspan="14" class="text-muted small">暂无绑定窗口</td></tr>`;
@@ -1813,6 +1848,7 @@
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-warning btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
+                  <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
                 </div>
               </div>
               <div class="text-muted truncate-1" title="${escapeHtml(String(m.platform_account || "-") + " · " + String(m.browser_name || "-"))}">
@@ -1904,8 +1940,7 @@
             </td>
             <td>${m.enabled ? `<span class="badge text-bg-success enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">是</span>` : `<span class="badge text-bg-secondary enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">否</span>`}</td>
             <td>
-              <button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>
-              <button class="btn btn-outline-danger btn-sm" data-act="del" data-mid="${m.id}">删除</button>
+              ${canEditMapping ? `<button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>` : `<span class="text-muted">-</span>`}
             </td>
           </tr>
         `; }).join("");
@@ -2081,6 +2116,10 @@
       }
 
       async function openMappingEditor(mappingId, act, el) {
+        if (!canEditTaskTypeConfig() && (act === "edit" || act === "del")) {
+          toast("当前账号无权编辑绑定", "warning");
+          return;
+        }
         if (act === "viewErrors") {
           return openErrorModalByMappingId(mappingId);
         }
@@ -2095,6 +2134,9 @@
         }
         if (act === "transfer") {
           return openMappingTransferModal(mappingId);
+        }
+        if (act === "rollback") {
+          return openMappingRollbackModal(mappingId);
         }
         if (act === "refreshQuota") {
           return refreshQuota(mappingId);
@@ -2121,14 +2163,7 @@
           return;
         }
         if (act === "del") {
-          if (!confirm("确定删除该绑定吗？")) return;
-          const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, { method: "PATCH", body: JSON.stringify({ deleted: true }) });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) return toast(d.detail || "删除失败", "error");
-          toast("已删除", "success");
-          await loadMappings();
-          return;
+          return deleteMappingById(mappingId);
         }
       }
 
@@ -2357,6 +2392,120 @@
         }
       }
 
+      async function openMappingRollbackModal(mappingId) {
+        const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+        if (!m) {
+          toast("找不到绑定记录，无法回退", "error");
+          return;
+        }
+        const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
+        let allTypes = state.transferAllTypes || [];
+        try {
+          allTypes = await loadAllTypesForTransfer();
+        } catch (e) {
+          allTypes = state.types || [];
+          toast(e.message || "加载回退目标失败，已回退当前可见列表", "warning");
+        }
+        const targetTypes = (allTypes || []).filter(t => String(t.id || "") !== String(currentTypeId));
+
+        document.getElementById("mapRollbackId").value = String(mappingId);
+        const hintEl = document.getElementById("mapRollbackHint");
+        if (hintEl) {
+          const winSortNum = (m.window_sort_num == null || String(m.window_sort_num).trim() === "") ? "-" : String(m.window_sort_num);
+          hintEl.textContent = `窗口#：${winSortNum} · 窗口：${m.window_name || "-"} · 账号：${m.platform_account || "-"} · 当前类型：${state.current?.name || "-"} (${state.current?.code || "-"})`;
+        }
+        const reasonEl = document.getElementById("mapRollbackReason");
+        if (reasonEl) reasonEl.value = "";
+
+        const sel = document.getElementById("mapRollbackTypeId");
+        if (!sel) return;
+        if (!targetTypes.length) {
+          sel.innerHTML = `<option value="">暂无可回退目标</option>`;
+          sel.value = "";
+          sel.disabled = true;
+          const btn = document.getElementById("btnRollbackMapping");
+          if (btn) btn.disabled = true;
+          return mappingRollbackModal.show();
+        }
+
+        sel.disabled = false;
+        sel.innerHTML = targetTypes
+          .map(t => `<option value="${t.id}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`)
+          .join("");
+        const cachedTargetTypeId = parseInt(lsGet(LS_KEYS.rollbackTargetTypeId) || "", 10);
+        const hit = targetTypes.find(t => Number(t.id) === cachedTargetTypeId);
+        sel.value = String(hit?.id || targetTypes[0].id);
+        const btn = document.getElementById("btnRollbackMapping");
+        if (btn) btn.disabled = false;
+        mappingRollbackModal.show();
+      }
+
+      async function rollbackMappingToOtherType() {
+        const btn = document.getElementById("btnRollbackMapping");
+        try {
+          const mappingId = parseInt(document.getElementById("mapRollbackId").value, 10);
+          const targetTypeId = parseInt(document.getElementById("mapRollbackTypeId").value, 10);
+          const reason = String(document.getElementById("mapRollbackReason")?.value || "").trim();
+          if (Number.isNaN(mappingId) || mappingId <= 0) throw new Error("mapping_id 无效");
+          if (Number.isNaN(targetTypeId) || targetTypeId <= 0) throw new Error("请选择回退目标任务类型");
+          if (!reason) throw new Error("请填写回退原因");
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (!m) throw new Error("找不到绑定记录，可能已被删除");
+          const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
+          if (currentTypeId && currentTypeId === targetTypeId) throw new Error("回退目标任务类型不能与当前类型相同");
+
+          setBtnBusy(btn, true, { loadingText: "回退中" });
+          lsSet(LS_KEYS.rollbackTargetTypeId, String(targetTypeId));
+          const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
+          const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
+          const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
+          const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
+          const sourceSpacePk = parseInt(String(m.space_pk || "0"), 10) || 0;
+          const windowKey = String(m.window_key || "").trim();
+          let movedSpacePk = 0;
+
+          // 仅当目标任务类型所属项目与当前项目不同时，才需要迁移窗口空间。
+          if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
+            if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
+            const picked = await resolveTargetSpaceForTypeTransfer({
+              sourceSpacePk,
+              targetProjectId,
+              preferredBrowserName: m.browser_name || "",
+            });
+            movedSpacePk = Number(picked?.space_pk || 0) || 0;
+            if (!movedSpacePk) throw new Error("未找到目标项目空间，无法迁移窗口");
+            await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
+              method: "POST",
+              body: { target_space_pk: movedSpacePk },
+            });
+          }
+
+          const finalSpacePk = movedSpacePk > 0 ? movedSpacePk : sourceSpacePk;
+          if (!finalSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法写入回退备注");
+          await postJson(`/api/admin/spaces/${finalSpacePk}/windows/${encodeURIComponent(windowKey)}/remark`, {
+            method: "POST",
+            body: { window_remark: `回退:${reason}` },
+          });
+
+          await postJson(`/api/admin/task-type-windows/${mappingId}`, {
+            method: "PATCH",
+            body: { task_type_id: targetTypeId },
+          });
+
+          if (movedSpacePk > 0) {
+            toast(`已回退到：${targetType?.name || targetTypeId}（窗口已迁移到空间#${movedSpacePk}，备注已更新）`, "success");
+          } else {
+            toast(`已回退到：${targetType?.name || targetTypeId}（备注已更新）`, "success");
+          }
+          mappingRollbackModal.hide();
+          await loadMappings();
+        } catch (e) {
+          toast(e.message || "回退失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       function openTokenModal(mappingId) {
         const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
         document.getElementById("tokenEditMappingId").value = String(mappingId);
@@ -2515,6 +2664,7 @@
 
       function openMappingEditModal(m) {
         document.getElementById("mapEditId").value = String(m.id);
+        document.getElementById("mapEditWinSortNum").textContent = String((m.window_sort_num ?? m.window_pk) ?? "-");
         document.getElementById("mapEditWinName").textContent = m.window_name || "-";
         document.getElementById("mapEditSpace").textContent = `${m.space_id || "-"} · ${m.space_name || "-"}`;
         document.getElementById("mapEditRemain").value = String(m.remaining_quota ?? 0);
@@ -2545,6 +2695,27 @@
           updateMappingRowUI(id, payload);
         } catch (e) {
           toast(e.message, "error");
+        }
+      }
+
+      async function deleteMappingById(mappingId) {
+        if (!confirm("确定删除该绑定吗？")) return;
+        const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, { method: "PATCH", body: JSON.stringify({ deleted: true }) });
+        if (!r) return;
+        const d = await r.json();
+        if (!r.ok) return toast(d.detail || "删除失败", "error");
+        toast("已删除", "success");
+        await loadMappings();
+      }
+
+      async function deleteMappingFromModal() {
+        try {
+          const id = parseInt(document.getElementById("mapEditId").value, 10);
+          if (Number.isNaN(id) || id <= 0) return;
+          await deleteMappingById(id);
+          mappingEditModal.hide();
+        } catch (e) {
+          toast(e.message || "删除失败", "error");
         }
       }
 
@@ -2705,10 +2876,16 @@
       document.getElementById("btnAddWindows").addEventListener("click", openWinModal);
       document.getElementById("btnBindWindows").addEventListener("click", bindWindows);
       document.getElementById("btnSaveMapping").addEventListener("click", saveMappingFromModal);
+      document.getElementById("btnDeleteMapping")?.addEventListener("click", deleteMappingFromModal);
       document.getElementById("btnTransferMapping")?.addEventListener("click", transferMappingToOtherType);
+      document.getElementById("btnRollbackMapping")?.addEventListener("click", rollbackMappingToOtherType);
       document.getElementById("mapTransferTypeId")?.addEventListener("change", (e) => {
         const id = parseInt(String(e.target?.value || ""), 10);
         if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.transferTargetTypeId, String(id));
+      });
+      document.getElementById("mapRollbackTypeId")?.addEventListener("change", (e) => {
+        const id = parseInt(String(e.target?.value || ""), 10);
+        if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.rollbackTargetTypeId, String(id));
       });
       document.getElementById("btnUpdateToken").addEventListener("click", updateTokenByAutoFetch);
       document.getElementById("btnConvertToken").addEventListener("click", convertAndSaveToken);

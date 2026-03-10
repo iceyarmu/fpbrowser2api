@@ -260,6 +260,12 @@ class MoveWindowRequest(BaseModel):
     target_space_pk: int = Field(ge=1, description="目标空间主键")
 
 
+class UpdateWindowRemarkRequest(BaseModel):
+    """仅更新本地窗口备注。"""
+
+    window_remark: Optional[str] = Field(default="", description="窗口备注")
+
+
 class ImportAccountsRequest(BaseModel):
     content: str = Field(min_length=1, description="批量导入文本")
 
@@ -1427,9 +1433,16 @@ async def delete_window_local(space_pk: int, window_key: str, token: str = Depen
         raise HTTPException(status_code=404, detail="space not found")
 
     affected = await db.delete_window_by_key(space_pk=space_pk, window_key=window_key)
-    if affected <= 0:
+    window_affected = int((affected or {}).get("window_affected") or 0)
+    task_type_window_affected = int((affected or {}).get("task_type_window_affected") or 0)
+    if window_affected <= 0:
         raise HTTPException(status_code=404, detail="window not found or already deleted")
-    return {"success": True, "message": "已在本地标记删除（不会同步到指纹浏览器）", "affected": affected}
+    return {
+        "success": True,
+        "message": "已在本地标记删除窗口，并级联标记 task_type_window 删除",
+        "affected": window_affected,
+        "task_type_window_affected": task_type_window_affected,
+    }
 
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/move")
@@ -1476,6 +1489,32 @@ async def move_window_local(space_pk: int, window_key: str, req: MoveWindowReque
         "source_space_pk": int(space_pk),
         "target_space_pk": target_space_pk,
     }
+
+
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/remark")
+async def update_window_remark_local(
+    space_pk: int,
+    window_key: str,
+    req: UpdateWindowRemarkRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """仅本地更新窗口备注（不调用指纹浏览器接口）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    remark = str(req.window_remark or "").strip()
+    affected = await db.update_window_remark(space_pk=int(space_pk), window_key=wk, remark=remark)
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="window not found or already deleted")
+    return {"success": True, "message": "窗口备注已更新", "affected": affected, "window_remark": remark}
 
 
 @router.get("/api/admin/browsers/{browser_id}/workspace-projects")
@@ -1590,6 +1629,7 @@ async def list_all_windows(project_id: Optional[int] = None, token: str = Depend
                             "window_sort_num": w.get("window_sort_num"),
                             "window_name": w.get("window_name"),
                             "window_status": w.get("window_status", 0),
+                            "window_remark": w.get("window_remark"),
                             "platform_account": w.get("platform_account"),
                             "platform_url": w.get("platform_url"),
                             "proxy_addr": w.get("proxy_addr"),

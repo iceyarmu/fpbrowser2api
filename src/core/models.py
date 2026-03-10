@@ -78,6 +78,8 @@ class WindowInfo(BaseModel):
     window_sort_num: Optional[int] = None
 
     window_name: str
+    # 本地窗口备注（用于记录回退原因等，仅存本地 DB）
+    window_remark: Optional[str] = None
     platform_account: Optional[str] = None
     platform_url: Optional[str] = None
     # 本地平台账号库的 account_id（Roxy /account/list rows.id）

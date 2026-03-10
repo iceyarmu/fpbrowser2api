@@ -317,6 +317,35 @@
       </div>
     </div>
 
+    <!-- Delete Window Modal -->
+    <div class="modal fade" id="deleteWindowModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">删除窗口</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-light border small mb-3" id="deleteWindowMeta">-</div>
+            <div class="form-check mb-2">
+              <input class="form-check-input" type="checkbox" id="deleteWindowWithAccount">
+              <label class="form-check-label" for="deleteWindowWithAccount">同时删除绑定账号</label>
+            </div>
+            <div class="text-muted small mb-2" id="deleteWindowAccountHint">当前窗口未绑定可删除账号。</div>
+            <div id="deleteWindowAccountReasonWrap" class="d-none">
+              <label class="form-label mb-1" for="deleteWindowAccountReason">删除账号原因</label>
+              <textarea class="form-control form-control-sm" id="deleteWindowAccountReason" rows="3" placeholder="必填：请输入删除账号原因（将写入账号备注）"></textarea>
+              <div class="form-text">原因会追加到账号备注中，然后执行账号删除。</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-danger" id="btnConfirmDeleteWindow">删除窗口</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml, initAdminPage, getAdminProfile } from "/assets/app.js";
@@ -338,6 +367,7 @@
       const accountsModal = new bootstrap.Modal("#accountsModal");
       const accountRemarkModal = new bootstrap.Modal("#accountRemarkModal");
       const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
+      const deleteWindowModal = new bootstrap.Modal("#deleteWindowModal");
 
       let state = { projects: [], tree: [] };
       let moveWindowState = {
@@ -347,6 +377,17 @@
         windowNum: 0,
         windowSortNum: 0,
         options: [],
+        triggerBtn: null,
+      };
+      let deleteWindowState = {
+        spacePk: 0,
+        windowKey: "",
+        windowName: "",
+        windowSortNum: "",
+        accountId: 0,
+        accountUsername: "",
+        accountUrl: "",
+        accountRemark: "",
         triggerBtn: null,
       };
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
@@ -613,13 +654,12 @@
                 <tr class="small2">
                   <th>窗口ID</th>
                   <th>窗口名称</th>
+                  <th>操作</th>
                   <th>账号</th>
                   <th>网址</th>
                   <th>代理</th>
-                  <th>到期</th>
                   <th>启用</th>
                   <th>窗口状态</th>
-                  <th>操作</th>
                 </tr>
               </thead>
               <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk ?? ""))}">
@@ -627,6 +667,21 @@
                   <tr class="small2">
                     ${renderWindowIdCell(w, spacePk)}
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
+                    <td class="small2">
+                      <div class="text-muted mb-1">${escapeHtml(String(w.window_remark || "-"))}</div>
+                      <button class="btn btn-outline-danger btn-sm px-2 py-0" type="button"
+                        title="删除窗口"
+                        aria-label="删除窗口"
+                        data-action="delete_window"
+                        data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+                        data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
+                        data-window_name="${escapeHtml(String(w.window_name ?? ""))}"
+                        data-window_sort_num="${escapeHtml(String((w.window_sort_num ?? w.id) ?? ""))}"
+                        data-account_id="${escapeHtml(String(w.platform_account_id || 0))}"
+                        data-account_username="${escapeHtml(String(w.platform_account || ""))}"
+                        data-account_url="${escapeHtml(String(w.platform_url || ""))}"
+                        data-account_remark="${escapeHtml(String(w.platform_remarks || ""))}">&#128465;</button>
+                    </td>
                     <td style="min-width: 280px;">
                       <select class="form-select form-select-sm mono" data-role="accountSelect"
                         data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
@@ -655,16 +710,8 @@
                       <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
                       <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
                     </td>
-                    <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
                     <td>${enabledBadge(!!w.enabled)}</td>
                     <td>${windowStatusBadge(w.window_status)}</td>
-                    <td>
-                      <button class="btn btn-outline-danger btn-sm" type="button"
-                        data-action="delete_window"
-                        data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
-                        data-window_key="${escapeHtml(String(w.window_key ?? ""))}"
-                        data-window_name="${escapeHtml(String(w.window_name ?? ""))}">删除</button>
-                    </td>
                   </tr>
                 `).join("")}
               </tbody>
@@ -702,7 +749,17 @@
         } else if (action === "workspace_projects") {
           openWorkspaceProjectsModal(parseInt(ds.browser_id, 10), fromEl);
         } else if (action === "delete_window") {
-          deleteWindow(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, fromEl);
+          openDeleteWindowModal({
+            spacePk: parseInt(ds.space_pk, 10),
+            windowKey: ds.window_key,
+            windowName: ds.window_name,
+            windowSortNum: ds.window_sort_num,
+            accountId: parseInt(ds.account_id, 10),
+            accountUsername: ds.account_username,
+            accountUrl: ds.account_url,
+            accountRemark: ds.account_remark,
+            triggerBtn: fromEl,
+          });
         } else if (action === "move_window") {
           openMoveWindowModal(parseInt(ds.space_pk, 10), ds.window_key, ds.window_name, ds.window_num, ds.window_sort_num, fromEl);
         } else if (action === "edit_space") {
@@ -725,8 +782,6 @@
         const wk = String(windowKey || "").trim();
         const name = String(windowName || "").trim() || wk;
         if (!wk) return toast("缺少窗口标识(window_key/dirId)，无法删除", "error");
-        const ok = confirm(`确定在本地标记删除该窗口吗？\n- ${name}\n- dirId: ${wk}\n\n说明：只会在本地 DB 标记 deleted=1，不会调用指纹浏览器删除。`);
-        if (!ok) return;
 
         const btn = fromEl;
         try {
@@ -750,6 +805,136 @@
           toast(e.message || "删除失败", "error");
         } finally {
           setBtnBusy(btn, false);
+        }
+      }
+
+      function renderDeleteWindowReasonBlock(showReason) {
+        const wrap = document.getElementById("deleteWindowAccountReasonWrap");
+        const input = document.getElementById("deleteWindowAccountReason");
+        if (!wrap || !input) return;
+        wrap.classList.toggle("d-none", !showReason);
+        if (!showReason) {
+          input.value = "";
+        } else {
+          setTimeout(() => {
+            try { input.focus(); } catch (_e) {}
+          }, 0);
+        }
+      }
+
+      function buildDeleteAccountRemark(oldRemark, reason, windowName, windowKey, windowSortNum) {
+        const base = String(oldRemark || "").trim();
+        const msg = `[删除账号原因] ${String(reason || "").trim()}（窗口sort:${String(windowSortNum || "-").trim() || "-"} / 窗口:${String(windowName || "").trim() || "-"}）`;
+        return base ? `${base}\n${msg}` : msg;
+      }
+
+      function openDeleteWindowModal({ spacePk, windowKey, windowName, windowSortNum, accountId, accountUsername, accountUrl, accountRemark, triggerBtn }) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const wk = String(windowKey || "").trim();
+        const wn = String(windowName || "").trim() || wk;
+        const ws = String(windowSortNum || "").trim() || "-";
+        if (!spk || !wk) return toast("缺少窗口信息，无法删除", "error");
+
+        deleteWindowState = {
+          spacePk: spk,
+          windowKey: wk,
+          windowName: wn,
+          windowSortNum: ws,
+          accountId: parseInt(String(accountId || "0"), 10) || 0,
+          accountUsername: String(accountUsername || "").trim(),
+          accountUrl: String(accountUrl || "").trim(),
+          accountRemark: String(accountRemark || ""),
+          triggerBtn: triggerBtn || null,
+        };
+
+        const metaEl = document.getElementById("deleteWindowMeta");
+        const chk = document.getElementById("deleteWindowWithAccount");
+        const hint = document.getElementById("deleteWindowAccountHint");
+        if (metaEl) {
+          metaEl.innerHTML = `
+            <div class="mono"><span class="text-muted">窗口sort：</span>${escapeHtml(ws)}</div>
+            <div><span class="text-muted">窗口：</span><span class="fw-semibold">${escapeHtml(wn)}</span></div>
+            <div class="mono"><span class="text-muted">dirId：</span>${escapeHtml(wk)}</div>
+            <div class="small text-muted">说明：窗口删除仅在本地 DB 标记 deleted=1，不会调用指纹浏览器删除窗口。</div>
+          `;
+        }
+        if (chk) {
+          chk.checked = false;
+          chk.disabled = !(deleteWindowState.accountId > 0);
+        }
+        if (hint) {
+          hint.textContent = deleteWindowState.accountId > 0
+            ? `绑定账号：#${deleteWindowState.accountId} ${deleteWindowState.accountUsername || "-"} | URL: ${deleteWindowState.accountUrl || "-"}`
+            : "当前窗口未绑定可删除账号。";
+        }
+        renderDeleteWindowReasonBlock(false);
+        deleteWindowModal.show();
+      }
+
+      async function submitDeleteWindow() {
+        const spk = parseInt(String(deleteWindowState.spacePk || "0"), 10) || 0;
+        const wk = String(deleteWindowState.windowKey || "").trim();
+        if (!spk || !wk) return;
+
+        const chk = document.getElementById("deleteWindowWithAccount");
+        const reasonInput = document.getElementById("deleteWindowAccountReason");
+        const btn = document.getElementById("btnConfirmDeleteWindow");
+        const shouldDeleteAccount = !!(chk && chk.checked && deleteWindowState.accountId > 0);
+        const reason = reasonInput ? String(reasonInput.value || "").trim() : "";
+
+        if (shouldDeleteAccount && !reason) {
+          toast("请填写删除账号原因", "warning");
+          if (reasonInput) {
+            reasonInput.focus();
+          }
+          return;
+        }
+
+        try {
+          if (btn) setBtnBusy(btn, true, { loadingText: "处理中" });
+          let accountDeleteWarning = "";
+          if (shouldDeleteAccount) {
+            try {
+              const mergedRemark = buildDeleteAccountRemark(
+                deleteWindowState.accountRemark,
+                reason,
+                deleteWindowState.windowName,
+                deleteWindowState.windowKey,
+                deleteWindowState.windowSortNum
+              );
+              const r1 = await adminFetch(`/api/admin/spaces/${spk}/accounts/${deleteWindowState.accountId}/remark`, {
+                method: "POST",
+                body: JSON.stringify({ platform_remarks: mergedRemark }),
+              });
+              if (!r1) return;
+              const d1 = await r1.json();
+              if (!r1.ok) throw new Error(d1.detail || "写入账号备注失败");
+
+              const r2 = await adminFetch(`/api/admin/spaces/${spk}/accounts/${deleteWindowState.accountId}/delete`, {
+                method: "POST",
+                body: JSON.stringify({}),
+              });
+              if (!r2) return;
+              const d2 = await r2.json();
+              if (!r2.ok) throw new Error(d2.detail || "删除账号失败");
+              toast(d2.message || "账号已删除", "success");
+              const latestAccounts = await loadAllProjectAccounts({ force: true });
+              accountsState.accounts = latestAccounts;
+              fillAccountSelects(spk);
+            } catch (e) {
+              accountDeleteWarning = String((e && e.message) || "删除账号失败");
+            }
+          }
+
+          await deleteWindow(spk, deleteWindowState.windowKey, deleteWindowState.windowName, deleteWindowState.triggerBtn);
+          deleteWindowModal.hide();
+          if (accountDeleteWarning) {
+            toast(`窗口已删除，但账号删除失败：${accountDeleteWarning}`, "warning");
+          }
+        } catch (e) {
+          toast(e.message || "删除失败", "error");
+        } finally {
+          if (btn) setBtnBusy(btn, false);
         }
       }
 
@@ -1108,6 +1293,7 @@
                 <tr class="small2">
                   <th>窗口ID</th>
                   <th>窗口名称</th>
+                  <th>备注</th>
                   <th>账号</th>
                   <th>网址</th>
                   <th>代理</th>
@@ -1129,6 +1315,7 @@
           <tr class="small2">
             ${renderWindowIdCell(w, spacePk)}
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
+            <td class="small2 text-muted">${escapeHtml(String(w.window_remark || "-"))}</td>
             <td style="min-width: 280px;">
               <select class="form-select form-select-sm mono" data-role="accountSelect"
                 data-space_pk="${escapeHtml(String(spacePk ?? w.space_pk ?? ""))}"
@@ -1289,7 +1476,7 @@
               <thead>
                 <tr class="small2">
                   <th>归属</th>
-                  <th>account_id</th>
+                  <th>序号</th>
                   <th>账号</th>
                   <th>网址</th>
                   <th>密码</th>
@@ -1301,13 +1488,13 @@
                 </tr>
               </thead>
               <tbody>
-                ${filtered.map(a => `
+                ${filtered.map((a, idx) => `
                   <tr class="small2">
                     <td class="small">
                       <div class="mono text-muted">space_pk=${escapeHtml(String(a.space_pk || "-"))}</div>
                       <div>${escapeHtml(a.project_name || "-")} / ${escapeHtml(a.browser_name || "-")} / ${escapeHtml(a.space_name || "-")}</div>
                     </td>
-                    <td class="mono">#${escapeHtml(String(a.account_id || "-"))}</td>
+                    <td class="mono">${escapeHtml(`${idx + 1}.`)}</td>
                     <td class="mono">${escapeHtml(a.platform_username || "-")}</td>
                     <td class="mono">${renderLink(a.platform_url)}</td>
                     <td class="mono">${escapeHtml(a.platform_password || "-")}</td>
@@ -1505,14 +1692,16 @@
         }
       }
 
-      async function deleteAccount(spacePk, accountId, bindingCount, fromEl) {
+      async function deleteAccount(spacePk, accountId, bindingCount, fromEl, options = {}) {
         const aid = parseInt(String(accountId || "0"), 10) || 0;
         if (!spacePk || !aid) return;
         const bcnt = parseInt(String(bindingCount || "0"), 10) || 0;
-        const msg = bcnt > 0
-          ? `该账号当前被 ${bcnt} 个窗口绑定，确认删除并同步到指纹浏览器吗？`
-          : `确认删除该账号并同步到指纹浏览器吗？`;
-        if (!confirm(msg)) return;
+        if (!options.skipConfirm) {
+          const msg = bcnt > 0
+            ? `该账号当前被 ${bcnt} 个窗口绑定，确认删除并同步到指纹浏览器吗？`
+            : `确认删除该账号并同步到指纹浏览器吗？`;
+          if (!confirm(msg)) return;
+        }
         const btn = fromEl;
         try {
           setBtnBusy(btn, true, { loadingText: "删除中" });
@@ -2814,6 +3003,12 @@
 
       document.getElementById("btnSaveSpace").addEventListener("click", saveSpace);
       document.getElementById("btnConfirmMoveWindow").addEventListener("click", submitMoveWindow);
+      document.getElementById("btnConfirmDeleteWindow").addEventListener("click", submitDeleteWindow);
+      document.getElementById("deleteWindowWithAccount").addEventListener("change", (ev) => {
+        const checked = !!ev?.target?.checked;
+        const allow = deleteWindowState.accountId > 0;
+        renderDeleteWindowReasonBlock(checked && allow);
+      });
       document.getElementById("moveWindowTargetSpace").addEventListener("change", (ev) => {
         const v = String(ev?.target?.value || "").trim();
         if (!v) return;
