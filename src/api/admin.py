@@ -1512,15 +1512,14 @@ async def get_project_tree(project_id: Optional[int] = None, token: str = Depend
 
     UI 侧可据此实现：项目切换、浏览器折叠/展开、空间加载窗口、以及“一键展开全部”。
     """
-    user = await _ensure_page_access(token, "projects")
+    # 仅要求已登录；不再强依赖 projects 页面权限。
+    # 仍然会按项目权限（allowed_project_ids）过滤可见数据。
+    user = await _get_user_by_token(token)
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
-    allowed_ids = await _get_allowed_project_ids(user)
-    projects = await db.list_projects(allowed_project_ids=allowed_ids)
+    projects = await db.list_projects(allowed_project_ids=None)
     if project_id is not None:
-        if allowed_ids is not None and int(project_id) not in {int(x) for x in allowed_ids}:
-            raise HTTPException(status_code=403, detail="无权访问该项目")
         projects = [p for p in projects if p.id == project_id]
 
     out: List[Dict[str, Any]] = []

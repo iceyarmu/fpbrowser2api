@@ -372,7 +372,7 @@
             <div>
               <label class="form-label">目标任务类型</label>
               <select class="form-select" id="mapTransferTypeId"></select>
-              <div class="form-text">转移后，该窗口会从当前任务类型列表移除，并出现在目标任务类型中。</div>
+              <div class="form-text">转移后，该窗口会从当前任务类型列表移除，并出现在目标任务类型中；若目标任务类型绑定了其他项目，也会自动把该窗口迁移到目标项目的空间。</div>
             </div>
           </div>
           <div class="modal-footer">
@@ -2217,6 +2217,44 @@
         return d;
       }
 
+      function collectAllSpacesFromTree(tree) {
+        const out = [];
+        const projects = Array.isArray(tree) ? tree : [];
+        for (const p of projects) {
+          const browsers = Array.isArray(p?.browsers) ? p.browsers : [];
+          for (const b of browsers) {
+            const spaces = Array.isArray(b?.spaces) ? b.spaces : [];
+            for (const s of spaces) {
+              out.push({
+                project_id: Number(p?.id || 0) || 0,
+                project_name: String(p?.name || "").trim(),
+                browser_id: Number(b?.id || 0) || 0,
+                browser_name: String(b?.name || "").trim(),
+                space_pk: Number(s?.id || 0) || 0,
+                space_name: String(s?.name || "").trim(),
+                space_id: String(s?.space_id || "").trim(),
+              });
+            }
+          }
+        }
+        return out.filter(x => x.space_pk > 0 && x.project_id > 0);
+      }
+
+      async function resolveTargetSpaceForTypeTransfer({ sourceSpacePk, targetProjectId, preferredBrowserName }) {
+        if (!targetProjectId) throw new Error("目标任务类型未绑定项目，无法迁移窗口");
+        const r = await adminFetch("/api/admin/tree");
+        if (!r) throw new Error("读取项目空间失败");
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "读取项目空间失败");
+        const allSpaces = collectAllSpacesFromTree(d.tree || []);
+        const targetSpaces = allSpaces.filter(x => Number(x.project_id) === Number(targetProjectId));
+        if (!targetSpaces.length) throw new Error("目标项目下没有可用空间，无法迁移窗口");
+
+        const byBrowser = targetSpaces.find(x => String(x.browser_name || "").trim() && String(x.browser_name || "").trim() === String(preferredBrowserName || "").trim());
+        const byNotSource = targetSpaces.find(x => Number(x.space_pk) !== Number(sourceSpacePk || 0));
+        return byBrowser || byNotSource || targetSpaces[0];
+      }
+
       async function openMappingTransferModal(mappingId) {
         const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
         if (!m) {
@@ -2277,13 +2315,39 @@
 
           setBtnBusy(btn, true, { loadingText: "转移中" });
           lsSet(LS_KEYS.transferTargetTypeId, String(targetTypeId));
+          const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
+          const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
+          const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
+          const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
+          const sourceSpacePk = parseInt(String(m.space_pk || "0"), 10) || 0;
+          const windowKey = String(m.window_key || "").trim();
+          let movedSpacePk = 0;
+
+          // 仅当目标任务类型所属项目与当前项目不同时，才需要迁移窗口空间。
+          if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
+            if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
+            const picked = await resolveTargetSpaceForTypeTransfer({
+              sourceSpacePk,
+              targetProjectId,
+              preferredBrowserName: m.browser_name || "",
+            });
+            movedSpacePk = Number(picked?.space_pk || 0) || 0;
+            if (!movedSpacePk) throw new Error("未找到目标项目空间，无法迁移窗口");
+            await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
+              method: "POST",
+              body: { target_space_pk: movedSpacePk },
+            });
+          }
+
           await postJson(`/api/admin/task-type-windows/${mappingId}`, {
             method: "PATCH",
             body: { task_type_id: targetTypeId },
           });
-          const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
-          const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
-          toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
+          if (movedSpacePk > 0) {
+            toast(`已转移到：${targetType?.name || targetTypeId}（窗口已迁移到空间#${movedSpacePk}）`, "success");
+          } else {
+            toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
+          }
           mappingTransferModal.hide();
           await loadMappings();
         } catch (e) {
