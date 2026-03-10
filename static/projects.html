@@ -1432,6 +1432,7 @@
       function normalizeAccounts(arr) {
         const xs = Array.isArray(arr) ? arr : [];
         return xs.filter(x => x && typeof x === "object").map(x => ({
+          id: Number(x.id ?? 0) || 0,
           space_pk: Number(x.space_pk ?? x.spacePk ?? 0) || 0,
           project_id: Number(x.project_id ?? x.projectId ?? 0) || 0,
           project_name: String(x.project_name ?? x.projectName ?? "").trim(),
@@ -1444,6 +1445,7 @@
           platform_password: x.platform_password ?? x.platformPassword ?? "",
           platform_efa: x.platform_efa ?? x.platformEfa ?? "",
           platform_remarks: x.platform_remarks ?? x.platformRemarks ?? "",
+          deleted: Number(x.deleted ?? 0) || 0,
           binding_count: Number(x.binding_count ?? 0) || 0,
           binding_windows: x.binding_windows ?? "",
         }));
@@ -1488,13 +1490,16 @@
                 </tr>
               </thead>
               <tbody>
-                ${filtered.map((a, idx) => `
-                  <tr class="small2">
+                ${filtered.map((a) => `
+                  <tr class="small2 ${Number(a.deleted || 0) === 1 ? "text-muted" : ""}">
                     <td class="small">
                       <div class="mono text-muted">space_pk=${escapeHtml(String(a.space_pk || "-"))}</div>
-                      <div>${escapeHtml(a.project_name || "-")} / ${escapeHtml(a.browser_name || "-")} / ${escapeHtml(a.space_name || "-")}</div>
+                      <div>
+                        ${escapeHtml(a.project_name || "-")} / ${escapeHtml(a.browser_name || "-")} / ${escapeHtml(a.space_name || "-")}
+                        ${Number(a.deleted || 0) === 1 ? '<span class="badge text-bg-secondary ms-1">已删除</span>' : ""}
+                      </div>
                     </td>
-                    <td class="mono">${escapeHtml(`${idx + 1}.`)}</td>
+                    <td class="mono">${escapeHtml(`${String(a.id || "-")}.`)}</td>
                     <td class="mono">${escapeHtml(a.platform_username || "-")}</td>
                     <td class="mono">${renderLink(a.platform_url)}</td>
                     <td class="mono">${escapeHtml(a.platform_password || "-")}</td>
@@ -1579,7 +1584,7 @@
       }
 
       function fillAccountSelects(spacePk) {
-        const items = normalizeAccounts(accountsCache.get(spacePk) || []);
+        const items = normalizeAccounts(accountsCache.get(spacePk) || []).filter(a => Number(a.deleted || 0) !== 1);
         const selects = document.querySelectorAll(`select[data-role="accountSelect"][data-space_pk="${spacePk}"]`);
         selects.forEach(sel => {
           const cur = String(sel.dataset.current_account_id || "").trim();
@@ -1617,7 +1622,7 @@
           sel.innerHTML = `
             <option value="0">(不绑定账号)</option>
             ${fallbackCur}
-            ${items.map((a, idx) => `<option value="${escapeHtml(String(a.account_id))}">${escapeHtml(`${idx + 1}. ${accountLabel(a)}`)}</option>`).join("")}
+            ${items.map((a) => `<option value="${escapeHtml(String(a.account_id))}">${escapeHtml(`${String(a.id || "-")}. ${accountLabel(a)}`)}</option>`).join("")}
           `;
           sel.value = selectedValue;
           if (!sel.value) sel.value = "0";
