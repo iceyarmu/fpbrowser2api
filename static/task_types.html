@@ -222,6 +222,9 @@
                     <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
+                  <div class="small text-muted">
+                    <span id="mappingQuickStats">打开/总数/冷却0/启用/占用: 0/0/0/0/0</span>
+                  </div>
                 </div>
                 <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
               </div>
@@ -1728,6 +1731,10 @@
         let fail24hAll = 0;
         let failTotalAll = 0;
         let remainingQuotaAll = 0;
+        let openedCountAll = 0;
+        let coolingZeroCountAll = 0;
+        let enabledCountAll = 0;
+        let inflightSlotsAll = 0;
 
         items.forEach((m) => {
           success24hAll += Number(m?.success_count_24h ?? m?.success_24h_count ?? m?.success_24h ?? 0) || 0;
@@ -1736,6 +1743,10 @@
           fail24hAll += Number(m?.failed_count_24h ?? m?.fail_count_24h ?? m?.error_count_24h ?? 0) || 0;
           failTotalAll += Number(m?.total_errors ?? 0) || 0;
           remainingQuotaAll += Number(m?.remaining_quota ?? 0) || 0;
+          openedCountAll += (Number(m?.window_status || 0) === 1) ? 1 : 0;
+          coolingZeroCountAll += (coolingFlagForMapping(m) === 0) ? 1 : 0;
+          enabledCountAll += m?.enabled ? 1 : 0;
+          inflightSlotsAll += Number(m?.inflight_slots ?? 0) || 0;
         });
 
         const statusSummaryEl = document.getElementById("statusSummaryAll");
@@ -1745,6 +1756,10 @@
         const balanceSummaryEl = document.getElementById("balanceSummaryAll");
         if (balanceSummaryEl) {
           balanceSummaryEl.textContent = `总余额: ${remainingQuotaAll}`;
+        }
+        const quickStatsEl = document.getElementById("mappingQuickStats");
+        if (quickStatsEl) {
+          quickStatsEl.textContent = `[总窗口${items.length}] [已打开${openedCountAll}] [已冷却${coolingZeroCountAll}] [已启用${enabledCountAll}] [并发中${inflightSlotsAll}] `;
         }
       }
 
@@ -2414,10 +2429,6 @@
           setBtnBusy(closeBtn, true, { loadingText: "提交中" });
           if (openBtn) openBtn.disabled = true;
           if (startBtn) startBtn.disabled = true;
-
-          // 关闭前：先禁用本窗口（避免继续被调度/自动刷新）
-          await postJson(`/api/admin/task-type-windows/${mappingId}`, { method: "PATCH", body: { enabled: false } });
-          updateMappingRowUI(mappingId, { enabled: false }, { fromEl });
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
 
