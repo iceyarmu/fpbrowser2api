@@ -1302,6 +1302,35 @@
         if (btn.dataset.origHtml != null) btn.innerHTML = btn.dataset.origHtml;
       }
 
+      async function parseApiResponse(resp, fallbackMsg = "请求失败") {
+        if (!resp) return null;
+        const raw = await resp.text();
+        let data = null;
+        if (raw) {
+          try {
+            data = JSON.parse(raw);
+          } catch (_e) {
+            data = null;
+          }
+        }
+        if (!resp.ok) {
+          const detail = data && typeof data === "object" ? String(data.detail || "").trim() : "";
+          if (detail) throw new Error(detail);
+          const summary = raw
+            ? String(raw)
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 180)
+            : "";
+          if (summary) throw new Error(`${fallbackMsg}：服务返回非 JSON 响应（${summary}）`);
+          throw new Error(fallbackMsg);
+        }
+        if (!raw) return {};
+        if (data && typeof data === "object") return data;
+        throw new Error(`${fallbackMsg}：响应格式错误`);
+      }
+
       function getSpaceDom(spacePk) {
         const progress = document.querySelector(`[data-role="syncProgress"][data-space-pk="${spacePk}"]`);
         const wrap = document.querySelector(`[data-role="windowsWrap"][data-space-pk="${spacePk}"]`);
@@ -2929,8 +2958,7 @@
           try {
             const rp = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, { method: "POST", body: JSON.stringify({}) });
             if (rp) {
-              const dp = await rp.json();
-              if (!rp.ok) throw new Error(dp.detail || "同步代理失败");
+              await parseApiResponse(rp, "同步代理失败");
             }
           } catch (e) {
             // 同步代理失败不阻塞同步窗口，但给出提示
@@ -2947,8 +2975,7 @@
           try {
             const ra = await adminFetch(`/api/admin/spaces/${spacePk}/sync-accounts`, { method: "POST", body: JSON.stringify({}) });
             if (ra) {
-              const da = await ra.json();
-              if (!ra.ok) throw new Error(da.detail || "同步账号失败");
+              await parseApiResponse(ra, "同步账号失败");
             }
           } catch (e) {
             toast(`同步账号失败（将继续同步窗口）：${e.message || "未知错误"}`, "warn");
@@ -2963,15 +2990,13 @@
 
           const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-windows`, { method: "POST" });
           if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "同步失败");
+          const d = await parseApiResponse(r, "同步窗口失败");
 
           setSpaceProgress(spacePk, { current: 2, total: 3, text: "同步完成，正在加载窗口列表..." });
 
           const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
           if (!r2) return;
-          const d2 = await r2.json();
-          if (!r2.ok) throw new Error(d2.detail || "加载窗口列表失败");
+          const d2 = await parseApiResponse(r2, "加载窗口列表失败");
 
           await renderWindowsIncrementally(spacePk, d2.windows || []);
 
@@ -3004,13 +3029,11 @@
           setBtnBusy(btn, true, { loadingText: "同步中" });
           const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-window-status`, { method: "POST", body: JSON.stringify({}) });
           if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "同步窗口状态失败");
+          const d = await parseApiResponse(r, "同步窗口状态失败");
 
           const r2 = await adminFetch(`/api/admin/spaces/${spacePk}/windows`);
           if (!r2) return;
-          const d2 = await r2.json();
-          if (!r2.ok) throw new Error(d2.detail || "加载窗口列表失败");
+          const d2 = await parseApiResponse(r2, "加载窗口列表失败");
           await renderWindowsIncrementally(spacePk, d2.windows || []);
           toast(d.message || "窗口状态同步完成", "success");
         } catch (e) {
