@@ -68,6 +68,11 @@
           <div class="form-text">开启后，对外接口 <span class="mono">POST /v1/tasks</span> 将返回“服务器维护中不接受新任务...”。</div>
         </div>
                 <div class="col-12">
+                  <label class="form-label" for="publicCreateTaskMaxInflight">对外创建任务并发上限</label>
+                  <input class="form-control mono" id="publicCreateTaskMaxInflight" type="number" min="3" step="3" placeholder="例如 180" />
+                  <div class="form-text">必须是 3 的整数倍；窗口候选池大小会按该值的 1/3 自动计算。</div>
+                </div>
+                <div class="col-12">
                   <button class="btn btn-primary" id="btnSaveSystem">保存系统配置</button>
                 </div>
               </div>
@@ -131,12 +136,20 @@
         document.getElementById("debugEnabled").checked = !!c.debug_enabled;
         document.getElementById("logToFile").checked = !!c.log_to_file;
         document.getElementById("stopAcceptingTasks").checked = !!c.stop_accepting_tasks;
+        document.getElementById("publicCreateTaskMaxInflight").value = Number(c.public_create_task_max_inflight || 180);
         document.getElementById("currentApiKey").value = c.api_key || "";
         document.getElementById("adminUsername").value = c.admin_username || "admin";
       }
 
       document.getElementById("btnSaveSystem").addEventListener("click", async () => {
         try {
+          const publicCreateTaskMaxInflight = Number(document.getElementById("publicCreateTaskMaxInflight").value || 0);
+          if (!Number.isInteger(publicCreateTaskMaxInflight) || publicCreateTaskMaxInflight < 3) {
+            throw new Error("并发上限必须是大于等于 3 的整数");
+          }
+          if (publicCreateTaskMaxInflight % 3 !== 0) {
+            throw new Error("并发上限必须是 3 的整数倍");
+          }
           const r = await adminFetch("/api/admin/system-config", {
             method: "POST",
             body: JSON.stringify({
@@ -145,6 +158,7 @@
               debug_enabled: document.getElementById("debugEnabled").checked,
               log_to_file: document.getElementById("logToFile").checked,
               stop_accepting_tasks: document.getElementById("stopAcceptingTasks").checked,
+              public_create_task_max_inflight: publicCreateTaskMaxInflight,
             }),
           });
           if (!r) return;

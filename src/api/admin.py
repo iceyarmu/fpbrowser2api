@@ -9,11 +9,12 @@ from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..core.auth import AuthManager
 from ..core.database import Database
 from ..core.logger import setup_logging
+from ..core.public_api_limits import normalize_public_create_task_max_inflight
 from ..services.fp_browser_client import FPBrowserClient
 
 
@@ -154,6 +155,15 @@ class UpdateSystemConfigRequest(BaseModel):
     debug_enabled: bool
     log_to_file: bool
     stop_accepting_tasks: bool = False
+    public_create_task_max_inflight: int = Field(default=180, ge=3)
+
+    @field_validator("public_create_task_max_inflight")
+    @classmethod
+    def _validate_public_create_task_max_inflight(cls, v: int) -> int:
+        vv = int(v or 0)
+        if vv % 3 != 0:
+            raise ValueError("并发上限必须是 3 的整数倍")
+        return vv
 
 
 class CreateProjectRequest(BaseModel):
@@ -610,6 +620,9 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
             "debug_enabled": syscfg.debug_enabled,
             "log_to_file": syscfg.log_to_file,
             "stop_accepting_tasks": bool(getattr(syscfg, "stop_accepting_tasks", False)),
+            "public_create_task_max_inflight": normalize_public_create_task_max_inflight(
+                getattr(syscfg, "public_create_task_max_inflight", None)
+            ),
             "admin_username": admin_user.username if admin_user else "admin",
         },
     }
@@ -650,6 +663,7 @@ async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depe
         debug_enabled=req.debug_enabled,
         log_to_file=req.log_to_file,
         stop_accepting_tasks=req.stop_accepting_tasks,
+        public_create_task_max_inflight=req.public_create_task_max_inflight,
     )
     await db.reload_config_to_memory()
     setup_logging()  # 让日志配置立刻生效

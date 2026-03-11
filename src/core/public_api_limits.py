@@ -1,20 +1,31 @@
-"""Shared runtime limits for public task APIs."""
+"""Shared defaults and validators for public task API limits."""
 
 from __future__ import annotations
 
-import os
+
+DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT = 180
 
 
-def _read_int_env(name: str, default: int) -> int:
+def normalize_public_create_task_max_inflight(value: int | None) -> int:
+    """Normalize public create-task inflight limit.
+
+    Rule:
+    - must be a positive multiple of 3;
+    - fallback to default when input is invalid.
+    """
     try:
-        return int(os.getenv(name, str(default)))
+        num = int(value or 0)
     except Exception:
-        return int(default)
+        num = DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
+    if num <= 0:
+        num = DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
+    if num % 3 != 0:
+        num = DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
+    return max(3, num)
 
 
-# Public create-task inflight gate (single source of truth).
-PUBLIC_CREATE_TASK_MAX_INFLIGHT = max(1, _read_int_env("PUBLIC_CREATE_TASK_MAX_INFLIGHT", 180))
-
-# Window candidate pool size for task scheduling: 1/3 of create-task inflight.
-PUBLIC_BROWSER_POOL_LIMIT = max(1, PUBLIC_CREATE_TASK_MAX_INFLIGHT // 3)
+def calc_public_browser_pool_limit(create_task_max_inflight: int | None) -> int:
+    """Window candidate pool size for task scheduling: 1/3 of create-task inflight."""
+    limit = normalize_public_create_task_max_inflight(create_task_max_inflight)
+    return max(1, limit // 3)
 

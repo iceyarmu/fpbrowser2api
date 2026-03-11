@@ -31,6 +31,8 @@ class SystemConfig(BaseModel):
     log_to_file: bool = False
     # 开关：停止接收新任务（维护模式）
     stop_accepting_tasks: bool = False
+    # 对外创建任务并发上限（必须为 3 的整数倍）
+    public_create_task_max_inflight: int = 180
     updated_at: Optional[datetime] = None
 
 

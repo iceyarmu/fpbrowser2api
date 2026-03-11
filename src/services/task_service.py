@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from ..core.database import Database
 from ..core.logger import logger
 from ..core.models import Task
-from ..core.public_api_limits import PUBLIC_BROWSER_POOL_LIMIT
+from ..core.public_api_limits import DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT, calc_public_browser_pool_limit
 from .image_task_executor import simulate_image_task
 from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
@@ -42,13 +42,20 @@ class PickedWindow:
 class TaskService:
     def __init__(self, db: Database) -> None:
         self.db = db
-        self._browser_pool_limit: int = PUBLIC_BROWSER_POOL_LIMIT
+        self._browser_pool_limit: int = calc_public_browser_pool_limit(DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT)
         # 任务 payload 仍保留一份内存副本供执行器使用；DB 侧仅保存一个“可查看/可检索”的 prompt 字符串
         self._task_payloads: dict[str, Dict[str, Any]] = {}
         # 1) payload["prompt"] 本身的长度上限（便于查看，也避免超长文本撑爆 DB）
         self._payload_prompt_max_chars: int = 1000
         # 2) 最终落库到 tasks.prompt 的总长度上限（兼容某些历史/自定义 schema 的较短字段）
         self._prompt_max_chars: int = 2000
+
+    def set_browser_pool_limit(self, limit: int) -> None:
+        """Hot-update scheduling candidate pool size."""
+        try:
+            self._browser_pool_limit = max(1, int(limit))
+        except Exception:
+            pass
 
     def _truncate_text(self, s: str, max_chars: int, *, label: str) -> str:
         s = str(s or "")
@@ -317,6 +324,10 @@ class TaskService:
             payload = self._task_payloads.get(task_id) or {}
             prompt = str(payload.get("prompt") or "").strip()
             target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
+            try:
+                refresh_timeout_seconds = max(1.0, float(payload.get("sora_balance_refresh_timeout_seconds") or 60.0))
+            except Exception:
+                refresh_timeout_seconds = 60.0
 
             async def _refresh_sora_balance() -> Optional[Dict[str, Any]]:
                 handler = str(picked.create_task_handler or "").strip().lower()
@@ -417,6 +428,18 @@ class TaskService:
 
                 return nf_check
 
+            async def _refresh_sora_balance_best_effort() -> None:
+                """余额刷新只做尽力而为，不能影响任务终态写回。"""
+                try:
+                    await asyncio.wait_for(_refresh_sora_balance(), timeout=refresh_timeout_seconds)
+                except Exception as e:
+                    logger.warning(
+                        "refresh_sora_balance skipped: task=%s mapping=%s err=%s",
+                        task_id,
+                        picked.mapping_id,
+                        e,
+                    )
+
             try:
                 # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
                 if picked.create_task_handler == "sora_gen_video":
@@ -480,7 +503,7 @@ class TaskService:
                 except Exception:
                     pass
 
-                await _refresh_sora_balance()
+                await _refresh_sora_balance_best_effort()
                 # 清空一下result中的nf_check，避免敏感信息泄露
                 if isinstance(result, dict):
                     result["nf_check"] = None
@@ -489,7 +512,7 @@ class TaskService:
                 await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
             except Exception as e:
-                await _refresh_sora_balance()
+                await _refresh_sora_balance_best_effort()
                 # 失败：尽量把“是否不扣罚(no_penalty)”等信息写入 result_json，便于上游做退款/分类。
                 no_penalty = bool(getattr(e, "no_penalty", False))
                 status_code = getattr(e, "status_code", None)

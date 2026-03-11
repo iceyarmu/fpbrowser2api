@@ -14,7 +14,11 @@ from pydantic import BaseModel, Field
 from ..core.auth import verify_api_key_header
 from ..core.database import Database
 from ..core.models import TaskStatusResponse
-from ..core.public_api_limits import PUBLIC_CREATE_TASK_MAX_INFLIGHT
+from ..core.public_api_limits import (
+    DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT,
+    calc_public_browser_pool_limit,
+    normalize_public_create_task_max_inflight,
+)
 from ..services.task_service import TaskService
 from ..services.task_handler_registry import CreateTaskContext, get_create_task_handler
 
@@ -26,9 +30,10 @@ task_service: TaskService | None = None
 
 # ---- High-concurrency controls (public endpoints) ----
 # 创建任务接口并发闸门，避免峰值时打爆 DB/线程资源。
-_CREATE_TASK_MAX_INFLIGHT = PUBLIC_CREATE_TASK_MAX_INFLIGHT
+_CREATE_TASK_MAX_INFLIGHT = DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
 _CREATE_TASK_ACQUIRE_TIMEOUT_SEC = max(0.1, float(os.getenv("PUBLIC_CREATE_TASK_ACQUIRE_TIMEOUT_SEC", "1.5")))
 _create_task_semaphore: asyncio.Semaphore | None = None
+_create_task_gate_lock = asyncio.Lock()
 
 # 高频查询缓存：轮询场景下减少重复读库。
 _STATUS_CACHE_TTL_PENDING_SEC = max(0.05, float(os.getenv("TASK_STATUS_CACHE_TTL_PENDING_SEC", "2.0")))
@@ -40,7 +45,7 @@ _status_lock = asyncio.Lock()
 # create_task 读前置配置的短缓存（降低热点读库）。
 _SYSTEM_CONFIG_TTL_SEC = max(0.1, float(os.getenv("SYSTEM_CONFIG_CACHE_TTL_SEC", "5.0")))
 _TASK_TYPE_TTL_SEC = max(0.1, float(os.getenv("TASK_TYPE_CACHE_TTL_SEC", "60.0")))
-_system_config_cache: tuple[float, Optional[bool]] = (0.0, None)
+_system_config_cache: tuple[float, Optional[bool], Optional[int]] = (0.0, None, None)
 _task_type_cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -59,18 +64,35 @@ class CreateTaskRequest(BaseModel):
     window_pk: Optional[int] = Field(default=None, ge=1)
 
 
-async def _is_stop_accepting_tasks_cached() -> bool:
+async def _get_public_runtime_limits_cached() -> tuple[bool, int]:
     if not db:
-        return False
+        return False, DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
     now = time.monotonic()
     global _system_config_cache
-    expire_at, cached_flag = _system_config_cache
-    if now < expire_at and cached_flag is not None:
-        return bool(cached_flag)
+    expire_at, cached_flag, cached_inflight = _system_config_cache
+    if now < expire_at and cached_flag is not None and cached_inflight is not None:
+        return bool(cached_flag), int(cached_inflight)
     syscfg = await db.get_system_config()
     flag = bool(getattr(syscfg, "stop_accepting_tasks", False))
-    _system_config_cache = (now + _SYSTEM_CONFIG_TTL_SEC, flag)
-    return flag
+    inflight = normalize_public_create_task_max_inflight(getattr(syscfg, "public_create_task_max_inflight", None))
+    _system_config_cache = (now + _SYSTEM_CONFIG_TTL_SEC, flag, inflight)
+    return flag, inflight
+
+
+async def _ensure_create_task_gate_by_db_config() -> tuple[asyncio.Semaphore, bool]:
+    """Apply cached DB limits to runtime gate and scheduler pool."""
+    if not task_service:
+        raise RuntimeError("task_service not initialized")
+    stop_accepting, inflight = await _get_public_runtime_limits_cached()
+    async with _create_task_gate_lock:
+        global _CREATE_TASK_MAX_INFLIGHT, _create_task_semaphore
+        if _create_task_semaphore is None or inflight != _CREATE_TASK_MAX_INFLIGHT:
+            _CREATE_TASK_MAX_INFLIGHT = inflight
+            _create_task_semaphore = asyncio.Semaphore(_CREATE_TASK_MAX_INFLIGHT)
+            task_service.set_browser_pool_limit(calc_public_browser_pool_limit(_CREATE_TASK_MAX_INFLIGHT))
+    if _create_task_semaphore is None:
+        raise RuntimeError("create task gate not initialized")
+    return _create_task_semaphore, stop_accepting
 
 
 async def _get_task_type_by_code_cached(task_type_code: str):
@@ -128,26 +150,28 @@ async def create_task(
     api_key: str = Depends(verify_api_key_header),
     body: CreateTaskRequest = Body(...),
 ):
-    if not db or not task_service or not _create_task_semaphore:
+    if not db or not task_service:
         raise HTTPException(status_code=500, detail="service not initialized")
 
     acquired = False
     try:
         try:
-            await asyncio.wait_for(_create_task_semaphore.acquire(), timeout=_CREATE_TASK_ACQUIRE_TIMEOUT_SEC)
+            gate, stop_accepting = await _ensure_create_task_gate_by_db_config()
+        except Exception:
+            gate = _create_task_semaphore
+            stop_accepting = False
+        if gate is None:
+            raise HTTPException(status_code=500, detail="service not initialized")
+
+        try:
+            await asyncio.wait_for(gate.acquire(), timeout=_CREATE_TASK_ACQUIRE_TIMEOUT_SEC)
             acquired = True
         except asyncio.TimeoutError:
             raise HTTPException(status_code=429, detail="请求过于繁忙，请稍后重试")
 
         # 系统维护：停止接收新任务
-        try:
-            if await _is_stop_accepting_tasks_cached():
-                raise HTTPException(status_code=503, detail="服务器稳定性&每日容量升级中，请稍后再试...")
-        except HTTPException:
-            raise
-        except Exception:
-            # 获取配置失败时不阻断（兜底）
-            pass
+        if stop_accepting:
+            raise HTTPException(status_code=503, detail="服务器稳定性&每日容量升级中，请稍后再试...")
 
         tcode = (body.task_type_code or "").strip()
         payload = body.json or {}
@@ -188,7 +212,7 @@ async def create_task(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if acquired:
-            _create_task_semaphore.release()
+            gate.release()
 
 
 @router.get("/v1/tasks/{task_id}")
