@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from ..core.database import Database
 from ..core.logger import logger
 from ..core.models import Task
+from ..core.public_api_limits import PUBLIC_BROWSER_POOL_LIMIT
 from .image_task_executor import simulate_image_task
 from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
@@ -41,6 +42,7 @@ class PickedWindow:
 class TaskService:
     def __init__(self, db: Database) -> None:
         self.db = db
+        self._browser_pool_limit: int = PUBLIC_BROWSER_POOL_LIMIT
         # 任务 payload 仍保留一份内存副本供执行器使用；DB 侧仅保存一个“可查看/可检索”的 prompt 字符串
         self._task_payloads: dict[str, Dict[str, Any]] = {}
         # 1) payload["prompt"] 本身的长度上限（便于查看，也避免超长文本撑爆 DB）
@@ -200,7 +202,10 @@ class TaskService:
         - 预占由 DB 字段 inflight_slots 完成（支持多进程/多实例，避免超卖）
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
         """
-        r = await self.db.pick_and_reserve_window_for_task(task_type_code=task_type_code, browser_pool_limit=60)
+        r = await self.db.pick_and_reserve_window_for_task(
+            task_type_code=task_type_code,
+            browser_pool_limit=self._browser_pool_limit,
+        )
         if not r:
             return None
 

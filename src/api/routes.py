@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from ..core.auth import verify_api_key_header
 from ..core.database import Database
 from ..core.models import TaskStatusResponse
+from ..core.public_api_limits import PUBLIC_CREATE_TASK_MAX_INFLIGHT
 from ..services.task_service import TaskService
 from ..services.task_handler_registry import CreateTaskContext, get_create_task_handler
 
@@ -25,7 +26,7 @@ task_service: TaskService | None = None
 
 # ---- High-concurrency controls (public endpoints) ----
 # 创建任务接口并发闸门，避免峰值时打爆 DB/线程资源。
-_CREATE_TASK_MAX_INFLIGHT = max(1, int(os.getenv("PUBLIC_CREATE_TASK_MAX_INFLIGHT", "180")))
+_CREATE_TASK_MAX_INFLIGHT = PUBLIC_CREATE_TASK_MAX_INFLIGHT
 _CREATE_TASK_ACQUIRE_TIMEOUT_SEC = max(0.1, float(os.getenv("PUBLIC_CREATE_TASK_ACQUIRE_TIMEOUT_SEC", "1.5")))
 _create_task_semaphore: asyncio.Semaphore | None = None
 
