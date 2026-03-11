@@ -220,6 +220,7 @@
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
+                    <button class="btn btn-outline-warning" id="btnBulkTransfer">批量转移</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
                   <div class="small text-muted">
@@ -2292,8 +2293,17 @@
         return byBrowser || byNotSource || targetSpaces[0];
       }
 
-      async function openMappingTransferModal(mappingId) {
-        const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+      async function openMappingTransferModal(mappingId, { preferBulk = false } = {}) {
+        const bulkIdsRaw = Array.from(state.mapSelected || []).map(x => parseInt(x, 10)).filter(x => Number.isFinite(x) && x > 0);
+        const uniqueBulkIds = Array.from(new Set(bulkIdsRaw));
+        const isBulk = !!preferBulk && uniqueBulkIds.length > 1;
+        const ids = isBulk ? uniqueBulkIds : [parseInt(String(mappingId || "0"), 10)].filter(x => Number.isFinite(x) && x > 0);
+        if (!ids.length) {
+          toast("请选择要转移的窗口", "warning");
+          return;
+        }
+        const firstId = ids[0];
+        const m = (state.mappings || []).find(x => String(x.id || "") === String(firstId));
         if (!m) {
           toast("找不到绑定记录，无法转移", "error");
           return;
@@ -2308,11 +2318,17 @@
         }
         const targetTypes = (allTypes || []).filter(t => String(t.id || "") !== String(currentTypeId));
 
-        document.getElementById("mapTransferId").value = String(mappingId);
+        const transferIdEl = document.getElementById("mapTransferId");
+        transferIdEl.value = String(isBulk ? 0 : firstId);
+        transferIdEl.dataset.bulkIds = isBulk ? ids.join(",") : "";
         const hintEl = document.getElementById("mapTransferHint");
         if (hintEl) {
           const winSortNum = (m.window_sort_num == null || String(m.window_sort_num).trim() === "") ? "-" : String(m.window_sort_num);
-          hintEl.textContent = `窗口#：${winSortNum} · 窗口：${m.window_name || "-"} · 账号：${m.platform_account || "-"} · 当前类型：${state.current?.name || "-"} (${state.current?.code || "-"})`;
+          if (isBulk) {
+            hintEl.textContent = `批量转移 ${ids.length} 个窗口（示例：#${winSortNum} · ${m.window_name || "-"} · ${m.platform_account || "-"}) · 当前类型：${state.current?.name || "-"} (${state.current?.code || "-"})`;
+          } else {
+            hintEl.textContent = `窗口#：${winSortNum} · 窗口：${m.window_name || "-"} · 账号：${m.platform_account || "-"} · 当前类型：${state.current?.name || "-"} (${state.current?.code || "-"})`;
+          }
         }
 
         const sel = document.getElementById("mapTransferTypeId");
@@ -2334,59 +2350,98 @@
         const hit = targetTypes.find(t => Number(t.id) === cachedTargetTypeId);
         sel.value = String(hit?.id || targetTypes[0].id);
         const btn = document.getElementById("btnTransferMapping");
-        if (btn) btn.disabled = false;
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = isBulk ? `确认批量转移（${ids.length}个）` : "确认转移";
+        }
         mappingTransferModal.show();
       }
 
       async function transferMappingToOtherType() {
         const btn = document.getElementById("btnTransferMapping");
         try {
-          const mappingId = parseInt(document.getElementById("mapTransferId").value, 10);
+          const transferIdEl = document.getElementById("mapTransferId");
+          const mappingId = parseInt(transferIdEl.value, 10);
+          const bulkIds = String(transferIdEl.dataset.bulkIds || "")
+            .split(",")
+            .map(x => parseInt(x, 10))
+            .filter(x => Number.isFinite(x) && x > 0);
           const targetTypeId = parseInt(document.getElementById("mapTransferTypeId").value, 10);
-          if (Number.isNaN(mappingId) || mappingId <= 0) throw new Error("mapping_id 无效");
+          const ids = bulkIds.length ? Array.from(new Set(bulkIds)) : [mappingId].filter(x => Number.isFinite(x) && x > 0);
+          if (!ids.length) throw new Error("请选择要转移的窗口");
           if (Number.isNaN(targetTypeId) || targetTypeId <= 0) throw new Error("请选择目标任务类型");
-          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-          if (!m) throw new Error("找不到绑定记录，可能已被删除");
-          const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
-          if (currentTypeId && currentTypeId === targetTypeId) throw new Error("目标任务类型不能与当前类型相同");
-
-          setBtnBusy(btn, true, { loadingText: "转移中" });
+          setBtnBusy(btn, true, { loadingText: ids.length > 1 ? "批量转移中" : "转移中" });
           lsSet(LS_KEYS.transferTargetTypeId, String(targetTypeId));
           const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
           const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
-          const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
-          const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
-          const sourceSpacePk = parseInt(String(m.space_pk || "0"), 10) || 0;
-          const windowKey = String(m.window_key || "").trim();
-          let movedSpacePk = 0;
+          let ok = 0;
+          let fail = 0;
+          let movedCount = 0;
+          let firstErr = "";
+          for (let i = 0; i < ids.length; i += 1) {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(ids[i]));
+            if (!m) {
+              fail += 1;
+              if (!firstErr) firstErr = `绑定记录 #${ids[i]} 不存在，可能已被删除`;
+              continue;
+            }
+            try {
+              const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
+              if (currentTypeId && currentTypeId === targetTypeId) throw new Error("目标任务类型不能与当前类型相同");
+              const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
+              const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
+              const sourceSpacePk = parseInt(String(m.space_pk || "0"), 10) || 0;
+              const windowKey = String(m.window_key || "").trim();
+              let movedSpacePk = 0;
 
-          // 仅当目标任务类型所属项目与当前项目不同时，才需要迁移窗口空间。
-          if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
-            if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
-            const picked = await resolveTargetSpaceForTypeTransfer({
-              sourceSpacePk,
-              targetProjectId,
-              preferredBrowserName: m.browser_name || "",
-            });
-            movedSpacePk = Number(picked?.space_pk || 0) || 0;
-            if (!movedSpacePk) throw new Error("未找到目标项目空间，无法迁移窗口");
-            await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
-              method: "POST",
-              body: { target_space_pk: movedSpacePk },
-            });
+              // 仅当目标任务类型所属项目与当前项目不同时，才需要迁移窗口空间。
+              if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
+                if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
+                const picked = await resolveTargetSpaceForTypeTransfer({
+                  sourceSpacePk,
+                  targetProjectId,
+                  preferredBrowserName: m.browser_name || "",
+                });
+                movedSpacePk = Number(picked?.space_pk || 0) || 0;
+                if (!movedSpacePk) throw new Error("未找到目标项目空间，无法迁移窗口");
+                await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
+                  method: "POST",
+                  body: { target_space_pk: movedSpacePk },
+                });
+              }
+
+              await postJson(`/api/admin/task-type-windows/${ids[i]}`, {
+                method: "PATCH",
+                body: { task_type_id: targetTypeId },
+              });
+              ok += 1;
+              if (movedSpacePk > 0) movedCount += 1;
+            } catch (oneErr) {
+              fail += 1;
+              if (!firstErr) firstErr = oneErr?.message || "转移失败";
+            }
           }
 
-          await postJson(`/api/admin/task-type-windows/${mappingId}`, {
-            method: "PATCH",
-            body: { task_type_id: targetTypeId },
-          });
-          if (movedSpacePk > 0) {
-            toast(`已转移到：${targetType?.name || targetTypeId}（窗口已迁移到空间#${movedSpacePk}）`, "success");
-          } else {
-            toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
+          if (fail === 0 && ok > 0) {
+            if (ids.length === 1) {
+              if (movedCount > 0) toast(`已转移到：${targetType?.name || targetTypeId}（窗口已迁移到目标项目空间）`, "success");
+              else toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
+            } else {
+              const movedHint = movedCount > 0 ? `，其中 ${movedCount} 个窗口已迁移空间` : "";
+              toast(`批量转移完成：成功 ${ok}，失败 0${movedHint}`, "success");
+            }
+            mappingTransferModal.hide();
+            await loadMappings({ preserveSelection: true });
+            return;
           }
-          mappingTransferModal.hide();
-          await loadMappings();
+          if (ok > 0 || fail > 0) {
+            const msg = firstErr ? `；首个失败：${firstErr}` : "";
+            toast(`批量转移完成：成功 ${ok}，失败 ${fail}${msg}`, "warning");
+            await loadMappings({ preserveSelection: true });
+            return;
+          }
+          if (firstErr) throw new Error(firstErr);
+          throw new Error("转移失败");
         } catch (e) {
           toast(e.message || "转移失败", "error");
         } finally {
@@ -3052,6 +3107,7 @@
         setBtnDisabledById("btnBulkOpen", true);
         setBtnDisabledById("btnBulkClose", true);
         setBtnDisabledById("btnBulkRefreshQuota", true);
+        setBtnDisabledById("btnBulkTransfer", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
           let ok = 0, fail = 0;
@@ -3070,6 +3126,7 @@
           setBtnDisabledById("btnBulkOpen", false);
           setBtnDisabledById("btnBulkClose", false);
           setBtnDisabledById("btnBulkRefreshQuota", false);
+          setBtnDisabledById("btnBulkTransfer", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
         }
@@ -3132,6 +3189,12 @@
         const ids = getSelectedMappingIds();
         if (!ids.length) return toast("请先勾选窗口", "error");
         return bulkRefreshQuotaByIds(ids, { silent });
+      }
+
+      async function bulkTransferSelected() {
+        const ids = getSelectedMappingIds();
+        if (!ids.length) return toast("请先勾选窗口", "error");
+        return openMappingTransferModal(ids[0], { preferBulk: true });
       }
 
       function stopAutoRefresh() {
@@ -3275,6 +3338,7 @@
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
       document.getElementById("btnBulkClose")?.addEventListener("click", bulkCloseSelected);
       document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
+      document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         try {
