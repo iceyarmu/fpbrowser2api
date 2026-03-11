@@ -3018,7 +3018,7 @@ class SoraSession:
                     w.last_progress_pct = progress_pct
 
                     if progress_pct is not None:
-                        p_int = int(max(0.0, min(1.0, float(progress_pct))) * 100.0)
+                        p_int = min(int(max(0.0, min(1.0, float(progress_pct))) * 100.0), 94)
                         if p_int != w.last_sent_progress:
                             w.last_sent_progress = p_int
                             w.has_progress = True
