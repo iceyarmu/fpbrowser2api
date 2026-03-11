@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import aiosqlite
 import json
 import sqlite3
@@ -44,6 +45,11 @@ class Database:
 
     def db_exists(self) -> bool:
         return Path(self.db_path).exists()
+
+    @staticmethod
+    def _is_db_locked_error(exc: Exception) -> bool:
+        msg = str(exc or "").lower()
+        return isinstance(exc, sqlite3.OperationalError) and ("database is locked" in msg)
 
     async def _table_exists(self, db: aiosqlite.Connection, table_name: str) -> bool:
         cur = await db.execute(
@@ -750,14 +756,21 @@ class Database:
 
     # ---------- system config ----------
     async def get_system_config(self) -> SystemConfig:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM system_config WHERE id = 1")
-            row = await cur.fetchone()
-            if row:
-                return SystemConfig(**dict(row))
-            # 理论上不会走到这里（启动会 ensure 默认行）
-            return SystemConfig()
+        for i in range(4):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    db.row_factory = aiosqlite.Row
+                    cur = await db.execute("SELECT * FROM system_config WHERE id = 1")
+                    row = await cur.fetchone()
+                    if row:
+                        return SystemConfig(**dict(row))
+                    # 理论上不会走到这里（启动会 ensure 默认行）
+                    return SystemConfig()
+            except Exception as e:
+                if self._is_db_locked_error(e) and i < 3:
+                    await asyncio.sleep(0.05 * (i + 1))
+                    continue
+                raise
 
     async def update_system_config(
         self,
@@ -838,22 +851,36 @@ class Database:
 
     # ---------- admin user ----------
     async def get_admin_user(self, username: str) -> Optional[AdminUser]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM admin_users WHERE username = ?", (username,))
-            row = await cur.fetchone()
-            if row:
-                return AdminUser(**dict(row))
-            return None
+        for i in range(4):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    db.row_factory = aiosqlite.Row
+                    cur = await db.execute("SELECT * FROM admin_users WHERE username = ?", (username,))
+                    row = await cur.fetchone()
+                    if row:
+                        return AdminUser(**dict(row))
+                    return None
+            except Exception as e:
+                if self._is_db_locked_error(e) and i < 3:
+                    await asyncio.sleep(0.05 * (i + 1))
+                    continue
+                raise
 
     async def get_first_admin_user(self) -> Optional[AdminUser]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM admin_users ORDER BY id ASC LIMIT 1")
-            row = await cur.fetchone()
-            if row:
-                return AdminUser(**dict(row))
-            return None
+        for i in range(4):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    db.row_factory = aiosqlite.Row
+                    cur = await db.execute("SELECT * FROM admin_users ORDER BY id ASC LIMIT 1")
+                    row = await cur.fetchone()
+                    if row:
+                        return AdminUser(**dict(row))
+                    return None
+            except Exception as e:
+                if self._is_db_locked_error(e) and i < 3:
+                    await asyncio.sleep(0.05 * (i + 1))
+                    continue
+                raise
 
     async def get_admin_user_by_id(self, user_id: int) -> Optional[AdminUser]:
         async with aiosqlite.connect(self.db_path) as db:
