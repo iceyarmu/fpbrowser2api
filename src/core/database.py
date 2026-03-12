@@ -62,7 +62,7 @@ class Database:
 
     @asynccontextmanager
     async def _read_conn(self) -> AsyncIterator[aiosqlite.Connection]:
-        """Yield a read-only connection with busy_timeout (no write lock)."""
+        """Yield a connection with busy_timeout (no write lock)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
             yield db
@@ -527,6 +527,7 @@ class Database:
     async def check_and_migrate_db(self, config_dict: Dict[str, Any]) -> None:
         """升级模式：补齐缺失表/列，并确保默认行存在。"""
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
             await db.execute("PRAGMA foreign_keys=ON")
 
             # Step 1: 缺失表（直接复用 init_db 的建表语句）
@@ -784,7 +785,7 @@ class Database:
     async def get_system_config(self) -> SystemConfig:
         for i in range(4):
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     cur = await db.execute("SELECT * FROM system_config WHERE id = 1")
                     row = await cur.fetchone()
@@ -808,7 +809,7 @@ class Database:
         stop_accepting_tasks: Optional[bool] = None,
         public_create_task_max_inflight: Optional[int] = None,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM system_config WHERE id = 1")
             row = await cur.fetchone()
@@ -879,7 +880,7 @@ class Database:
     async def get_admin_user(self, username: str) -> Optional[AdminUser]:
         for i in range(4):
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     cur = await db.execute("SELECT * FROM admin_users WHERE username = ?", (username,))
                     row = await cur.fetchone()
@@ -895,7 +896,7 @@ class Database:
     async def get_first_admin_user(self) -> Optional[AdminUser]:
         for i in range(4):
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     cur = await db.execute("SELECT * FROM admin_users ORDER BY id ASC LIMIT 1")
                     row = await cur.fetchone()
@@ -909,7 +910,7 @@ class Database:
                 raise
 
     async def get_admin_user_by_id(self, user_id: int) -> Optional[AdminUser]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM admin_users WHERE id = ?", (int(user_id),))
             row = await cur.fetchone()
@@ -918,14 +919,14 @@ class Database:
             return None
 
     async def list_admin_users(self) -> List[AdminUser]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM admin_users ORDER BY id ASC")
             rows = await cur.fetchall()
             return [AdminUser(**dict(r)) for r in rows]
 
     async def create_admin_user(self, username: str, password_hash: str, is_admin: bool = False) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO admin_users (username, password_hash, is_admin)
@@ -937,7 +938,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_admin_user_role(self, user_id: int, is_admin: bool) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -949,7 +950,7 @@ class Database:
             await db.commit()
 
     async def update_admin_password(self, username: str, new_password_hash: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -961,7 +962,7 @@ class Database:
             await db.commit()
 
     async def update_admin_username(self, old_username: str, new_username: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -973,7 +974,7 @@ class Database:
             await db.commit()
 
     async def update_admin_password_by_id(self, user_id: int, new_password_hash: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -985,7 +986,7 @@ class Database:
             await db.commit()
 
     async def get_user_page_permissions(self, user_id: int) -> List[str]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 "SELECT page_key FROM user_page_permissions WHERE user_id = ? ORDER BY page_key ASC",
                 (int(user_id),),
@@ -994,7 +995,7 @@ class Database:
             return [str(x[0]) for x in rows if x and x[0]]
 
     async def get_user_project_permissions(self, user_id: int) -> List[int]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 "SELECT project_id FROM user_project_permissions WHERE user_id = ? ORDER BY project_id ASC",
                 (int(user_id),),
@@ -1009,7 +1010,7 @@ class Database:
             return out
 
     async def get_user_task_type_permissions(self, user_id: int) -> List[int]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 "SELECT task_type_id FROM user_task_type_permissions WHERE user_id = ? ORDER BY task_type_id ASC",
                 (int(user_id),),
@@ -1025,7 +1026,7 @@ class Database:
 
     async def set_user_page_permissions(self, user_id: int, page_keys: List[str]) -> None:
         clean = sorted({str(x or "").strip() for x in (page_keys or []) if str(x or "").strip()})
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("DELETE FROM user_page_permissions WHERE user_id = ?", (int(user_id),))
             for k in clean:
                 await db.execute(
@@ -1044,7 +1045,7 @@ class Database:
             if v > 0:
                 clean_set.add(v)
         clean = sorted(clean_set)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("DELETE FROM user_project_permissions WHERE user_id = ?", (int(user_id),))
             for pid in clean:
                 await db.execute(
@@ -1063,7 +1064,7 @@ class Database:
             if v > 0:
                 clean_set.add(v)
         clean = sorted(clean_set)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("DELETE FROM user_task_type_permissions WHERE user_id = ?", (int(user_id),))
             for tid in clean:
                 await db.execute(
@@ -1074,7 +1075,7 @@ class Database:
 
     # ---------- request logs ----------
     async def add_request_log(self, log: RequestLog) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 """
                 INSERT INTO request_logs (actor, method, path, request_body, response_body, status_code, duration)
@@ -1085,7 +1086,7 @@ class Database:
             await db.commit()
 
     async def get_request_logs(self, limit: int = 200) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT * FROM request_logs ORDER BY created_at DESC LIMIT ?",
@@ -1095,13 +1096,13 @@ class Database:
             return [dict(r) for r in rows]
 
     async def clear_request_logs(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("DELETE FROM request_logs")
             await db.commit()
 
     # ---------- projects ----------
     async def list_projects(self, allowed_project_ids: Optional[List[int]] = None) -> List[Project]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if allowed_project_ids is None:
                 cur = await db.execute("SELECT * FROM projects WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
@@ -1118,7 +1119,7 @@ class Database:
             return [Project(**dict(r)) for r in rows]
 
     async def create_project(self, name: str) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 "INSERT INTO projects (name, deleted) VALUES (?, 0)",
                 (name.strip(),),
@@ -1127,7 +1128,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_project(self, project_id: int, name: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 "UPDATE projects SET name = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (name.strip(), project_id),
@@ -1135,13 +1136,13 @@ class Database:
             await db.commit()
 
     async def delete_project(self, project_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("UPDATE projects SET deleted = 1, updated_at = datetime('now','localtime') WHERE id = ?", (project_id,))
             await db.commit()
 
     # ---------- browsers ----------
     async def list_browsers(self, project_id: int) -> List[FingerprintBrowser]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT * FROM browsers WHERE deleted = 0 AND project_id = ? ORDER BY updated_at DESC, id DESC",
@@ -1158,7 +1159,7 @@ class Database:
         vendor: str = "generic",
         access_key: Optional[str] = None,
     ) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO browsers (project_id, name, lan_addr, vendor, access_key, deleted)
@@ -1170,7 +1171,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_browser(self, browser_id: int, name: str, lan_addr: str, vendor: str, access_key: Optional[str]) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 """
                 UPDATE browsers
@@ -1182,12 +1183,12 @@ class Database:
             await db.commit()
 
     async def delete_browser(self, browser_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("UPDATE browsers SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ?", (browser_id,))
             await db.commit()
 
     async def get_browser(self, browser_id: int) -> Optional[FingerprintBrowser]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM browsers WHERE id = ?", (browser_id,))
             row = await cur.fetchone()
@@ -1195,7 +1196,7 @@ class Database:
 
     # ---------- spaces ----------
     async def list_spaces(self, browser_id: int) -> List[BrowserSpace]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT * FROM spaces WHERE deleted = 0 AND browser_id = ? ORDER BY updated_at DESC, id DESC",
@@ -1205,7 +1206,7 @@ class Database:
             return [BrowserSpace(**dict(r)) for r in rows]
 
     async def create_space(self, browser_id: int, name: str, space_id: str, project_ids: Optional[str] = None) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO spaces (browser_id, name, space_id, project_ids, deleted)
@@ -1217,7 +1218,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_space(self, space_pk: int, name: str, space_id: str, project_ids: Optional[str] = None) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute(
                 "UPDATE spaces SET name=?, space_id=?, project_ids=?, updated_at=datetime('now','localtime') WHERE id=?",
                 (name.strip(), space_id.strip(), (project_ids or "").strip() or None, space_pk),
@@ -1225,12 +1226,12 @@ class Database:
             await db.commit()
 
     async def delete_space(self, space_pk: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("UPDATE spaces SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ?", (space_pk,))
             await db.commit()
 
     async def get_space(self, space_pk: int) -> Optional[BrowserSpace]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM spaces WHERE id = ?", (space_pk,))
             row = await cur.fetchone()
@@ -1238,7 +1239,7 @@ class Database:
 
     # ---------- windows ----------
     async def list_windows(self, space_pk: int) -> List[WindowInfo]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -1274,7 +1275,7 @@ class Database:
         if not ids:
             return {}
         placeholders = ",".join("?" for _ in ids)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 f"""
@@ -1307,7 +1308,7 @@ class Database:
 
         返回：本次写入/更新的行数（粗略统计）。
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             for w in windows:
@@ -1452,7 +1453,7 @@ class Database:
         wk = str(window_key or "").strip()
         if not wk:
             return 0
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -1479,7 +1480,7 @@ class Database:
           - 或 proxies.host == windows.proxy_addr
         - 只要能匹配到 1 个本地 proxy_id，就按该 proxy_id 计数；否则归到 0（不计入任何代理）。
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -1544,7 +1545,7 @@ class Database:
 
     async def count_proxy_task_stats(self, space_pk: int) -> Dict[int, Dict[str, int]]:
         """统计某个空间下：每个 proxy_id 的成功/失败任务数（按 tasks.window_ip 精确匹配）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -1604,7 +1605,7 @@ class Database:
             return out
 
     async def get_window(self, window_pk: int) -> Optional[WindowInfo]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM windows WHERE id = ?", (window_pk,))
             row = await cur.fetchone()
@@ -1628,7 +1629,7 @@ class Database:
         - window_affected: windows 表影响行数（0 表示未找到该窗口或已被删除）
         - task_type_window_affected: task_type_windows 表影响行数
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur_win = await db.execute(
                 "SELECT id FROM windows WHERE space_pk = ? AND window_key = ? AND deleted = 0 LIMIT 1",
@@ -1677,7 +1678,7 @@ class Database:
         if src == dst:
             raise ValueError("目标空间不能与源空间相同")
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
 
             cur_space = await db.execute("SELECT id FROM spaces WHERE id = ? AND deleted = 0", (dst,))
@@ -1731,7 +1732,7 @@ class Database:
         spk = int(space_pk)
         wk = str(window_key).strip()
         pid = int(proxy_id or 0)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             if pid <= 0:
                 cur = await db.execute(
                     """
@@ -1789,7 +1790,7 @@ class Database:
         platform_url: Optional[str],
     ) -> int:
         """更新窗口绑定的平台账号信息（本地立即生效）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -1816,7 +1817,7 @@ class Database:
     async def sync_window_statuses(self, *, space_pk: int, open_window_keys: List[str]) -> int:
         """按窗口 key 批量同步窗口状态（1=打开，0=未打开）。"""
         keys = [str(x or "").strip() for x in (open_window_keys or []) if str(x or "").strip()]
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             if keys:
                 placeholders = ",".join(["?"] * len(keys))
                 sql = f"""
@@ -1850,7 +1851,7 @@ class Database:
         if not sid or not wk:
             return 0
         st = 1 if int(window_status or 0) == 1 else 0
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -1878,7 +1879,7 @@ class Database:
 
     async def clear_window_platform_binding_by_account(self, *, space_pk: int, account_id: int) -> int:
         """当账号被删除时，清空引用该账号的窗口绑定。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -1905,7 +1906,7 @@ class Database:
         wk = str(window_key or "").strip()
         if not sid:
             return None
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if wk:
                 cur = await db.execute(
@@ -1944,7 +1945,7 @@ class Database:
 
     # ---------- platform accounts ----------
     async def list_platform_accounts(self, space_pk: int, *, include_deleted: bool = False) -> List[PlatformAccount]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if include_deleted:
                 cur = await db.execute(
@@ -1993,7 +1994,7 @@ class Database:
         - full_replace=False：仅增量写入，不删除其他本地账号（适合导入后回填）
         - restore_deleted=False：若本地账号已被手动删除（deleted=1），同步时保持删除状态
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             incoming_ids: List[int] = []
@@ -2081,7 +2082,7 @@ class Database:
             return affected
 
     async def get_platform_account(self, *, space_pk: int, account_id: int) -> Optional[PlatformAccount]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -2105,7 +2106,7 @@ class Database:
             return PlatformAccount(**d)
 
     async def delete_platform_account(self, *, space_pk: int, account_id: int) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE platform_accounts
@@ -2121,7 +2122,7 @@ class Database:
                 return 0
 
     async def update_platform_account_remark(self, *, space_pk: int, account_id: int, remark: str) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE platform_accounts
@@ -2138,7 +2139,7 @@ class Database:
 
     async def list_account_bindings(self, space_pk: int) -> Dict[int, Dict[str, Any]]:
         """返回账号绑定信息：account_id -> {count, windows}。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -2188,7 +2189,7 @@ class Database:
 
     # ---------- proxies ----------
     async def list_proxies(self, space_pk: int, *, include_deleted: bool = False) -> List[ProxyInfo]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if include_deleted:
                 cur = await db.execute(
@@ -2230,7 +2231,7 @@ class Database:
         overwrite_remark: bool = False,
     ) -> int:
         """把同步到的代理列表保存到 DB（按 space_pk+proxy_id 唯一 upsert）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             incoming_ids: List[int] = []
@@ -2398,7 +2399,7 @@ class Database:
 
     async def update_proxy_remark(self, *, space_pk: int, proxy_id: int, remark: str) -> int:
         """仅更新本地代理备注。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE proxies
@@ -2412,7 +2413,7 @@ class Database:
 
     async def delete_proxy(self, *, space_pk: int, proxy_id: int) -> int:
         """本地删除某个代理（仅标记 deleted=1，不影响指纹浏览器侧）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE proxies
@@ -2425,7 +2426,7 @@ class Database:
             return int(cur.rowcount or 0)
 
     async def get_proxy(self, *, space_pk: int, proxy_id: int) -> Optional[ProxyInfo]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -2455,7 +2456,7 @@ class Database:
         risk_level: Optional[str],
         asn_type: Optional[str],
     ) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE proxies
@@ -2476,7 +2477,7 @@ class Database:
 
     # ---------- card keys ----------
     async def list_card_keys(self) -> List[CardKey]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM card_keys ORDER BY sort_order ASC, id ASC")
             rows = await cur.fetchall()
@@ -2490,7 +2491,7 @@ class Database:
 
         inserted = 0
         skipped = 0
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT COALESCE(MAX(sort_order), 0) AS mx FROM card_keys")
             row = await cur.fetchone()
@@ -2515,7 +2516,7 @@ class Database:
         new_val = str(card_key or "").strip()
         if not new_val:
             raise ValueError("卡密不能为空")
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE card_keys
@@ -2528,14 +2529,14 @@ class Database:
             return int(cur.rowcount or 0)
 
     async def delete_card_key(self, card_key_id: int) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute("DELETE FROM card_keys WHERE id = ?", (int(card_key_id),))
             await db.commit()
             return int(cur.rowcount or 0)
 
     # ---------- task types ----------
     async def list_task_types(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskType]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if allowed_task_type_ids is None:
                 cur = await db.execute("SELECT * FROM task_types WHERE deleted = 0 ORDER BY updated_at DESC, id DESC")
@@ -2553,7 +2554,7 @@ class Database:
 
     
     async def list_task_types_public(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskTypePublic]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if allowed_task_type_ids is None:
                 cur = await db.execute(
@@ -2583,7 +2584,7 @@ class Database:
         create_task_handler: Optional[str] = None,
         refresh_quota_handler: Optional[str] = None,
     ) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO task_types (
@@ -2622,7 +2623,7 @@ class Database:
         refresh_quota_handler: Optional[str],
         enabled: bool,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT code FROM task_types WHERE id=? AND deleted=0", (task_type_id,))
             row = await cur.fetchone()
@@ -2672,7 +2673,7 @@ class Database:
 
     async def get_task_type_window_context(self, mapping_id: int) -> Optional[Dict[str, Any]]:
         """按 mapping_id 取“刷新额度/调度”所需的上下文（join 后 dict）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -2704,7 +2705,7 @@ class Database:
 
     # ---------- auto refresh error logs ----------
     async def add_auto_refresh_error_log(self, log: AutoRefreshErrorLog) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO auto_refresh_error_logs (
@@ -2735,7 +2736,7 @@ class Database:
     ) -> List[Dict[str, Any]]:
         lim = max(1, min(500, int(limit or 200)))
         off = max(0, int(offset or 0))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             if mapping_id is not None:
                 cur = await db.execute(
@@ -2770,19 +2771,19 @@ class Database:
             return [dict(r) for r in rows]
 
     async def delete_task_type(self, task_type_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             await db.execute("UPDATE task_types SET deleted=1, updated_at=datetime('now','localtime') WHERE id=?", (task_type_id,))
             await db.commit()
 
     async def get_task_type_by_code(self, code: str) -> Optional[TaskType]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM task_types WHERE code=? AND deleted=0", (code.strip(),))
             row = await cur.fetchone()
             return TaskType(**dict(row)) if row else None
 
     async def get_task_type(self, task_type_id: int) -> Optional[TaskType]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM task_types WHERE id=? AND deleted=0", (task_type_id,))
             row = await cur.fetchone()
@@ -2791,7 +2792,7 @@ class Database:
     # ---------- task type windows mapping ----------
     async def list_task_type_windows(self, task_type_id: int) -> List[Dict[str, Any]]:
         """返回映射 + 窗口基本信息（便于 UI 展示）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
@@ -2848,7 +2849,7 @@ class Database:
         remaining_quota: int,
         enabled: bool = True,
     ) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             affected = 0
             for wid in window_pks:
                 await db.execute(
@@ -2983,7 +2984,7 @@ class Database:
         for _attempt in range(5):
             await _lock.acquire()
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
                     await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
@@ -3162,7 +3163,7 @@ class Database:
         for _attempt in range(5):
             await _lock.acquire()
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
                     await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
@@ -3282,7 +3283,7 @@ class Database:
         for _attempt in range(5):
             await _lock.acquire()
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
                     await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
@@ -3382,7 +3383,7 @@ class Database:
         for _attempt in range(5):
             await _lock.acquire()
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
                     await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
@@ -3478,7 +3479,7 @@ class Database:
         for _attempt in range(5):
             await _lock.acquire()
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._read_conn() as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
                     await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
@@ -3619,7 +3620,7 @@ class Database:
         同时：
         - 重置 `task_type_windows.inflight_slots`，避免预占并发槽位在异常退出后“泄漏”
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             tasks_failed = 0
             mapping_slots_reset = 0
 
@@ -3665,7 +3666,7 @@ class Database:
             return {"tasks_failed": tasks_failed, "mapping_slots_reset": mapping_slots_reset}
 
     async def create_task(self, task: Task) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, window_ip, created_at)
@@ -3689,7 +3690,7 @@ class Database:
     async def get_task(self, task_id: str) -> Optional[Task]:
         tid = task_id.strip()
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._read_conn() as db:
                 db.row_factory = aiosqlite.Row
                 cur = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (tid,))
                 row = await cur.fetchone()
@@ -3751,7 +3752,7 @@ class Database:
             where.append("(task_id LIKE ? OR generation_id LIKE ? OR prompt LIKE ? OR error_message LIKE ? OR window_ip LIKE ?)")
             params.extend([qq, qq, qq, qq, qq])
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
             row = await cur.fetchone()
             try:
@@ -3794,7 +3795,7 @@ class Database:
 
         params.extend([lim, off])
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 f"""
@@ -3899,7 +3900,7 @@ class Database:
 
         where_clause = " AND ".join(where)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
 
             cur_total = await db.execute(
@@ -4060,7 +4061,7 @@ class Database:
             params.append(str(task_type_code).strip())
         where_clause = " AND ".join(where)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
 
             cur_total = await db.execute(
@@ -4173,7 +4174,7 @@ class Database:
         gid = str(generation_id or "").strip()
         if not gid:
             return None
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             cur = await db.execute(
                 """
                 SELECT window_pk
@@ -4301,7 +4302,7 @@ class Database:
 
     async def get_mapping_runtime_state(self, mapping_id: int) -> Dict[str, Any]:
         """读取窗口映射运行态字段（连续错误/错误冷却等）。"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """

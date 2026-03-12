@@ -62,6 +62,23 @@
               <tbody id="tbody"></tbody>
             </table>
           </div>
+          <nav id="paginationNav" class="d-flex align-items-center justify-content-between border-top pt-3 mt-3" style="display:none;">
+            <span class="text-muted small" id="pageInfo"></span>
+            <div class="d-flex align-items-center gap-2">
+              <label class="text-muted small mb-0 me-1">每页</label>
+              <select class="form-select form-select-sm" id="pageSizeSelect" style="width:auto;">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+              <button class="btn btn-outline-secondary btn-sm" id="btnFirstPage" title="首页">&laquo;</button>
+              <button class="btn btn-outline-secondary btn-sm" id="btnPrevPage" title="上一页">&lsaquo;</button>
+              <span class="badge bg-primary" id="pageNum" style="min-width:3em;"></span>
+              <button class="btn btn-outline-secondary btn-sm" id="btnNextPage" title="下一页">&rsaquo;</button>
+              <button class="btn btn-outline-secondary btn-sm" id="btnLastPage" title="末页">&raquo;</button>
+            </div>
+          </nav>
         </div>
       </div>
     </div>
@@ -75,14 +92,40 @@
       document.getElementById("btnLogout").addEventListener("click", logout);
 
       let cardKeys = [];
+      let currentPage = 1;
+      let pageSize = 20;
+
+      function totalPages() {
+        return Math.max(1, Math.ceil(cardKeys.length / pageSize));
+      }
+
+      function renderPagination() {
+        const nav = document.getElementById("paginationNav");
+        const total = totalPages();
+        nav.style.display = cardKeys.length ? "" : "none";
+        nav.classList.toggle("d-none", !cardKeys.length);
+
+        document.getElementById("pageInfo").textContent =
+          `共 ${cardKeys.length} 条，第 ${currentPage}/${total} 页`;
+        document.getElementById("pageNum").textContent = `${currentPage} / ${total}`;
+
+        document.getElementById("btnFirstPage").disabled = currentPage <= 1;
+        document.getElementById("btnPrevPage").disabled = currentPage <= 1;
+        document.getElementById("btnNextPage").disabled = currentPage >= total;
+        document.getElementById("btnLastPage").disabled = currentPage >= total;
+      }
 
       function renderTable() {
         const tbody = document.getElementById("tbody");
         if (!cardKeys.length) {
           tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted py-4">暂无卡密</td></tr>`;
+          renderPagination();
           return;
         }
-        tbody.innerHTML = cardKeys.map((x) => {
+        if (currentPage > totalPages()) currentPage = totalPages();
+        const start = (currentPage - 1) * pageSize;
+        const pageItems = cardKeys.slice(start, start + pageSize);
+        tbody.innerHTML = pageItems.map((x) => {
           const id = Number(x.id || 0);
           const displayId = x.id ?? "-";
           const key = String(x.card_key || "");
@@ -100,6 +143,7 @@
             </tr>
           `;
         }).join("");
+        renderPagination();
       }
 
       async function loadCardKeys() {
@@ -216,6 +260,17 @@
 
       document.getElementById("btnImport").addEventListener("click", importCardKeys);
       document.getElementById("btnRefresh").addEventListener("click", loadCardKeys);
+
+      document.getElementById("btnFirstPage").addEventListener("click", () => { currentPage = 1; renderTable(); });
+      document.getElementById("btnPrevPage").addEventListener("click", () => { if (currentPage > 1) { currentPage--; renderTable(); } });
+      document.getElementById("btnNextPage").addEventListener("click", () => { if (currentPage < totalPages()) { currentPage++; renderTable(); } });
+      document.getElementById("btnLastPage").addEventListener("click", () => { currentPage = totalPages(); renderTable(); });
+      document.getElementById("pageSizeSelect").addEventListener("change", (e) => {
+        pageSize = Number(e.target.value) || 20;
+        currentPage = 1;
+        renderTable();
+      });
+
       document.getElementById("tbody").addEventListener("click", async (e) => {
         const btn = e.target.closest("button[data-act]");
         if (!btn) return;
