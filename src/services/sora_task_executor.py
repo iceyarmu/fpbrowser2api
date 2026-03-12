@@ -3028,7 +3028,7 @@ class SoraSession:
                     w.last_progress_pct = progress_pct
 
                     if progress_pct is not None:
-                        p_int = min(int(max(0.0, min(1.0, float(progress_pct))) * 100.0), 94)
+                        p_int = min(int(max(0.15, min(1.0, float(progress_pct))) * 100.0), 85)
                         if p_int != w.last_sent_progress:
                             w.last_sent_progress = p_int
                             w.has_progress = True
@@ -3363,7 +3363,7 @@ async def sora_gen_video(
         cameo_status: Dict[str, Any] = {}
         try:
             
-            await progress_cb(0, {"stage": "character_download_avatar", "head_url": head_url})
+            await progress_cb(5, {"stage": "character_download_avatar", "head_url": head_url})
             try:
                 avatar_bytes_raw, hdrs = await _download_bytes_local_async(
                     head_url,
@@ -3398,14 +3398,14 @@ async def sora_gen_video(
             tmp_suffix = ".jpg" if avatar_mime == "image/jpeg" else ".png"
             tmp_img = await _write_bytes_to_tempfile_local_async(avatar_bytes, suffix=tmp_suffix)
 
-            await progress_cb(1, {"stage": "character_from_generation_submit", "generation_id": generation_id})
+            await progress_cb(10, {"stage": "character_from_generation_submit", "generation_id": generation_id})
 
             cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
             cameo_id = str((cameo_obj or {}).get("id") or "").strip()
             if not cameo_id:
                 raise RuntimeError(f"from-generation 响应缺少 id：body={safe_trim(json.dumps(cameo_obj, ensure_ascii=False), 600)}")
 
-            await progress_cb(5, {"stage": "character_processing", "cameo_id": cameo_id})
+            await progress_cb(15, {"stage": "character_processing", "cameo_id": cameo_id})
 
             start = time.time()
             last_msg = None
@@ -3444,7 +3444,7 @@ async def sora_gen_video(
                     else:
                         prog = 5 + int(pct * 60.0)
                     await progress_cb(
-                        int(max(5, min(65, prog))),
+                        int(max(20, min(65, prog))),
                         {"stage": "character_processing", "cameo_id": cameo_id, "status_message": msg, "progress_pct": pct},
                     )
 
@@ -3483,10 +3483,10 @@ async def sora_gen_video(
             await progress_cb(75, {"stage": "character_username_checked", "cameo_id": cameo_id, "username_hint": username})
 
 
-            await progress_cb(85, {"stage": "character_upload_avatar"})
+            await progress_cb(80, {"stage": "character_upload_avatar"})
             asset_pointer = await sess.api_character_upload_image(target_url=target_url, image_path=tmp_img)
 
-            await progress_cb(90, {"stage": "character_finalize"})
+            await progress_cb(85, {"stage": "character_finalize"})
             character_id = await sess.api_character_finalize(
                 target_url=target_url,
                 cameo_id=cameo_id,
@@ -3495,7 +3495,7 @@ async def sora_gen_video(
                 profile_asset_pointer=asset_pointer,
             )
 
-            await progress_cb(95, {"stage": "character_set_public"})
+            await progress_cb(90, {"stage": "character_set_public"})
             update_payload: Dict[str, Any] = {"visibility": "public"}
             hint = (cameo_status or {}).get("instruction_set_hint")
             if isinstance(hint, dict) and hint.get("value") is not None:
@@ -3544,7 +3544,7 @@ async def sora_gen_video(
         tmp_img: Optional[Path] = None
         cameo_status: Dict[str, Any] = {}
         try:
-            await progress_cb(0, {"stage": "character_download_video", "video_url": video_url})
+            await progress_cb(5, {"stage": "character_download_video", "video_url": video_url})
             # 下载到本地临时文件（用于浏览器上下文上传）
             tmp_video, _hdrs = await _download_to_tempfile_local_async(
                 video_url,
@@ -3571,14 +3571,14 @@ async def sora_gen_video(
             if float(dur) > 16.0 + 1e-6:
                 raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤16s）", status_code=400)
 
-            await progress_cb(5, {"stage": "character_upload_video"})
+            await progress_cb(10, {"stage": "character_upload_video"})
 
             cameo_id = await sess.api_characters_upload_video(
                 target_url=target_url,
                 video_path=tmp_video,
                 timestamps=str(payload.get("character_video_timestamps") or "0,3"),
             )
-            await progress_cb(10, {"stage": "character_processing", "cameo_id": cameo_id})
+            await progress_cb(15, {"stage": "character_processing", "cameo_id": cameo_id})
 
             # 轮询 cameo 状态
             start = time.time()
@@ -3609,7 +3609,7 @@ async def sora_gen_video(
                         pct = 10 + int(min(55.0, (time.time() - start) / max(1.0, float(max_wait_seconds)) * 55.0))
                     except Exception:
                         pct = 20
-                    await progress_cb(int(max(10, min(65, pct))), {"stage": "character_processing", "cameo_id": cameo_id, "status": cur, "status_message": msg})
+                    await progress_cb(int(max(20, min(65, pct))), {"stage": "character_processing", "cameo_id": cameo_id, "status": cur, "status_message": msg})
 
                 if str(cur) == "failed":
                     raise NonPenalizedTaskError(f"角色创建失败：{msg or 'failed'}", status_code=400)
@@ -3642,7 +3642,7 @@ async def sora_gen_video(
             await progress_cb(80, {"stage": "character_upload_avatar"})
             asset_pointer = await sess.api_character_upload_image(target_url=target_url, image_path=tmp_img)
 
-            await progress_cb(90, {"stage": "character_finalize"})
+            await progress_cb(85, {"stage": "character_finalize"})
             character_id = await sess.api_character_finalize(
                 target_url=target_url,
                 cameo_id=cameo_id,
@@ -3651,7 +3651,7 @@ async def sora_gen_video(
                 profile_asset_pointer=asset_pointer,
             )
 
-            await progress_cb(95, {"stage": "character_set_public"})
+            await progress_cb(90, {"stage": "character_set_public"})
             await sess.api_character_set_public(target_url=target_url, cameo_id=cameo_id)
 
             try:
@@ -3682,7 +3682,7 @@ async def sora_gen_video(
                     except Exception:
                         pass
 
-    await progress_cb(0, {"stage": "create_task"})
+    await progress_cb(5, {"stage": "create_task"})
     task_id, _create_tx = await sess.create_task(
         prompt=prompt,
         target_url=target_url,
@@ -3695,8 +3695,8 @@ async def sora_gen_video(
         browser_headless=False,
     )
     await sess._bring_sora_drafts_to_front(refresh_target=False);
-    await progress_cb(1, {"stage": "created", "task_id": task_id})
-    await progress_cb(1, {"stage": "monitor_progress", "task_id": task_id})
+    await progress_cb(10, {"stage": "created", "task_id": task_id})
+    await progress_cb(10, {"stage": "monitor_progress", "task_id": task_id})
     progress_result = await sess.watch_task_progress(
         task_id=task_id,
         progress_cb=progress_cb,
@@ -3706,7 +3706,7 @@ async def sora_gen_video(
         idle_close_seconds=idle_close_seconds,
     )
 
-    await progress_cb(95, {"stage": "drafts_and_publish", "task_id": task_id})
+    await progress_cb(90, {"stage": "drafts_and_publish", "task_id": task_id})
     publish_result = await sess.finalize_video_and_publish(
         task_id=task_id,
         max_wait_seconds=max_wait_seconds,

@@ -44,7 +44,7 @@ class FPBrowserClient:
         - 老版本常用参数名为 proxies
         """
         # 说明：显式拆分超时，避免某些版本/场景下默认值不生效导致“无限等待”
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+        timeout = httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=30.0)
         if self.proxy_enabled and self.proxy_url:
             try:
                 return httpx.AsyncClient(proxy=self.proxy_url, timeout=timeout)  # type: ignore[call-arg]
@@ -726,20 +726,33 @@ class FPBrowserClient:
         args: List[str],
         force_open: bool,
         headless: bool,
+        max_retries: int = 3,
     ) -> Dict[str, Any]:
-        rsp = await self._roxy_post(
-            base_url,
-            token,
-            "/browser/open",
-            {
-                "dirId": str(dir_id),
-                "args": args or [],
-                "forceOpen": bool(force_open),
-                "headless": bool(headless),
-                "workspaceId": int(workspace_id),
-            },
-        )
-        return rsp or {}
+        data = {
+            "dirId": str(dir_id),
+            "args": args or [],
+            "forceOpen": bool(force_open),
+            "headless": bool(headless),
+            "workspaceId": int(workspace_id),
+        }
+        last_err: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                rsp = await self._roxy_post(
+                    base_url,
+                    token,
+                    "/browser/open",
+                    data,
+                    timeout_seconds=60.0,
+                )
+                return rsp or {}
+            except RuntimeError as e:
+                last_err = e
+                if "超时" in str(e) and attempt < max_retries - 1:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+                raise
+        raise last_err  # type: ignore[misc]
 
     async def _roxy_random_env(self, *, base_url: str, token: Optional[str], workspace_id: int, dir_id: str) -> Dict[str, Any]:
         return await self._roxy_post(

@@ -12,8 +12,9 @@ import asyncio
 import aiosqlite
 import json
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from .auth import AuthManager
 from .models import (
@@ -36,12 +37,35 @@ from .models import (
 
 
 class Database:
+    _BUSY_TIMEOUT_MS = 8000
+
     def __init__(self, db_path: Optional[str] = None) -> None:
         if db_path is None:
             data_dir = Path(__file__).parent.parent.parent / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             db_path = str(data_dir / "fpbrowser.db")
         self.db_path = db_path
+        self._write_lock: asyncio.Lock | None = None
+
+    def _get_write_lock(self) -> asyncio.Lock:
+        if self._write_lock is None:
+            self._write_lock = asyncio.Lock()
+        return self._write_lock
+
+    @asynccontextmanager
+    async def _write_conn(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Acquire the write lock and yield a connection with WAL + busy_timeout."""
+        async with self._get_write_lock():
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
+                yield db
+
+    @asynccontextmanager
+    async def _read_conn(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Yield a read-only connection with busy_timeout (no write lock)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
+            yield db
 
     def db_exists(self) -> bool:
         return Path(self.db_path).exists()
@@ -69,6 +93,8 @@ class Database:
 
     async def init_db(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
             await db.execute("PRAGMA foreign_keys=ON")
 
             await db.execute(
@@ -2921,12 +2947,18 @@ class Database:
             return
 
         params.append(mapping_id)
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                f"UPDATE task_type_windows SET {', '.join(updates)}, updated_at=datetime('now','localtime') WHERE id=?",
-                params,
-            )
-            await db.commit()
+        sql = f"UPDATE task_type_windows SET {', '.join(updates)}, updated_at=datetime('now','localtime') WHERE id=?"
+        for attempt in range(5):
+            try:
+                async with self._write_conn() as db:
+                    await db.execute(sql, params)
+                    await db.commit()
+                    return
+            except Exception as e:
+                if self._is_db_locked_error(e) and attempt < 4:
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise
 
     async def pick_and_reserve_window_for_task(
         self, task_type_code: str, browser_pool_limit: int = 100
@@ -2947,19 +2979,14 @@ class Database:
             return None
         pool_limit = max(1, int(browser_pool_limit or 100))
 
-        # SQLite 高并发下可能出现 "database is locked"；做少量快速重试
-        for _ in range(3):
+        _lock = self._get_write_lock()
+        for _attempt in range(5):
+            await _lock.acquire()
             try:
                 async with aiosqlite.connect(self.db_path) as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
-                    # busy_timeout 可以显著减少高并发瞬时锁冲突失败
-                    try:
-                        await db.execute("PRAGMA busy_timeout=3000")
-                    except Exception:
-                        pass
-                    # 兼容旧版 SQLite：部分版本不支持「CTE 内含 UPDATE/RETURNING」语法；
-                    # 这里改为同一事务中：先挑选 mapping，再条件 UPDATE 预占并发槽位，最后 SELECT 详情。
+                    await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
                     await db.execute("BEGIN IMMEDIATE")
 
                     # Step 1: 按排序挑选 1 个 mapping_id，并取出本次更新需要的并发/阈值参数
@@ -3111,13 +3138,12 @@ class Database:
                     await db.commit()
                     return dict(row) if row else None
             except Exception as e:
-                # 仅对锁竞争做轻量重试，其他异常直接抛出便于定位
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
+                if self._is_db_locked_error(e) and _attempt < 4:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
                     continue
                 raise
+            finally:
+                _lock.release()
         return None
 
     async def reserve_mapping_for_task(self, task_type_code: str, mapping_id: int) -> Optional[Dict[str, Any]]:
@@ -3132,18 +3158,16 @@ class Database:
         if not code or mid <= 0:
             return None
 
-        for _ in range(3):
+        _lock = self._get_write_lock()
+        for _attempt in range(5):
+            await _lock.acquire()
             try:
                 async with aiosqlite.connect(self.db_path) as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
-                    try:
-                        await db.execute("PRAGMA busy_timeout=3000")
-                    except Exception:
-                        pass
+                    await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
                     await db.execute("BEGIN IMMEDIATE")
 
-                    # Step 1: 校验该 mapping 属于 task_type 且当前可用，并取并发/阈值参数
                     cur = await db.execute(
                         """
                         SELECT
@@ -3177,7 +3201,6 @@ class Database:
                     task_concurrency = max(1, int(picked["task_concurrency"] or 1))
                     threshold = max(1, int(picked["continuous_error_threshold"] or 1))
 
-                    # Step 2: 预占并发槽位（同事务原子保证）
                     cur2 = await db.execute(
                         """
                         UPDATE task_type_windows
@@ -3199,7 +3222,6 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致），含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -3235,12 +3257,12 @@ class Database:
                     await db.commit()
                     return dict(row) if row else None
             except Exception as e:
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
+                if self._is_db_locked_error(e) and _attempt < 4:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
                     continue
                 raise
+            finally:
+                _lock.release()
         return None
 
     async def force_reserve_mapping_for_task(self, task_type_code: str, mapping_id: int) -> Optional[Dict[str, Any]]:
@@ -3256,18 +3278,16 @@ class Database:
         if not code or mid <= 0:
             return None
 
-        for _ in range(3):
+        _lock = self._get_write_lock()
+        for _attempt in range(5):
+            await _lock.acquire()
             try:
                 async with aiosqlite.connect(self.db_path) as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
-                    try:
-                        await db.execute("PRAGMA busy_timeout=3000")
-                    except Exception:
-                        pass
+                    await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
                     await db.execute("BEGIN IMMEDIATE")
 
-                    # Step 1: 仅校验绑定关系 + 启用/未删除
                     cur = await db.execute(
                         """
                         SELECT m.id AS mapping_id
@@ -3288,7 +3308,6 @@ class Database:
                         await db.execute("ROLLBACK")
                         return None
 
-                    # Step 2: 强制预占并发槽位（不做资源约束判断）
                     cur2 = await db.execute(
                         """
                         UPDATE task_type_windows
@@ -3303,7 +3322,6 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文（字段与 pick_and_reserve_window_for_task 一致），含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -3339,12 +3357,12 @@ class Database:
                     await db.commit()
                     return dict(row) if row else None
             except Exception as e:
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
+                if self._is_db_locked_error(e) and _attempt < 4:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
                     continue
                 raise
+            finally:
+                _lock.release()
         return None
 
     async def force_reserve_window_for_task(self, task_type_code: str, window_pk: int) -> Optional[Dict[str, Any]]:
@@ -3360,18 +3378,16 @@ class Database:
         if not code or wid <= 0:
             return None
 
-        for _ in range(3):
+        _lock = self._get_write_lock()
+        for _attempt in range(5):
+            await _lock.acquire()
             try:
                 async with aiosqlite.connect(self.db_path) as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
-                    try:
-                        await db.execute("PRAGMA busy_timeout=3000")
-                    except Exception:
-                        pass
+                    await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
                     await db.execute("BEGIN IMMEDIATE")
 
-                    # Step 1: 仅找到该 task_type+window 的 mapping（绑定关系 + 启用/未删除）
                     cur = await db.execute(
                         """
                         SELECT m.id AS mapping_id
@@ -3394,7 +3410,6 @@ class Database:
 
                     mid = int(picked["mapping_id"])
 
-                    # Step 2: 强制预占并发槽位（不做资源约束判断）
                     cur2 = await db.execute(
                         """
                         UPDATE task_type_windows
@@ -3409,7 +3424,6 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文，含窗口绑定 IP
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -3445,12 +3459,12 @@ class Database:
                     await db.commit()
                     return dict(row) if row else None
             except Exception as e:
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
+                if self._is_db_locked_error(e) and _attempt < 4:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
                     continue
                 raise
+            finally:
+                _lock.release()
         return None
 
     async def reserve_window_for_task(self, task_type_code: str, window_pk: int) -> Optional[Dict[str, Any]]:
@@ -3460,18 +3474,16 @@ class Database:
         if not code or wid <= 0:
             return None
 
-        for _ in range(3):
+        _lock = self._get_write_lock()
+        for _attempt in range(5):
+            await _lock.acquire()
             try:
                 async with aiosqlite.connect(self.db_path) as db:
                     db.row_factory = aiosqlite.Row
                     await db.execute("PRAGMA foreign_keys=ON")
-                    try:
-                        await db.execute("PRAGMA busy_timeout=3000")
-                    except Exception:
-                        pass
+                    await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
                     await db.execute("BEGIN IMMEDIATE")
 
-                    # Step 1: 找到该 task_type+window 的 mapping，并取并发/阈值参数
                     cur = await db.execute(
                         """
                         SELECT
@@ -3506,7 +3518,6 @@ class Database:
                     task_concurrency = max(1, int(picked["task_concurrency"] or 1))
                     threshold = max(1, int(picked["continuous_error_threshold"] or 1))
 
-                    # Step 2: 预占并发槽位
                     cur2 = await db.execute(
                         """
                         UPDATE task_type_windows
@@ -3528,7 +3539,6 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
-                    # Step 3: 返回上下文
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -3563,20 +3573,20 @@ class Database:
                     await db.commit()
                     return dict(row) if row else None
             except Exception as e:
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
+                if self._is_db_locked_error(e) and _attempt < 4:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
                     continue
                 raise
+            finally:
+                _lock.release()
         return None
 
     async def release_mapping_slot(self, mapping_id: int) -> None:
         """释放 1 个预占并发槽位（下限到 0，避免异常时减成负数）。"""
         mid = int(mapping_id)
-        for _ in range(3):
+        for attempt in range(5):
             try:
-                async with aiosqlite.connect(self.db_path) as db:
+                async with self._write_conn() as db:
                     await db.execute("PRAGMA foreign_keys=ON")
                     await db.execute(
                         """
@@ -3593,10 +3603,8 @@ class Database:
                     await db.commit()
                     return
             except Exception as e:
-                if "database is locked" in str(e).lower():
-                    import asyncio
-
-                    await asyncio.sleep(0.01)
+                if self._is_db_locked_error(e) and attempt < 4:
+                    await asyncio.sleep(0.05 * (attempt + 1))
                     continue
                 raise
 
@@ -4148,12 +4156,18 @@ class Database:
             return
 
         params.append(task_id.strip())
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                f"UPDATE tasks SET {', '.join(updates)} WHERE task_id=?",
-                params,
-            )
-            await db.commit()
+        sql = f"UPDATE tasks SET {', '.join(updates)} WHERE task_id=?"
+        for attempt in range(5):
+            try:
+                async with self._write_conn() as db:
+                    await db.execute(sql, params)
+                    await db.commit()
+                    return
+            except Exception as e:
+                if self._is_db_locked_error(e) and attempt < 4:
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise
 
     async def get_task_window_pk_by_generation_id(self, generation_id: str) -> Optional[int]:
         gid = str(generation_id or "").strip()
@@ -4183,34 +4197,50 @@ class Database:
     async def consume_mapping_quota(self, mapping_id: int, amount: int = 1) -> None:
         """扣减剩余额度（最低到 0）。"""
         amt = max(1, int(amount))
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                UPDATE task_type_windows
-                SET remaining_quota = CASE
-                      WHEN remaining_quota >= ? THEN remaining_quota - ?
-                      ELSE 0
-                    END,
-                    updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (amt, amt, int(mapping_id)),
-            )
-            await db.commit()
+        for attempt in range(5):
+            try:
+                async with self._write_conn() as db:
+                    await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET remaining_quota = CASE
+                              WHEN remaining_quota >= ? THEN remaining_quota - ?
+                              ELSE 0
+                            END,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ?
+                        """,
+                        (amt, amt, int(mapping_id)),
+                    )
+                    await db.commit()
+                    return
+            except Exception as e:
+                if self._is_db_locked_error(e) and attempt < 4:
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise
 
     async def mark_mapping_success(self, mapping_id: int) -> None:
         """一次成功：连续错误清零。"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                UPDATE task_type_windows
-                SET consecutive_errors = 0,
-                    updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (int(mapping_id),),
-            )
-            await db.commit()
+        for attempt in range(5):
+            try:
+                async with self._write_conn() as db:
+                    await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET consecutive_errors = 0,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ?
+                        """,
+                        (int(mapping_id),),
+                    )
+                    await db.commit()
+                    return
+            except Exception as e:
+                if self._is_db_locked_error(e) and attempt < 4:
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise
 
     async def mark_mapping_error(
         self,
@@ -4230,36 +4260,44 @@ class Database:
         cd_short = max(10, int(cooldown_seconds_short))
         modifier = f"+{cd} seconds"
         modifier_short = f"+{cd_short} seconds"
-        async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                "SELECT consecutive_errors FROM task_type_windows WHERE id = ?",
-                (int(mapping_id),),
-            )
-            row = await cur.fetchone()
-            await cur.close()
-            if row is None:
-                return False
-            prev_ce = int((row or [0])[0] or 0)
-            reached_threshold = (prev_ce + 1) >= thr
-            await db.execute(
-                """
-                UPDATE task_type_windows
-                SET total_errors = total_errors + 1,
-                    consecutive_errors = CASE
-                      WHEN (consecutive_errors + 1) >= ? AND ? = 1 THEN 0
-                      ELSE consecutive_errors + 1
-                    END,
-                    error_cooldown_until = CASE
-                      WHEN (consecutive_errors + 1) >= ? THEN datetime('now','localtime', ?)
-                      ELSE datetime('now','localtime', ?)
-                    END,
-                    updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (thr, 1 if reset_on_threshold else 0, thr, modifier, modifier_short, int(mapping_id)),
-            )
-            await db.commit()
-            return reached_threshold
+        for attempt in range(5):
+            try:
+                async with self._write_conn() as db:
+                    cur = await db.execute(
+                        "SELECT consecutive_errors FROM task_type_windows WHERE id = ?",
+                        (int(mapping_id),),
+                    )
+                    row = await cur.fetchone()
+                    await cur.close()
+                    if row is None:
+                        return False
+                    prev_ce = int((row or [0])[0] or 0)
+                    reached_threshold = (prev_ce + 1) >= thr
+                    await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET total_errors = total_errors + 1,
+                            consecutive_errors = CASE
+                              WHEN (consecutive_errors + 1) >= ? AND ? = 1 THEN 0
+                              ELSE consecutive_errors + 1
+                            END,
+                            error_cooldown_until = CASE
+                              WHEN (consecutive_errors + 1) >= ? THEN datetime('now','localtime', ?)
+                              ELSE datetime('now','localtime', ?)
+                            END,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ?
+                        """,
+                        (thr, 1 if reset_on_threshold else 0, thr, modifier, modifier_short, int(mapping_id)),
+                    )
+                    await db.commit()
+                    return reached_threshold
+            except Exception as e:
+                if self._is_db_locked_error(e) and attempt < 4:
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise
+        return False
 
     async def get_mapping_runtime_state(self, mapping_id: int) -> Dict[str, Any]:
         """读取窗口映射运行态字段（连续错误/错误冷却等）。"""

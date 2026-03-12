@@ -312,12 +312,22 @@ class TaskService:
 
     async def _run_task(self, task_id: str, picked: PickedWindow) -> None:
         try:
-            await self.db.update_task(task_id, status="running", progress=1, set_started=True)
+            await self.db.update_task(task_id, status="running", progress=0, set_started=True)
             logger.info("task started: %s type=%s window=%s mapping=%s", task_id, picked.task_code, picked.window_pk, picked.mapping_id)
 
+            _last_saved_progress = -1
+
             async def progress_cb(p: int, _payload: Optional[Dict[str, Any]]):
+                nonlocal _last_saved_progress
+                pi = int(p)
+                if pi == _last_saved_progress:
+                    return
+                # 只在关键节点或变化 >=5 时写库，大幅减少写频率
+                if pi not in (0, 100) and abs(pi - _last_saved_progress) < 5:
+                    return
                 try:
-                    await self.db.update_task(task_id, progress=int(p))
+                    await self.db.update_task(task_id, progress=pi)
+                    _last_saved_progress = pi
                 except Exception:
                     pass
 
