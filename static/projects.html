@@ -192,7 +192,7 @@
               <span class="text-muted small ms-auto" id="proxiesSummary"></span>
             </div>
             <div id="proxiesBody"></div>
-            <div class="form-text">说明：这里展示的是“已同步到本地数据库”的代理信息；点击“同步”会从指纹浏览器拉取该空间(workspaceId)的代理列表并写入本地。</div>
+            <div class="form-text">说明：这里展示的是“已同步到本地数据库”的代理信息（包含已删除记录）；点击“同步”会从指纹浏览器拉取该空间(workspaceId)的代理列表并写入本地，默认保留本地删除状态与本地备注。</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
@@ -290,6 +290,28 @@
       </div>
     </div>
 
+    <!-- Proxy Remark Modal -->
+    <div class="modal fade" id="proxyRemarkModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="proxyRemarkModalTitle">修改代理备注</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="text-muted small mb-2" id="proxyRemarkMeta">-</div>
+            <label class="form-label">备注</label>
+            <textarea class="form-control form-control-sm" id="proxyRemarkInput" rows="4" placeholder="请输入本地备注"></textarea>
+            <div class="form-text">仅更新本地备注，不会同步到指纹浏览器。</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveProxyRemark">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Move Window Modal -->
     <div class="modal fade" id="moveWindowModal" tabindex="-1">
       <div class="modal-dialog modal-lg">
@@ -366,6 +388,7 @@
       const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
       const accountsModal = new bootstrap.Modal("#accountsModal");
       const accountRemarkModal = new bootstrap.Modal("#accountRemarkModal");
+      const proxyRemarkModal = new bootstrap.Modal("#proxyRemarkModal");
       const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
       const deleteWindowModal = new bootstrap.Modal("#deleteWindowModal");
 
@@ -393,6 +416,7 @@
       const LS_LAST_PROJECT_ID = "fpbrowser2api.last_project_id";
       const LS_BROWSER_EXPANDED_MAP = "fpbrowser2api.browser_expanded_map";
       const LS_LAST_MOVE_WINDOW_TARGET_SPACE = "fpbrowser2api.last_move_window_target_space_pk";
+      const LS_WINDOW_ID_SORT_MAP = "fpbrowser2api.window_id_sort_map";
 
       function currentProjectId() {
         const v = projectSelect.value;
@@ -430,6 +454,108 @@
         if (arr.length) map[pid] = arr;
         else delete map[pid];
         writeBrowserExpandedMap(map);
+      }
+
+      function readWindowIdSortMap() {
+        try {
+          const raw = localStorage.getItem(LS_WINDOW_ID_SORT_MAP);
+          if (!raw) return {};
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === "object" ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+
+      function writeWindowIdSortMap(map) {
+        localStorage.setItem(LS_WINDOW_ID_SORT_MAP, JSON.stringify(map && typeof map === "object" ? map : {}));
+      }
+
+      function getWindowIdSortDir(spacePk) {
+        const key = String(spacePk || "").trim();
+        if (!key) return "";
+        const map = readWindowIdSortMap();
+        const dir = String(map[key] || "").trim().toLowerCase();
+        return dir === "asc" || dir === "desc" ? dir : "";
+      }
+
+      function setWindowIdSortDir(spacePk, dir) {
+        const key = String(spacePk || "").trim();
+        if (!key) return;
+        const map = readWindowIdSortMap();
+        const normalized = String(dir || "").trim().toLowerCase();
+        if (normalized === "asc" || normalized === "desc") map[key] = normalized;
+        else delete map[key];
+        writeWindowIdSortMap(map);
+      }
+
+      function getWindowSortNumValue(w) {
+        const n = Number(w?.window_sort_num ?? w?.id ?? 0);
+        return Number.isFinite(n) ? n : 0;
+      }
+
+      function sortWindowsForSpace(windows, spacePk) {
+        const xs = Array.isArray(windows) ? windows.slice() : [];
+        const dir = getWindowIdSortDir(spacePk);
+        if (!dir) return xs;
+        const factor = dir === "desc" ? -1 : 1;
+        xs.sort((a, b) => {
+          const av = getWindowSortNumValue(a);
+          const bv = getWindowSortNumValue(b);
+          if (av !== bv) return (av - bv) * factor;
+          const aid = Number(a?.id ?? 0) || 0;
+          const bid = Number(b?.id ?? 0) || 0;
+          return (aid - bid) * factor;
+        });
+        return xs;
+      }
+
+      function renderWindowIdHeader(spacePk) {
+        const dir = getWindowIdSortDir(spacePk);
+        const arrow = dir === "asc" ? " ↑" : dir === "desc" ? " ↓" : "";
+        const title = dir === "desc"
+          ? "当前降序，点击切换为升序（按 window sort num）"
+          : "点击按 window sort num 排序（升序/降序切换）";
+        return `
+          <button
+            class="btn btn-link btn-sm p-0 text-decoration-none align-baseline"
+            type="button"
+            data-action="toggle_window_id_sort"
+            data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
+            title="${escapeHtml(title)}"
+            aria-label="按窗口排序号排序"
+          >窗口ID${arrow}</button>
+        `;
+      }
+
+      function findSpaceByPk(spacePk) {
+        const target = Number(spacePk || 0) || 0;
+        if (!target) return null;
+        const root = Array.isArray(state.tree) ? state.tree[0] : null;
+        const browsers = Array.isArray(root?.browsers) ? root.browsers : [];
+        for (const b of browsers) {
+          const spaces = Array.isArray(b?.spaces) ? b.spaces : [];
+          for (const s of spaces) {
+            if ((Number(s?.id || 0) || 0) === target) return s;
+          }
+        }
+        return null;
+      }
+
+      function updateSpaceWindowsInState(spacePk, windows) {
+        const s = findSpaceByPk(spacePk);
+        if (!s) return;
+        s.windows = Array.isArray(windows) ? windows.slice() : [];
+      }
+
+      function rerenderSpaceWindowsByState(spacePk) {
+        const s = findSpaceByPk(spacePk);
+        const wrap = document.querySelector(`[data-role="windowsWrap"][data-space-pk="${spacePk}"]`);
+        if (!wrap || !s) return;
+        const sorted = sortWindowsForSpace(s.windows || [], spacePk);
+        wrap.innerHTML = renderWindowsTable(sorted, spacePk);
+        ensureProxiesLoaded(spacePk).then(() => fillProxySelects(spacePk)).catch(() => fillProxySelects(spacePk));
+        ensureAccountsLoaded(spacePk).then(() => fillAccountSelects(spacePk)).catch(() => fillAccountSelects(spacePk));
       }
 
       async function loadProjects() {
@@ -554,7 +680,7 @@
 
       function renderSpace(s) {
         const sid = `s_${s.id}`;
-        const table = renderWindowsTable(s.windows || [], s.id);
+        const table = renderWindowsTable(sortWindowsForSpace(s.windows || [], s.id), s.id);
         const pidBadge = (s.project_ids || "").trim()
           ? `<span class="badge text-bg-light mono border">projectIds:${escapeHtml((s.project_ids || "").trim())}</span>`
           : "";
@@ -652,7 +778,7 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
-                  <th>窗口ID</th>
+                  <th>${renderWindowIdHeader(spacePk)}</th>
                   <th>窗口名称</th>
                   <th>操作</th>
                   <th>账号</th>
@@ -707,8 +833,7 @@
                         data-current_proxy_id="${escapeHtml(String(getWindowProxyId(w) || 0))}">
                         <option value="">(加载代理中...)</option>
                       </select>
-                      <div class="text-muted small">说明：选择后会调用 <code>/browser/mdf</code> 立即修改。</div>
-                      <div class="mt-1">
+                      <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}
                         <button class="btn btn-outline-secondary btn-sm py-0 px-2"
                           type="button"
                           title="按绑定的 proxy_id 同步本地代理信息"
@@ -717,7 +842,6 @@
                           data-space_pk="${escapeHtml(String(spacePk ?? ""))}"
                           data-window_key="${escapeHtml(String(w.window_key ?? ""))}">&#x21bb;</button>
                       </div>
-                      <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
                     </td>
                     <td>${enabledBadge(!!w.enabled)}</td>
                     <td>${windowStatusBadge(w.window_status)}</td>
@@ -744,6 +868,13 @@
         if (action === "edit_browser") {
           const b = JSON.parse(decodeURIComponent(ds.browser));
           openBrowserModal("edit", b);
+        } else if (action === "toggle_window_id_sort") {
+          const spacePk = parseInt(ds.space_pk, 10);
+          if (!spacePk) return;
+          const current = getWindowIdSortDir(spacePk);
+          const next = current === "asc" ? "desc" : "asc";
+          setWindowIdSortDir(spacePk, next);
+          rerenderSpaceWindowsByState(spacePk);
         } else if (action === "delete_browser") {
           deleteBrowser(parseInt(ds.browser_id, 10));
         } else if (action === "new_space") {
@@ -1363,7 +1494,7 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
-                  <th>窗口ID</th>
+                  <th>${renderWindowIdHeader(spacePk)}</th>
                   <th>窗口名称</th>
                   <th>备注</th>
                   <th>账号</th>
@@ -1441,7 +1572,10 @@
       async function renderWindowsIncrementally(spacePk, windows) {
         const { wrap } = getSpaceDom(spacePk);
         if (!wrap) return;
-        if (!windows || !windows.length) {
+        const windowsRaw = Array.isArray(windows) ? windows : [];
+        updateSpaceWindowsInState(spacePk, windowsRaw);
+        const windowsToRender = sortWindowsForSpace(windowsRaw, spacePk);
+        if (!windowsToRender.length) {
           wrap.innerHTML = `<div class="text-muted small">暂无窗口信息，点击“同步窗口”获取。</div>`;
           setSpaceProgress(spacePk, { text: "" });
           return;
@@ -1450,7 +1584,7 @@
         if (!tb) return;
         tb.innerHTML = "";
 
-        const total = windows.length;
+        const total = windowsToRender.length;
         let idx = 0;
         const chunkSize = total <= 200 ? 1 : 10;
 
@@ -1460,7 +1594,7 @@
           const pump = () => {
             const end = Math.min(total, idx + chunkSize);
             let html = "";
-            for (; idx < end; idx += 1) html += rowHtmlForWindow(windows[idx], spacePk);
+            for (; idx < end; idx += 1) html += rowHtmlForWindow(windowsToRender[idx], spacePk);
             if (html) tb.insertAdjacentHTML("beforeend", html);
             setSpaceProgress(spacePk, { current: end, total, text: `加载窗口：${end}/${total}` });
             if (end >= total) return resolve();
@@ -1913,6 +2047,10 @@
       const btnRefreshProxies = document.getElementById("btnRefreshProxies");
       const btnSyncProxies = document.getElementById("btnSyncProxies");
       const btnAnalyzeAllProxies = document.getElementById("btnAnalyzeAllProxies");
+      const proxyRemarkModalTitle = document.getElementById("proxyRemarkModalTitle");
+      const proxyRemarkMeta = document.getElementById("proxyRemarkMeta");
+      const proxyRemarkInput = document.getElementById("proxyRemarkInput");
+      const btnSaveProxyRemark = document.getElementById("btnSaveProxyRemark");
       const proxyTasksModalTitle = document.getElementById("proxyTasksModalTitle");
       const proxyTasksStatus = document.getElementById("proxyTasksStatus");
       const proxyTasksLimit = document.getElementById("proxyTasksLimit");
@@ -1923,6 +2061,7 @@
       const proxyTasksBody = document.getElementById("proxyTasksBody");
 
       let proxiesState = { spacePk: null, proxies: [], loading: false };
+      let proxyRemarkState = { spacePk: 0, proxyId: 0 };
       const proxiesCache = new Map(); // spacePk -> proxies[]
       const proxyTaskStatsCache = new Map(); // spacePk -> { proxy_id: { completed, failed } }
       const proxyTasksState = {
@@ -1971,6 +2110,7 @@
           task_completed_count: x.task_completed_count ?? x.taskCompletedCount ?? 0,
           task_failed_count: x.task_failed_count ?? x.taskFailedCount ?? 0,
           remark: x.remark ?? "",
+          deleted: Number(x.deleted ?? 0) || 0,
           check_status: x.check_status,
           refresh_url: x.refresh_url ?? "",
         }));
@@ -2214,15 +2354,17 @@
                   <th>任务统计</th>
                   <th>创建时间</th>
                   <th>过期时间</th>
-                  <th>状态</th>
+                  <th>检测状态</th>
+                  <th>本地状态</th>
                   <th>备注</th>
+                  <th>修改</th>
                   <th>检测</th>
                   <th>删除</th>
                 </tr>
               </thead>
               <tbody>
                 ${filtered.map(p => `
-                  <tr class="small2">
+                  <tr class="small2 ${Number(p.deleted || 0) === 1 ? "text-muted" : ""}">
                     <td class="mono">${escapeHtml(String(rankByProxyId.get(parseInt(String(p.proxy_id || 0), 10) || 0) || "-"))}</td>
                     <td class="mono">${escapeHtml(`${p.host || "-"}:${p.port || "-"}`)}</td>
                     <td class="mono">${escapeHtml([p.protocol, p.ip_type].filter(Boolean).join("/") || "-")}</td>
@@ -2251,7 +2393,19 @@
                     <td class="mono">${escapeHtml(formatProxyTime(p.created_at))}</td>
                     <td class="mono">${escapeHtml(formatProxyTime(p.expire_at))}</td>
                     <td class="mono">${escapeHtml(p.check_status ?? "-")}</td>
-                    <td>${escapeHtml(p.remark || "-")}</td>
+                    <td>${Number(p.deleted || 0) === 1 ? '<span class="badge text-bg-secondary">已删除</span>' : '<span class="badge text-bg-success">正常</span>'}</td>
+                    <td class="mono" style="max-width: 240px;">
+                      <div class="truncate-1" title="${escapeHtml(p.remark || "")}">${escapeHtml(p.remark || "-")}</div>
+                    </td>
+                    <td>
+                      <button class="btn btn-outline-primary btn-sm" type="button"
+                        data-action="update_proxy_remark"
+                        data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                        data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}"
+                        data-proxy_host="${escapeHtml(String(p.host || ""))}"
+                        data-proxy_port="${escapeHtml(String(p.port || ""))}"
+                        data-proxy_remark="${escapeHtml(String(p.remark || ""))}">修改</button>
+                    </td>
                     <td>
                       <button class="btn btn-outline-primary btn-sm" type="button"
                         data-action="analyze_proxy_ip"
@@ -2263,7 +2417,8 @@
                         data-action="delete_proxy"
                         data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
                         data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}"
-                        data-binding_count="${escapeHtml(String(p.binding_count ?? 0))}">删除</button>
+                        data-binding_count="${escapeHtml(String(p.binding_count ?? 0))}"
+                        ${Number(p.deleted || 0) === 1 ? "disabled" : ""}>${Number(p.deleted || 0) === 1 ? "已删除" : "删除"}</button>
                     </td>
                   </tr>
                 `).join("")}
@@ -2283,7 +2438,7 @@
 
       async function loadLocalProxies(spacePk, { force } = { force: false }) {
         if (!force && proxiesCache.has(spacePk)) return proxiesCache.get(spacePk) || [];
-        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies`);
+        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies?include_deleted=1`);
         if (!r) return [];
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "读取本地代理失败");
@@ -2326,7 +2481,7 @@
       function fillProxySelects(spacePk) {
         const items = normalizeProxies(proxiesCache.get(spacePk) || []);
         const { ordered, rankByProxyId } = buildProxyDisplayOrder(items);
-        const available = ordered.filter(p => !isProxyExpired(p));
+        const available = ordered.filter(p => Number(p.deleted || 0) !== 1 && !isProxyExpired(p));
         const selects = document.querySelectorAll(`select[data-role="proxySelect"][data-space_pk="${spacePk}"]`);
         selects.forEach(sel => {
           const cur = sel.value;
@@ -2471,7 +2626,10 @@
       async function syncProxies(spacePk) {
         try {
           setProxiesLoading(true);
-          const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, { method: "POST", body: JSON.stringify({}) });
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, {
+            method: "POST",
+            body: JSON.stringify({ keep_local_deleted: true, keep_local_remark: true }),
+          });
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "同步代理失败");
@@ -2531,13 +2689,56 @@
         await loadProxyTasks();
       });
 
+      function openProxyRemarkModal({ spacePk, proxyId, host, port, remark }) {
+        proxyRemarkState.spacePk = parseInt(String(spacePk || "0"), 10) || 0;
+        proxyRemarkState.proxyId = parseInt(String(proxyId || "0"), 10) || 0;
+        if (!proxyRemarkState.spacePk || !proxyRemarkState.proxyId) return;
+        if (proxyRemarkModalTitle) {
+          proxyRemarkModalTitle.textContent = `修改代理备注 · proxy_id=${proxyRemarkState.proxyId}`;
+        }
+        if (proxyRemarkMeta) {
+          proxyRemarkMeta.textContent = `代理：${String(host || "-").trim() || "-"}:${String(port || "-").trim() || "-"}`;
+        }
+        if (proxyRemarkInput) {
+          proxyRemarkInput.value = String(remark || "");
+          setTimeout(() => {
+            try { proxyRemarkInput.focus(); } catch (_e) {}
+          }, 0);
+        }
+        proxyRemarkModal.show();
+      }
+
+      async function updateProxyRemark(spacePk, proxyId, remark, fromEl) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const pid = parseInt(String(proxyId || "0"), 10) || 0;
+        if (!spk || !pid) return;
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "修改中" });
+          const r = await adminFetch(`/api/admin/spaces/${spk}/proxies/${pid}/remark`, {
+            method: "POST",
+            body: JSON.stringify({ remark: String(remark || "").trim() }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "修改代理备注失败");
+          toast(d.message || "代理备注已更新", "success");
+          await refreshProxies(spk);
+          fillProxySelects(spk);
+        } catch (e) {
+          toast(e.message || "修改代理备注失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       async function deleteProxy(spacePk, proxyId, bindingCount, fromEl) {
         const pid = parseInt(String(proxyId || "0"), 10) || 0;
         if (!spacePk || !pid) return;
         const bcnt = parseInt(String(bindingCount || "0"), 10) || 0;
         const msg = bcnt > 0
-          ? `该代理目前被 ${bcnt} 个窗口绑定。\n确定要在本地删除该代理吗？\n\n说明：仅影响本地代理列表；后续再次同步时，以同步结果为准（若仍存在会自动恢复）。`
-          : `确定要在本地删除该代理吗？\n\n说明：仅影响本地代理列表；后续再次同步时，以同步结果为准（若仍存在会自动恢复）。`;
+          ? `该代理目前被 ${bcnt} 个窗口绑定。\n确定要在本地删除该代理吗？\n\n说明：仅影响本地代理列表；后续同步默认会保留该删除状态。`
+          : `确定要在本地删除该代理吗？\n\n说明：仅影响本地代理列表；后续同步默认会保留该删除状态。`;
         if (!confirm(msg)) return;
         const btn = fromEl;
         try {
@@ -2655,11 +2856,28 @@
           await analyzeProxyIp(spacePk, proxyId, btn);
           return;
         }
+        if (action === "update_proxy_remark") {
+          const host = btn.getAttribute("data-proxy_host") || "";
+          const port = btn.getAttribute("data-proxy_port") || "";
+          const remark = btn.getAttribute("data-proxy_remark") || "";
+          openProxyRemarkModal({ spacePk, proxyId, host, port, remark });
+          return;
+        }
         if (action === "delete_proxy") {
           const bindingCount = parseInt(btn.getAttribute("data-binding_count") || "0", 10) || 0;
           await deleteProxy(spacePk, proxyId, bindingCount, btn);
         }
       });
+      if (btnSaveProxyRemark) {
+        btnSaveProxyRemark.addEventListener("click", async () => {
+          const spacePk = parseInt(String(proxyRemarkState.spacePk || "0"), 10) || 0;
+          const proxyId = parseInt(String(proxyRemarkState.proxyId || "0"), 10) || 0;
+          const remark = proxyRemarkInput ? String(proxyRemarkInput.value || "").trim() : "";
+          if (!spacePk || !proxyId) return;
+          await updateProxyRemark(spacePk, proxyId, remark, btnSaveProxyRemark);
+          proxyRemarkModal.hide();
+        });
+      }
 
       // 窗口下拉改动（代理/账号）：立即调用后端 /browser/mdf
       treeContainer.addEventListener("change", async (ev) => {
@@ -2956,7 +3174,10 @@
 
           // 先同步代理列表：避免指纹浏览器新增代理/修改绑定后，这里还拿旧的本地代理列表
           try {
-            const rp = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, { method: "POST", body: JSON.stringify({}) });
+            const rp = await adminFetch(`/api/admin/spaces/${spacePk}/sync-proxies`, {
+              method: "POST",
+              body: JSON.stringify({ keep_local_deleted: true, keep_local_remark: true }),
+            });
             if (rp) {
               await parseApiResponse(rp, "同步代理失败");
             }

@@ -2161,17 +2161,27 @@ class Database:
             return out
 
     # ---------- proxies ----------
-    async def list_proxies(self, space_pk: int) -> List[ProxyInfo]:
+    async def list_proxies(self, space_pk: int, *, include_deleted: bool = False) -> List[ProxyInfo]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                """
-                SELECT * FROM proxies
-                WHERE deleted = 0 AND space_pk = ?
-                ORDER BY updated_at DESC, id DESC
-                """,
-                (int(space_pk),),
-            )
+            if include_deleted:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM proxies
+                    WHERE space_pk = ?
+                    ORDER BY updated_at DESC, id DESC
+                    """,
+                    (int(space_pk),),
+                )
+            else:
+                cur = await db.execute(
+                    """
+                    SELECT * FROM proxies
+                    WHERE deleted = 0 AND space_pk = ?
+                    ORDER BY updated_at DESC, id DESC
+                    """,
+                    (int(space_pk),),
+                )
             rows = await cur.fetchall()
             result: List[ProxyInfo] = []
             for r in rows:
@@ -2185,7 +2195,14 @@ class Database:
                 result.append(ProxyInfo(**d))
             return result
 
-    async def upsert_proxies(self, space_pk: int, proxies: List[Dict[str, Any]]) -> int:
+    async def upsert_proxies(
+        self,
+        space_pk: int,
+        proxies: List[Dict[str, Any]],
+        *,
+        restore_deleted: bool = False,
+        overwrite_remark: bool = False,
+    ) -> int:
         """把同步到的代理列表保存到 DB（按 space_pk+proxy_id 唯一 upsert）。"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys=ON")
@@ -2263,7 +2280,10 @@ class Database:
                         proxy_username=excluded.proxy_username,
                         proxy_password=excluded.proxy_password,
                         refresh_url=excluded.refresh_url,
-                        remark=excluded.remark,
+                        remark=CASE
+                          WHEN ? = 1 THEN excluded.remark
+                          ELSE proxies.remark
+                        END,
                         check_status=excluded.check_status,
                         check_channel=excluded.check_channel,
                         check_channel_value=excluded.check_channel_value,
@@ -2274,7 +2294,11 @@ class Database:
                         check_time=excluded.check_time,
                         create_time=excluded.create_time,
                         update_time=excluded.update_time,
-                        deleted=excluded.deleted,
+                        deleted=CASE
+                          WHEN ? = 1 THEN excluded.deleted
+                          WHEN proxies.deleted = 1 THEN 1
+                          ELSE excluded.deleted
+                        END,
                         raw_json=excluded.raw_json,
                         synced_at=datetime('now','localtime'),
                         updated_at=datetime('now','localtime')
@@ -2305,12 +2329,16 @@ class Database:
                         str(create_time).strip() if create_time is not None else None,
                         str(update_time).strip() if update_time is not None else None,
                         raw_json,
+                        int(1 if overwrite_remark else 0),
+                        int(1 if restore_deleted else 0),
                     ),
                 )
                 affected += 1
 
-            # 同步策略：以同步结果为准（全量覆盖本地可见代理列表）
-            # - 同步返回存在的代理：deleted=0（由 upsert 写入/更新）
+            # 同步策略（默认“保留本地删除”）：
+            # - 同步返回存在的代理：
+            #   - restore_deleted=True：按同步结果恢复为 deleted=0
+            #   - restore_deleted=False：本地已删除的仍保持 deleted=1
             # - 同步未返回的代理：本地标记 deleted=1（让 UI 不再展示）
             #
             # 注意：如果同步结果为空列表，也认为该空间当前无代理，清空本地展示。
@@ -2341,6 +2369,20 @@ class Database:
                 pass
             await db.commit()
             return affected
+
+    async def update_proxy_remark(self, *, space_pk: int, proxy_id: int, remark: str) -> int:
+        """仅更新本地代理备注。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                UPDATE proxies
+                SET remark = ?, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND proxy_id = ?
+                """,
+                (str(remark or "").strip(), int(space_pk), int(proxy_id)),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
 
     async def delete_proxy(self, *, space_pk: int, proxy_id: int) -> int:
         """本地删除某个代理（仅标记 deleted=1，不影响指纹浏览器侧）。"""

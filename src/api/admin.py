@@ -288,6 +288,15 @@ class SyncAccountsRequest(BaseModel):
     keep_local_deleted: bool = Field(default=True, description="同步时保留本地已删除账号状态")
 
 
+class UpdateProxyRemarkRequest(BaseModel):
+    remark: Optional[str] = Field(default="", description="本地代理备注")
+
+
+class SyncProxiesRequest(BaseModel):
+    keep_local_deleted: bool = Field(default=True, description="同步时保留本地已删除代理状态")
+    keep_local_remark: bool = Field(default=True, description="同步时保留本地代理备注")
+
+
 class ImportCardKeysRequest(BaseModel):
     content: str = Field(min_length=1, description="每行一个卡密")
 
@@ -792,11 +801,18 @@ async def list_windows(space_pk: int, token: str = Depends(verify_admin_token)):
 
 
 @router.get("/api/admin/spaces/{space_pk}/proxies")
-async def list_local_proxies(space_pk: int, token: str = Depends(verify_admin_token)):
+async def list_local_proxies(
+    space_pk: int,
+    include_deleted: bool = False,
+    token: str = Depends(verify_admin_token),
+):
     """查看本地 DB 保存的代理列表（按空间/工作空间维度）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    return {"success": True, "proxies": [p.model_dump(exclude={"raw"}) for p in await db.list_proxies(space_pk)]}
+    return {
+        "success": True,
+        "proxies": [p.model_dump(exclude={"raw"}) for p in await db.list_proxies(space_pk, include_deleted=include_deleted)],
+    }
 
 
 @router.get("/api/admin/spaces/{space_pk}/proxy-bindings")
@@ -828,7 +844,7 @@ async def delete_local_proxy(space_pk: int, proxy_id: int, token: str = Depends(
     """本地删除代理（仅标记 deleted=1，不影响指纹浏览器侧）。
 
     说明：
-    - 后续再次“同步该空间代理到本地”时，以同步结果为准：若该 proxy_id 仍存在，会被恢复显示（deleted=0）。
+    - 后续“同步该空间代理到本地”默认会保留本地删除标记，不会自动恢复。
     """
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -836,6 +852,22 @@ async def delete_local_proxy(space_pk: int, proxy_id: int, token: str = Depends(
     if affected <= 0:
         raise HTTPException(status_code=404, detail="proxy not found")
     return {"success": True, "message": "已在本地删除该代理", "affected": affected}
+
+
+@router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/remark")
+async def update_local_proxy_remark(
+    space_pk: int,
+    proxy_id: int,
+    req: UpdateProxyRemarkRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """仅更新本地代理备注，不影响指纹浏览器侧。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    affected = await db.update_proxy_remark(space_pk=int(space_pk), proxy_id=int(proxy_id), remark=str(req.remark or "").strip())
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="proxy not found")
+    return {"success": True, "message": "代理备注已更新", "affected": affected}
 
 
 @router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/analyze-ip")
@@ -945,7 +977,11 @@ async def analyze_local_proxy_ip(space_pk: int, proxy_id: int, token: str = Depe
 
 
 @router.post("/api/admin/spaces/{space_pk}/sync-proxies")
-async def sync_space_proxies(space_pk: int, token: str = Depends(verify_admin_token)):
+async def sync_space_proxies(
+    space_pk: int,
+    req: Optional[SyncProxiesRequest] = None,
+    token: str = Depends(verify_admin_token),
+):
     """同步某个空间的代理列表（从指纹浏览器拉取后写入本地 DB）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -969,7 +1005,14 @@ async def sync_space_proxies(space_pk: int, token: str = Depends(verify_admin_to
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    affected = await db.upsert_proxies(space_pk=space_pk, proxies=proxies)
+    keep_local_deleted = True if req is None else bool(req.keep_local_deleted)
+    keep_local_remark = True if req is None else bool(req.keep_local_remark)
+    affected = await db.upsert_proxies(
+        space_pk=space_pk,
+        proxies=proxies,
+        restore_deleted=(not keep_local_deleted),
+        overwrite_remark=(not keep_local_remark),
+    )
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条代理记录", "affected": affected}
 
 
