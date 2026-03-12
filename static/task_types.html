@@ -609,6 +609,16 @@
         mappingSortKey: "id",
         mappingSortDir: "desc",
         successTaskSortDir: "desc",
+        windowTaskList: {
+          windowPk: 0,
+          windowName: "-",
+          platformAccount: "-",
+          limit: 50,
+          offset: 0,
+          total: 0,
+          summary: null,
+          loading: false,
+        },
         autoRefresh: {
           running: false,
           timer: null,
@@ -1039,6 +1049,76 @@
         `;
       }
 
+      function formatWindowTaskSummary(summary) {
+        if (!summary || typeof summary !== "object") return "";
+        const s24 = Number(summary.success24h || 0);
+        const sTotal = Number(summary.successTotal || 0);
+        const cErr = Number(summary.consecutiveErrors || 0);
+        const f24 = Number(summary.failed24h || 0);
+        const fTotal = Number(summary.totalErrors || 0);
+        const cd = String(summary.errorCooldownUntil || "").trim() || "-";
+        return `
+          <div class="small2 text-muted">
+            24h成功/总成功/连续失败/24h失败/总失败：<span class="fw-semibold">${s24}/${sTotal}/${cErr}/${f24}/${fTotal}</span>
+            <span class="text-muted">·</span>
+            错误冷却到：<span class="mono">${escapeHtml(cd)}</span>
+          </div>
+        `;
+      }
+
+      function renderWindowTaskModalBody(items, { loading = false, errorText = "" } = {}) {
+        const total = Math.max(0, Number(ui.windowTaskList.total || 0));
+        const limit = Math.max(1, Number(ui.windowTaskList.limit || 50));
+        const offset = Math.max(0, Number(ui.windowTaskList.offset || 0));
+        const page = Math.floor(offset / limit) + 1;
+        const maxPage = Math.max(1, Math.ceil(total / limit) || 1);
+        const canPrev = !loading && offset > 0;
+        const canNext = !loading && (offset + limit) < total;
+        const summaryHtml = formatWindowTaskSummary(ui.windowTaskList.summary);
+        const listHtml = errorText
+          ? `<div class="text-danger small">${escapeHtml(errorText)}</div>`
+          : (Array.isArray(items) && items.length
+            ? renderWindowTaskList(items, { includeError: true, includePrompt: true })
+            : `<div class="text-muted small">${loading ? "加载中..." : "暂无任务"}</div>`);
+
+        errorModalBody.innerHTML = `
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <div class="small text-muted">总计 <span class="fw-semibold">${total}</span> 条 · 第 <span class="fw-semibold">${page}/${maxPage}</span> 页</div>
+            <div class="ms-auto d-flex gap-2">
+              <button class="btn btn-outline-secondary btn-sm" data-action="window-task-page" data-dir="prev" ${canPrev ? "" : "disabled"}>上一页</button>
+              <button class="btn btn-outline-secondary btn-sm" data-action="window-task-page" data-dir="next" ${canNext ? "" : "disabled"}>下一页</button>
+            </div>
+          </div>
+          ${summaryHtml}
+          <div class="mt-2">${listHtml}</div>
+        `;
+      }
+
+      async function loadWindowTaskModalPage() {
+        const windowPk = Number(ui.windowTaskList.windowPk || 0);
+        if (!windowPk) return;
+        if (ui.windowTaskList.loading) return;
+        ui.windowTaskList.loading = true;
+        renderWindowTaskModalBody([], { loading: true });
+        try {
+          const params = new URLSearchParams();
+          params.set("limit", String(ui.windowTaskList.limit));
+          params.set("offset", String(ui.windowTaskList.offset));
+          params.set("window_pk", String(windowPk));
+          const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载任务列表失败");
+          ui.windowTaskList.total = Math.max(0, parseInt(String(d.total || "0"), 10) || 0);
+          const items = Array.isArray(d.items) ? d.items : [];
+          renderWindowTaskModalBody(items);
+        } catch (e) {
+          renderWindowTaskModalBody([], { errorText: e.message || "加载任务列表失败" });
+        } finally {
+          ui.windowTaskList.loading = false;
+        }
+      }
+
       async function openWindowErrorModal(windowPk, { windowName = "-", platformAccount = "-" } = {}) {
         if (!windowPk) {
           toast("window_pk 无效，无法查询错误列表", "error");
@@ -1070,46 +1150,28 @@
         }
       }
 
-      async function openWindowSuccessModal(windowPk, { windowName = "-", platformAccount = "-" } = {}) {
+      async function openWindowSuccessModal(windowPk, { windowName = "-", platformAccount = "-", summary = null, mappingId = 0, windowSortNum = "" } = {}) {
         if (!windowPk) {
           toast("window_pk 无效，无法查询任务列表", "error");
           return;
         }
-        errorModalTitle.textContent = `任务列表 · ${platformAccount || "-"} · ${windowName || "-"} · window_pk=${String(windowPk)}`;
-        errorModalBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        const sortNum = String(windowSortNum || "").trim();
+        const mid = Number(mappingId || 0);
+        const prefixParts = [];
+        if (sortNum) prefixParts.push(`#${sortNum}`);
+        if (mid > 0) prefixParts.push(`mapping_id=${String(mid)}`);
+        const prefix = prefixParts.length ? `${prefixParts.join(" · ")} · ` : "";
+        errorModalTitle.textContent = `任务列表 · ${prefix}${platformAccount || "-"} · ${windowName || "-"} · window_pk=${String(windowPk)}`;
+        ui.windowTaskList.windowPk = Number(windowPk || 0);
+        ui.windowTaskList.windowName = windowName || "-";
+        ui.windowTaskList.platformAccount = platformAccount || "-";
+        ui.windowTaskList.offset = 0;
+        ui.windowTaskList.total = 0;
+        ui.windowTaskList.summary = summary || null;
+        ui.windowTaskList.loading = false;
+        renderWindowTaskModalBody([], { loading: true });
         errorModal.show();
-
-        try {
-          const limit = 200;
-          let offset = 0;
-          const items = [];
-          for (let i = 0; i < 100; i++) {
-            const params = new URLSearchParams();
-            params.set("limit", String(limit));
-            params.set("offset", String(offset));
-            params.set("window_pk", String(windowPk));
-
-            const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
-            if (!r) return;
-            const d = await r.json();
-            if (!r.ok) throw new Error(d.detail || "加载任务列表失败");
-
-            const batch = Array.isArray(d.items) ? d.items : [];
-            if (!batch.length) break;
-            items.push(...batch);
-            offset += batch.length;
-            const total = parseInt(String(d.total || "0"), 10) || 0;
-            if ((total > 0 && items.length >= total) || batch.length < limit) break;
-          }
-          if (!items.length) {
-            errorModalBody.innerHTML = `<div class="text-muted small">暂无任务</div>`;
-            return;
-          }
-          const sorted = sortTasksByCreatedAt(items, "desc");
-          errorModalBody.innerHTML = renderWindowTaskList(sorted, { includeError: true, includePrompt: true });
-        } catch (e) {
-          errorModalBody.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载任务列表失败")}</div>`;
-        }
+        await loadWindowTaskModalPage();
       }
 
       async function openErrorModalByMappingId(mappingId) {
@@ -1127,7 +1189,20 @@
           toast("找不到该绑定记录", "error");
           return;
         }
-        await openWindowSuccessModal(m.window_pk, { windowName: m.window_name || "-", platformAccount: m.platform_account || "-" });
+        await openWindowSuccessModal(m.window_pk, {
+          windowName: m.window_name || "-",
+          platformAccount: m.platform_account || "-",
+          mappingId: Number(m?.id || 0),
+          windowSortNum: String(m?.window_sort_num ?? m?.window_pk ?? ""),
+          summary: {
+            success24h: Number(m?.success_count_24h ?? m?.success_24h_count ?? m?.success_24h ?? 0) || 0,
+            successTotal: Number(m?.success_count ?? m?.success_total ?? 0) || 0,
+            consecutiveErrors: Number(m?.consecutive_errors || 0),
+            failed24h: Number(m?.failed_count_24h ?? m?.fail_count_24h ?? m?.error_count_24h ?? m?.failed_24h ?? 0) || 0,
+            totalErrors: Number(m?.total_errors || 0),
+            errorCooldownUntil: String(m?.error_cooldown_until || ""),
+          },
+        });
       }
 
       async function openAutoRefreshErrorModal({ mappingId = null } = {}) {
@@ -3426,6 +3501,22 @@
       document.getElementById("btnRefreshMappingStats")?.addEventListener("click", (e) => refreshMappingStatsOnly(e.currentTarget));
       document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
       document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", () => openAutoRefreshErrorModal({ mappingId: null }));
+      errorModalBody?.addEventListener("click", async (e) => {
+        const btn = e.target?.closest?.('[data-action="window-task-page"]');
+        if (!btn) return;
+        if (ui.windowTaskList.loading) return;
+        const dir = String(btn.getAttribute("data-dir") || "").toLowerCase();
+        const step = ui.windowTaskList.limit || 50;
+        if (dir === "prev") {
+          ui.windowTaskList.offset = Math.max(0, ui.windowTaskList.offset - step);
+          await loadWindowTaskModalPage();
+          return;
+        }
+        if (dir === "next") {
+          ui.windowTaskList.offset = ui.windowTaskList.offset + step;
+          await loadWindowTaskModalPage();
+        }
+      });
       document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
       document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));

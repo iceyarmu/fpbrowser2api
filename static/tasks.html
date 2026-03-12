@@ -220,6 +220,13 @@
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2 small">
+              <div class="text-muted" id="windowTasksSummary">总计 0 条</div>
+              <div class="ms-auto d-flex gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btnWindowTasksPrev">上一页</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btnWindowTasksNext">下一页</button>
+              </div>
+            </div>
             <div class="table-responsive">
               <table class="table table-sm align-middle mb-0">
                 <thead>
@@ -334,6 +341,17 @@
       const windowTasksModal = windowTasksModalEl ? new bootstrap.Modal(windowTasksModalEl) : null;
       const windowTasksModalTitle = document.getElementById("windowTasksModalTitle");
       const windowTasksModalBody = document.getElementById("windowTasksModalBody");
+      const windowTasksSummary = document.getElementById("windowTasksSummary");
+      const btnWindowTasksPrev = document.getElementById("btnWindowTasksPrev");
+      const btnWindowTasksNext = document.getElementById("btnWindowTasksNext");
+      const windowTasksState = {
+        limit: 50,
+        offset: 0,
+        total: 0,
+        windowPk: null,
+        windowIp: "",
+        windowInfo: "-",
+      };
 
       function buildWindowInfo(item) {
         const accRaw = String(item?.window_account ?? "").trim();
@@ -511,6 +529,80 @@
         }
       }
 
+      function updateWindowTasksPagerUi() {
+        const limit = Number(windowTasksState.limit || 50);
+        const total = Math.max(0, Number(windowTasksState.total || 0));
+        const offset = Math.max(0, Number(windowTasksState.offset || 0));
+        const page = Math.floor(offset / limit) + 1;
+        const maxPage = Math.max(1, Math.ceil(total / limit) || 1);
+        if (windowTasksSummary) {
+          windowTasksSummary.textContent = `总计 ${total} 条 · 第 ${page}/${maxPage} 页`;
+        }
+        if (btnWindowTasksPrev) btnWindowTasksPrev.disabled = offset <= 0;
+        if (btnWindowTasksNext) btnWindowTasksNext.disabled = (offset + limit) >= total;
+      }
+
+      function renderWindowTasksRows(items) {
+        if (!Array.isArray(items) || !items.length) {
+          windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-muted small">该窗口暂无任务</td></tr>`;
+          return;
+        }
+        windowTasksModalBody.innerHTML = items.map((item) => {
+          const code = String(item?.task_type_code || "-");
+          const typeName = state.typeMap.get(code) || code;
+          const progressRaw = Number(item?.progress);
+          const progress = Number.isFinite(progressRaw) ? `${Math.max(0, Math.min(100, Math.trunc(progressRaw)))}%` : "-";
+          const err = String(item?.error_message || "").trim();
+          const createdAtText = formatCreatedAtLocal(item?.created_at);
+          return `
+            <tr class="small2">
+              <td class="mono">${escapeHtml(String(item?.task_id || "-"))}</td>
+              <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
+              <td>${badgeForStatus(item?.status)}</td>
+              <td class="mono">${escapeHtml(progress)}</td>
+              <td class="mono truncate-1 truncate-err" title="${escapeHtml(err || "-")}">${escapeHtml(err || "-")}</td>
+              <td class="mono text-nowrap">${escapeHtml(createdAtText || "-")}</td>
+            </tr>
+          `;
+        }).join("");
+      }
+
+      async function loadWindowTasksPage() {
+        const hasPk = windowTasksState.windowPk !== null && windowTasksState.windowPk !== undefined && String(windowTasksState.windowPk).trim() !== "";
+        const ipText = String(windowTasksState.windowIp || "").trim();
+        if (!hasPk && !ipText) return;
+
+        windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-muted small">加载中...</td></tr>`;
+        if (btnWindowTasksPrev) btnWindowTasksPrev.disabled = true;
+        if (btnWindowTasksNext) btnWindowTasksNext.disabled = true;
+        if (windowTasksSummary) {
+          const start = Math.max(0, Number(windowTasksState.offset || 0));
+          const end = start + Number(windowTasksState.limit || 50);
+          windowTasksSummary.textContent = `加载中... ${start + 1}-${end}`;
+        }
+
+        try {
+          const params = new URLSearchParams();
+          params.set("limit", String(windowTasksState.limit));
+          params.set("offset", String(windowTasksState.offset));
+          if (hasPk) params.set("window_pk", String(windowTasksState.windowPk));
+          else params.set("window_ip", ipText);
+
+          const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载窗口任务失败");
+
+          windowTasksState.total = Math.max(0, Number(d.total || 0));
+          renderWindowTasksRows(Array.isArray(d.items) ? d.items : []);
+          updateWindowTasksPagerUi();
+        } catch (e) {
+          windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-danger small">加载失败：${escapeHtml(String(e?.message || "未知错误"))}</td></tr>`;
+          if (windowTasksSummary) windowTasksSummary.textContent = "加载失败";
+          toast(e?.message || "加载窗口任务失败", "error");
+        }
+      }
+
       async function openWindowTasksModal({ windowPk, windowIp, windowInfo }) {
         if (!windowTasksModal || !windowTasksModalTitle || !windowTasksModalBody) return;
         const hasPk = windowPk !== null && windowPk !== undefined && String(windowPk).trim() !== "";
@@ -520,64 +612,17 @@
           return;
         }
 
+        windowTasksState.windowPk = hasPk ? String(windowPk) : null;
+        windowTasksState.windowIp = hasPk ? "" : ipText;
+        windowTasksState.windowInfo = String(windowInfo || "-");
+        windowTasksState.offset = 0;
+        windowTasksState.total = 0;
+
         const titleScope = hasPk ? `window_pk=${String(windowPk)}` : `window_ip=${ipText}`;
-        windowTasksModalTitle.textContent = `窗口任务列表 · ${String(windowInfo || "-")} · ${titleScope}`;
-        windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-muted small">加载中...</td></tr>`;
+        windowTasksModalTitle.textContent = `窗口任务列表 · ${windowTasksState.windowInfo} · ${titleScope}`;
+        updateWindowTasksPagerUi();
         windowTasksModal.show();
-
-        try {
-          const allItems = [];
-          const pageSize = 200;
-          let offset = 0;
-          let total = 0;
-
-          do {
-            const params = new URLSearchParams();
-            params.set("limit", String(pageSize));
-            params.set("offset", String(offset));
-            if (hasPk) params.set("window_pk", String(windowPk));
-            else params.set("window_ip", ipText);
-
-            const r = await adminFetch(`/api/admin/tasks?${params.toString()}`);
-            if (!r) return;
-            const d = await r.json();
-            if (!r.ok) throw new Error(d.detail || "加载窗口任务失败");
-
-            const pageItems = Array.isArray(d.items) ? d.items : [];
-            total = Number(d.total || 0);
-            allItems.push(...pageItems);
-            offset += pageSize;
-            windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-muted small">加载中... ${Math.min(allItems.length, total)}/${total}</td></tr>`;
-            if (!pageItems.length) break;
-          } while (allItems.length < total);
-
-          if (!allItems.length) {
-            windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-muted small">该窗口暂无任务</td></tr>`;
-            return;
-          }
-
-          windowTasksModalBody.innerHTML = allItems.map((item) => {
-            const code = String(item?.task_type_code || "-");
-            const typeName = state.typeMap.get(code) || code;
-            const progressRaw = Number(item?.progress);
-            const progress = Number.isFinite(progressRaw) ? `${Math.max(0, Math.min(100, Math.trunc(progressRaw)))}%` : "-";
-            const err = String(item?.error_message || "").trim();
-            const createdAtText = formatCreatedAtLocal(item?.created_at);
-            return `
-              <tr class="small2">
-                <td class="mono">${escapeHtml(String(item?.task_id || "-"))}</td>
-                <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
-                <td>${badgeForStatus(item?.status)}</td>
-                <td class="mono">${escapeHtml(progress)}</td>
-                <td class="mono truncate-1 truncate-err" title="${escapeHtml(err || "-")}">${escapeHtml(err || "-")}</td>
-                <td class="mono text-nowrap">${escapeHtml(createdAtText || "-")}</td>
-              </tr>
-            `;
-          }).join("");
-        } catch (e) {
-          windowTasksModalBody.innerHTML = `<tr><td colspan="6" class="text-danger small">加载失败：${escapeHtml(String(e?.message || "未知错误"))}</td></tr>`;
-          toast(e?.message || "加载窗口任务失败", "error");
-        }
+        await loadWindowTasksPage();
       }
 
       function currentFilters() {
@@ -803,6 +848,18 @@
           updateWindowScopeUi();
           recentInvalidReqModal.hide();
           await load();
+        });
+      }
+      if (btnWindowTasksPrev) {
+        btnWindowTasksPrev.addEventListener("click", async () => {
+          windowTasksState.offset = Math.max(0, windowTasksState.offset - windowTasksState.limit);
+          await loadWindowTasksPage();
+        });
+      }
+      if (btnWindowTasksNext) {
+        btnWindowTasksNext.addEventListener("click", async () => {
+          windowTasksState.offset = windowTasksState.offset + windowTasksState.limit;
+          await loadWindowTasksPage();
         });
       }
 
