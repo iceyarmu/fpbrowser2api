@@ -1345,16 +1345,26 @@ async def _sora_create_task_pw(
 
         bt_lower = str(body_text or "").lower()
         msg_lower = str(err_msg or "").lower()
-        if status_i == 400 and (
-            str(err_code or "").strip() == "cameo_not_found"
-            or "cameo_not_found" in bt_lower
-            or "does not have a cameo" in bt_lower
-            or "does not have a cameo" in msg_lower
-        ):
-            raise NonPenalizedTaskError(
-                f"create 失败（cameo_not_found）：{safe_trim(str(err_msg or body_text), 400)}",
-                status_code=status_i,
+        if status_i == 400:
+            cameo_code = str(err_code or "").strip()
+            is_cameo_not_found = (
+                cameo_code == "cameo_not_found"
+                or "cameo_not_found" in bt_lower
+                or "does not have a cameo" in bt_lower
+                or "does not have a cameo" in msg_lower
             )
+            is_cameo_permission_denied = (
+                cameo_code == "cameo_permission_denied"
+                or "cameo_permission_denied" in bt_lower
+                or "not allowed to access one or more mentioned cameos" in bt_lower
+                or "not allowed to access one or more mentioned cameos" in msg_lower
+            )
+            if is_cameo_not_found or is_cameo_permission_denied:
+                err_kind = "cameo_not_found" if is_cameo_not_found else "cameo_permission_denied"
+                raise NonPenalizedTaskError(
+                    f"create 失败（{err_kind}）：{safe_trim(str(err_msg or body_text), 400)}",
+                    status_code=status_i,
+                )
 
         # token 过期：交给上层做“重新获取 access_token 并重试”的流程；
         # 且该类错误不应计入窗口连续错误。
