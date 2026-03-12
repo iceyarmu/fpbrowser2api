@@ -46,13 +46,14 @@
         <div class="card-body">
           <div class="d-flex align-items-center mb-3">
             <h5 class="card-title mb-0">卡密列表</h5>
+            <a class="btn btn-link btn-sm ms-3 p-0" href="https://chong.databrain.sbs/" target="_blank" rel="noopener noreferrer">充值入口</a>
             <button class="btn btn-outline-secondary btn-sm ms-auto" id="btnRefresh">刷新</button>
           </div>
           <div class="table-responsive">
             <table class="table table-sm table-striped align-middle mb-0">
               <thead>
                 <tr>
-                  <th style="width: 100px;">序号</th>
+                  <th style="width: 100px;">ID</th>
                   <th>卡密</th>
                   <th style="width: 220px;">更新时间</th>
                   <th style="width: 260px;">操作</th>
@@ -81,13 +82,14 @@
           tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted py-4">暂无卡密</td></tr>`;
           return;
         }
-        tbody.innerHTML = cardKeys.map((x, idx) => {
+        tbody.innerHTML = cardKeys.map((x) => {
           const id = Number(x.id || 0);
+          const displayId = x.id ?? "-";
           const key = String(x.card_key || "");
           const updatedAt = x.updated_at || x.created_at || "-";
           return `
             <tr>
-              <td class="mono">${idx + 1}</td>
+              <td class="mono">${escapeHtml(String(displayId))}</td>
               <td class="mono">${escapeHtml(key)}</td>
               <td class="mono small">${escapeHtml(String(updatedAt))}</td>
               <td>
