@@ -221,10 +221,14 @@
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
                     <button class="btn btn-outline-warning" id="btnBulkTransfer">批量转移</button>
+                    <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
-                  <div class="small text-muted">
-                    <span id="mappingQuickStats">打开/总数/冷却0/启用/占用: 0/0/0/0/0</span>
+                  <div class="d-flex flex-wrap gap-1 align-items-center ms-auto">
+                    <div class="small text-muted">
+                      <span id="mappingQuickStats">打开/总数/冷却0/启用/占用: 0/0/0/0/0</span>
+                    </div>
+                    <button class="btn btn-outline-secondary btn-sm" id="btnRefreshMappingStats" title="仅刷新统计信息">⟳</button>
                   </div>
                 </div>
                 <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
@@ -1761,8 +1765,8 @@
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
       }
 
-      function updateMappingsHeaderSummaryUI() {
-        const items = Array.isArray(state.mappings) ? state.mappings : [];
+      function updateMappingsHeaderSummaryUI(itemsOverride = null) {
+        const items = Array.isArray(itemsOverride) ? itemsOverride : (Array.isArray(state.mappings) ? state.mappings : []);
         let success24hAll = 0;
         let successTotalAll = 0;
         let failConsecutiveAll = 0;
@@ -3185,6 +3189,73 @@
         return { ok, fail };
       }
 
+      async function refreshMappingStatsOnly(fromEl) {
+        const btn = fromEl || document.getElementById("btnRefreshMappingStats");
+        const id = document.getElementById("typeId")?.value;
+        if (!id) return toast("请先选择任务类型", "warning");
+        try {
+          setBtnBusy(btn, true, { loadingText: "刷新中", keepWidth: false });
+          const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "刷新统计失败");
+          const items = (d.items || [])
+            .slice()
+            .sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
+          updateMappingsHeaderSummaryUI(items);
+          toast("统计信息已刷新", "success");
+        } catch (e) {
+          toast(e.message || "刷新统计失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      async function syncAllWindowStatusForCurrentType(fromEl) {
+        const btn = fromEl || document.getElementById("btnSyncAllWindowStatus");
+        const typeId = document.getElementById("typeId")?.value;
+        if (!typeId) return toast("请先选择任务类型", "warning");
+        try {
+          setBtnBusy(btn, true, { loadingText: "刷新中", keepWidth: false });
+
+          if (!Array.isArray(state.mappings) || !state.mappings.length) {
+            await loadMappings({ preserveSelection: true });
+          }
+          const spacePks = Array.from(new Set(
+            (state.mappings || [])
+              .map(x => Number(x?.space_pk || 0))
+              .filter(x => x > 0)
+          ));
+          if (!spacePks.length) {
+            toast("当前任务类型暂无可同步的空间", "warning");
+            return;
+          }
+
+          let ok = 0;
+          let fail = 0;
+          for (let i = 0; i < spacePks.length; i += 1) {
+            const spacePk = spacePks[i];
+            try {
+              await postJson(`/api/admin/spaces/${spacePk}/sync-window-status`, { method: "POST", body: {} });
+              ok += 1;
+            } catch (_e) {
+              fail += 1;
+            }
+          }
+
+          await loadMappings({ preserveSelection: true });
+          if (fail > 0) {
+            toast(`刷新窗口状态完成：成功 ${ok}，失败 ${fail}`, "warning");
+          } else {
+            toast(`刷新窗口状态完成：${ok} 个空间`, "success");
+          }
+        } catch (e) {
+          toast(e.message || "刷新窗口状态失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       async function bulkRefreshQuotaSelected({ silent = false } = {}) {
         const ids = getSelectedMappingIds();
         if (!ids.length) return toast("请先勾选窗口", "error");
@@ -3339,6 +3410,7 @@
       document.getElementById("btnBulkClose")?.addEventListener("click", bulkCloseSelected);
       document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
       document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
+      document.getElementById("btnSyncAllWindowStatus")?.addEventListener("click", (e) => syncAllWindowStatusForCurrentType(e.currentTarget));
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         try {
@@ -3351,6 +3423,7 @@
           setBtnBusy(btn, false);
         }
       });
+      document.getElementById("btnRefreshMappingStats")?.addEventListener("click", (e) => refreshMappingStatsOnly(e.currentTarget));
       document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
       document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", () => openAutoRefreshErrorModal({ mappingId: null }));
       document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
