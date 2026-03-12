@@ -3541,25 +3541,25 @@ async def sora_gen_video(
                 suffix=".mp4",
                 timeout_seconds=float(payload.get("video_download_timeout_seconds") or 120.0),
                 user_agent=sess.user_agent,
-                max_bytes=10 * 1024 * 1024,  # 10MB
+                max_bytes=20 * 1024 * 1024,  # 20MB
             )
 
-            # 校验大小（<=10MB）与时长（<=5秒）
+            # 校验大小（<=20MB）与时长（<=16秒）
             try:
                 sz = int(tmp_video.stat().st_size)
             except Exception:
                 sz = -1
             if sz < 0:
                 raise NonPenalizedTaskError("无法读取视频文件大小", status_code=400)
-            if sz > 10 * 1024 * 1024:
-                raise NonPenalizedTaskError(f"视频文件过大：{sz} bytes（限制 10MB）", status_code=400)
+            if sz > 20 * 1024 * 1024:
+                raise NonPenalizedTaskError(f"视频文件过大：{sz} bytes（限制 20MB）", status_code=400)
 
             try:
                 dur = _mp4_duration_seconds(tmp_video)
             except Exception as e:
                 raise NonPenalizedTaskError(f"无法解析视频时长（仅支持 MP4）：{e}", status_code=400)
-            if float(dur) > 5.0 + 1e-6:
-                raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤5s）", status_code=400)
+            if float(dur) > 16.0 + 1e-6:
+                raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤16s）", status_code=400)
 
             await progress_cb(5, {"stage": "character_upload_video"})
 
