@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="FPBrowser2API",
-    description="指纹浏览器管理与任务调用服务",
+    description="FPB管理与任务调用服务",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -87,7 +87,7 @@ async def sora_wm_remove(
     async with ctx.driver_lock:
         if ctx.page is None:
             if ctx.context is None:
-                raise RuntimeError("指纹浏览器 context 未初始化（ensure_open 失败或被回收）")
+                raise RuntimeError("Browser context 未初始化（ensure_open 失败或被回收）")
             ctx.page = await pick_working_page_from_context(ctx.context)
 
         # 先打开入口页（建立该站点上下文/ cookie / 本地存储等）

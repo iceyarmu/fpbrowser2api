@@ -373,7 +373,7 @@ class PlaywrightBrowserContext:
                 pass
             self.playwright = None
             self.browser = None
-            raise RuntimeError(f"连接指纹浏览器 CDP 失败：endpoint={debugger_address} err={e}") from e
+            raise RuntimeError(f"连接CDP失败：endpoint={debugger_address} err={e}") from e
 
         try:
             ctxs = list(getattr(self.browser, "contexts", []) or [])
