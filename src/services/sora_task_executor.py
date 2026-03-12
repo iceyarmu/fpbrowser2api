@@ -3225,7 +3225,11 @@ class SoraSession:
         except Exception:
             post_id = ""
         if not post_id:
-            raise RuntimeError(f"发布草稿失败：未返回 post_id resp={safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)}")
+            _resp_str = safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)
+            _resp_lower = _resp_str.lower()
+            if "cameo_not_found" in _resp_lower or "does not have a cameo" in _resp_lower:
+                raise NonPenalizedTaskError(f"发布草稿失败（cameo_not_found）：{_resp_str}", status_code=400)
+            raise RuntimeError(f"发布草稿失败：未返回 post_id resp={_resp_str}")
 
         # 优先回传可下载的视频直链（downloadable_url）；取不到再回退到帖子链接
         downloadable_url = ""
