@@ -452,7 +452,7 @@
             <div class="mb-3">
               <label class="form-label">回退目标任务类型</label>
               <select class="form-select" id="mapRollbackTypeId"></select>
-              <div class="form-text">回退后，该窗口会从当前任务类型移除，并加入目标任务类型。</div>
+              <div class="form-text">回退后，会删除当前任务类型与窗口的绑定；窗口会按目标任务类型所属项目迁移到目标项目空间（如有跨项目）。</div>
             </div>
             <div>
               <label class="form-label">回退原因</label>
@@ -2779,13 +2779,13 @@
 
           await postJson(`/api/admin/task-type-windows/${mappingId}`, {
             method: "PATCH",
-            body: { task_type_id: targetTypeId },
+            body: { deleted: true },
           });
 
           if (movedSpacePk > 0) {
-            toast(`已回退到：${targetType?.name || targetTypeId}（窗口已迁移到空间#${movedSpacePk}，备注已更新）`, "success");
+            toast(`已回退并删除绑定：${targetType?.name || targetTypeId}（窗口已迁移到空间#${movedSpacePk}，备注已更新）`, "success");
           } else {
-            toast(`已回退到：${targetType?.name || targetTypeId}（备注已更新）`, "success");
+            toast(`已回退并删除绑定：${targetType?.name || targetTypeId}（备注已更新）`, "success");
           }
           mappingRollbackModal.hide();
           await loadMappings();
