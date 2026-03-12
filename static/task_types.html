@@ -233,6 +233,18 @@
                 </div>
                 <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
               </div>
+              <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-1">
+                <div class="small text-muted" data-role="mapping-page-info">总计 0 条 · 第 0/0 页</div>
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                  <label class="small text-muted mb-0" for="mappingPageSizeTop">每页</label>
+                  <select class="form-select form-select-sm mapping-page-size" id="mappingPageSizeTop" style="width: 90px;">
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                  <button class="btn btn-outline-secondary btn-sm" data-action="mapping-page" data-dir="prev" disabled>上一页</button>
+                  <button class="btn btn-outline-secondary btn-sm" data-action="mapping-page" data-dir="next" disabled>下一页</button>
+                </div>
+              </div>
 
               <div class="win-table-wrap table-responsive">
                 <table class="table table-sm align-middle mb-0">
@@ -256,6 +268,18 @@
                   </thead>
                   <tbody id="mappingBody"></tbody>
                 </table>
+              </div>
+              <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mt-1">
+                <div class="small text-muted" data-role="mapping-page-info">总计 0 条 · 第 0/0 页</div>
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                  <label class="small text-muted mb-0" for="mappingPageSizeBottom">每页</label>
+                  <select class="form-select form-select-sm mapping-page-size" id="mappingPageSizeBottom" style="width: 90px;">
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                  <button class="btn btn-outline-secondary btn-sm" data-action="mapping-page" data-dir="prev" disabled>上一页</button>
+                  <button class="btn btn-outline-secondary btn-sm" data-action="mapping-page" data-dir="next" disabled>下一页</button>
+                </div>
               </div>
             </div>
           </div>
@@ -293,6 +317,18 @@
                 已选 <span class="fw-semibold" id="winSelectedCount">0</span> 个
               </div>
             </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mt-2">
+              <div class="small text-muted" data-role="win-picker-page-info">总计 0 条 · 第 0/0 页</div>
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <label class="small text-muted mb-0" for="winPickerPageSizeTop">每页</label>
+                <select class="form-select form-select-sm win-picker-page-size" id="winPickerPageSizeTop" style="width: 90px;">
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+                <button class="btn btn-outline-secondary btn-sm" data-action="win-picker-page" data-dir="prev" disabled>上一页</button>
+                <button class="btn btn-outline-secondary btn-sm" data-action="win-picker-page" data-dir="next" disabled>下一页</button>
+              </div>
+            </div>
             <hr />
             <div class="table-responsive">
               <table class="table table-sm align-middle">
@@ -307,6 +343,18 @@
                 </thead>
                 <tbody id="winBody"></tbody>
               </table>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mt-1">
+              <div class="small text-muted" data-role="win-picker-page-info">总计 0 条 · 第 0/0 页</div>
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <label class="small text-muted mb-0" for="winPickerPageSizeBottom">每页</label>
+                <select class="form-select form-select-sm win-picker-page-size" id="winPickerPageSizeBottom" style="width: 90px;">
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+                <button class="btn btn-outline-secondary btn-sm" data-action="win-picker-page" data-dir="prev" disabled>上一页</button>
+                <button class="btn btn-outline-secondary btn-sm" data-action="win-picker-page" data-dir="next" disabled>下一页</button>
+              </div>
             </div>
           </div>
         </div>
@@ -608,7 +656,19 @@
         closeHintMappingId: null,
         mappingSortKey: "id",
         mappingSortDir: "desc",
+        mappingList: {
+          page: 1,
+          pageSize: 50,
+          total: 0,
+          totalPages: 1,
+        },
         successTaskSortDir: "desc",
+        winPicker: {
+          page: 1,
+          pageSize: 50,
+          total: 0,
+          totalPages: 1,
+        },
         windowTaskList: {
           windowPk: 0,
           windowName: "-",
@@ -964,6 +1024,8 @@
         focusWinOnly: `${LS_PREFIX}task_types.focus_win_only`,
         mappingSortKey: `${LS_PREFIX}task_types.mapping_sort_key`,
         mappingSortDir: `${LS_PREFIX}task_types.mapping_sort_dir`,
+        mappingPageSize: `${LS_PREFIX}task_types.mapping_page_size`,
+        winPickerPageSize: `${LS_PREFIX}task_types.win_picker_page_size`,
         autoRefreshSeconds: `${LS_PREFIX}task_types.auto_refresh_seconds`,
         autoRefreshScope: `${LS_PREFIX}task_types.auto_refresh_scope`,
       };
@@ -972,6 +1034,83 @@
         const v = lsGet(key);
         if (v == null || v === "") return def;
         return v === "1" || v === "true";
+      }
+
+      function normalizePageSize(v) {
+        const n = parseInt(String(v || ""), 10);
+        return n === 100 ? 100 : 50;
+      }
+
+      function clampPage(page, totalPages) {
+        const p = parseInt(String(page || "1"), 10);
+        const tp = Math.max(1, parseInt(String(totalPages || "1"), 10) || 1);
+        if (!Number.isFinite(p) || p <= 1) return 1;
+        if (p >= tp) return tp;
+        return p;
+      }
+
+      function syncMappingPageSizeSelects() {
+        const v = String(normalizePageSize(ui.mappingList.pageSize));
+        document.querySelectorAll(".mapping-page-size").forEach((el) => {
+          el.value = v;
+        });
+      }
+
+      function syncWinPickerPageSizeSelects() {
+        const v = String(normalizePageSize(ui.winPicker.pageSize));
+        document.querySelectorAll(".win-picker-page-size").forEach((el) => {
+          el.value = v;
+        });
+      }
+
+      function updateMappingPaginationUI(totalItemsRaw) {
+        const totalItems = Math.max(0, Number(totalItemsRaw ?? (state.mappings || []).length) || 0);
+        const pageSize = normalizePageSize(ui.mappingList.pageSize);
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
+        ui.mappingList.pageSize = pageSize;
+        ui.mappingList.total = totalItems;
+        ui.mappingList.totalPages = totalPages;
+        ui.mappingList.page = clampPage(ui.mappingList.page, totalPages);
+
+        const pageText = totalItems > 0 ? `${ui.mappingList.page}/${totalPages}` : "0/0";
+        const canPrev = totalItems > 0 && ui.mappingList.page > 1;
+        const canNext = totalItems > 0 && ui.mappingList.page < totalPages;
+
+        document.querySelectorAll('[data-role="mapping-page-info"]').forEach((el) => {
+          el.textContent = `总计 ${totalItems} 条 · 第 ${pageText} 页`;
+        });
+        document.querySelectorAll('[data-action="mapping-page"][data-dir="prev"]').forEach((btn) => {
+          btn.disabled = !canPrev;
+        });
+        document.querySelectorAll('[data-action="mapping-page"][data-dir="next"]').forEach((btn) => {
+          btn.disabled = !canNext;
+        });
+        syncMappingPageSizeSelects();
+      }
+
+      function updateWinPickerPaginationUI(totalItemsRaw) {
+        const totalItems = Math.max(0, Number(totalItemsRaw || 0) || 0);
+        const pageSize = normalizePageSize(ui.winPicker.pageSize);
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
+        ui.winPicker.pageSize = pageSize;
+        ui.winPicker.total = totalItems;
+        ui.winPicker.totalPages = totalPages;
+        ui.winPicker.page = clampPage(ui.winPicker.page, totalPages);
+
+        const pageText = totalItems > 0 ? `${ui.winPicker.page}/${totalPages}` : "0/0";
+        const canPrev = totalItems > 0 && ui.winPicker.page > 1;
+        const canNext = totalItems > 0 && ui.winPicker.page < totalPages;
+
+        document.querySelectorAll('[data-role="win-picker-page-info"]').forEach((el) => {
+          el.textContent = `总计 ${totalItems} 条 · 第 ${pageText} 页`;
+        });
+        document.querySelectorAll('[data-action="win-picker-page"][data-dir="prev"]').forEach((btn) => {
+          btn.disabled = !canPrev;
+        });
+        document.querySelectorAll('[data-action="win-picker-page"][data-dir="next"]').forEach((btn) => {
+          btn.disabled = !canNext;
+        });
+        syncWinPickerPageSizeSelects();
       }
 
       function setBtnDisabledById(id, disabled) {
@@ -1660,10 +1799,12 @@
         toast("已删除", "success");
         state.current = null;
         state.mappings = [];
+        ui.mappingList.page = 1;
         lsDel(LS_KEYS.currentTypeId);
         await loadTypes();
         fillTypeForm(null);
         updateMappingsHeaderSummaryUI();
+        updateMappingPaginationUI(0);
         document.getElementById("mappingBody").innerHTML = "";
       }
 
@@ -1671,7 +1812,9 @@
         const id = document.getElementById("typeId").value;
         if (!id) {
           state.mappings = [];
+          ui.mappingList.page = 1;
           updateMappingsHeaderSummaryUI();
+          updateMappingPaginationUI(0);
           document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
@@ -1689,6 +1832,7 @@
         } else {
           // 任务类型切换时，清空勾选更符合预期
           state.mapSelected = new Set();
+          ui.mappingList.page = 1;
         }
         updateMapSelectedCountUI();
         renderMappings();
@@ -1903,13 +2047,22 @@
         const body = document.getElementById("mappingBody");
         const canEditMapping = canEditTaskTypeConfig();
         updateMappingsHeaderSummaryUI();
+        updateQuotaSortHint();
         if (!state.mappings.length) {
+          updateMappingPaginationUI(0);
           body.innerHTML = `<tr><td colspan="14" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
-        updateQuotaSortHint();
-        const items = getSortedMappings();
+        const sortedItems = getSortedMappings();
+        const pageSize = normalizePageSize(ui.mappingList.pageSize);
+        const totalItems = sortedItems.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
+        ui.mappingList.pageSize = pageSize;
+        ui.mappingList.page = clampPage(ui.mappingList.page, totalPages);
+        const from = (ui.mappingList.page - 1) * pageSize;
+        const items = sortedItems.slice(from, from + pageSize);
+        updateMappingPaginationUI(totalItems);
         body.innerHTML = items.map(m => {
           const cooling = coolingFlagForMapping(m);
           const success24h = Number(m.success_count_24h ?? m.success_24h_count ?? m.success_24h ?? 0) || 0;
@@ -2185,6 +2338,7 @@
         } else {
           ui.mappingSortDir = ui.mappingSortDir === "desc" ? "asc" : "desc";
         }
+        ui.mappingList.page = 1;
         lsSet(LS_KEYS_UI.mappingSortKey, ui.mappingSortKey);
         lsSet(LS_KEYS_UI.mappingSortDir, ui.mappingSortDir);
         if (ui.mappingSortKey === "proxy") {
@@ -2899,6 +3053,7 @@
         state.boundWindowPks = new Set((state.mappings || []).map(x => parseInt(x?.window_pk, 10)).filter(x => !Number.isNaN(x)));
         state.winSelected = new Set(); // 仅记录“新增绑定”的窗口
         document.getElementById("winFilter").value = "";
+        ui.winPicker.page = 1;
         renderWinList();
         winModal.show();
       }
@@ -2906,17 +3061,25 @@
       function renderWinList() {
         const body = document.getElementById("winBody");
         const q = (document.getElementById("winFilter")?.value || "").trim().toLowerCase();
-        const items = !q ? state.windows : state.windows.filter(w => {
+        const filtered = !q ? state.windows : state.windows.filter(w => {
           const hay = [
             w.project_name, w.browser_name, w.space_id, w.space_name, w.window_name,
             w.platform_account, w.platform_url, w.proxy_addr,
           ].filter(Boolean).join(" ").toLowerCase();
           return hay.includes(q);
         });
+        const pageSize = normalizePageSize(ui.winPicker.pageSize);
+        const totalItems = filtered.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
+        ui.winPicker.pageSize = pageSize;
+        ui.winPicker.page = clampPage(ui.winPicker.page, totalPages);
+        const from = (ui.winPicker.page - 1) * pageSize;
+        const items = filtered.slice(from, from + pageSize);
+        updateWinPickerPaginationUI(totalItems);
 
         document.getElementById("winSelectedCount").textContent = String(state.winSelected.size || 0);
 
-        if (!items.length) {
+        if (!filtered.length) {
           body.innerHTML = `<tr><td colspan="5" class="text-muted small">${state.windows.length ? "无匹配结果，请调整搜索条件。" : "暂无窗口数据，请先在“项目管理”里同步窗口。"}</td></tr>`;
           document.getElementById("chkAll").checked = false;
           return;
@@ -3000,11 +3163,13 @@
       document.getElementById("btnNewType").addEventListener("click", () => {
         state.current = null;
         state.mappings = [];
+        ui.mappingList.page = 1;
         lsSet(LS_KEYS.currentTypeId, "");
         fillTypeForm(null);
         renderTypeSelect();
         document.getElementById("typeSelect").value = "";
         updateMappingsHeaderSummaryUI();
+        updateMappingPaginationUI(0);
         document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
@@ -3030,9 +3195,11 @@
         if (!v) {
           state.current = null;
           state.mappings = [];
+          ui.mappingList.page = 1;
           lsSet(LS_KEYS.currentTypeId, "");
           fillTypeForm(null);
           updateMappingsHeaderSummaryUI();
+          updateMappingPaginationUI(0);
           document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
@@ -3129,7 +3296,10 @@
           syncAnalyzeProxyButtons();
         }
       });
-      document.getElementById("winFilter").addEventListener("input", () => renderWinList());
+      document.getElementById("winFilter").addEventListener("input", () => {
+        ui.winPicker.page = 1;
+        renderWinList();
+      });
       document.getElementById("chkAll").addEventListener("change", (e) => {
         const checked = e.target.checked;
         document.querySelectorAll("#winBody .chkWin").forEach(chk => {
@@ -3453,6 +3623,10 @@
         const sortDir = lsGet(LS_KEYS_UI.mappingSortDir) || "desc";
         ui.mappingSortKey = sortKey;
         ui.mappingSortDir = sortDir;
+        ui.mappingList.pageSize = normalizePageSize(lsGet(LS_KEYS_UI.mappingPageSize) || "50");
+        ui.winPicker.pageSize = normalizePageSize(lsGet(LS_KEYS_UI.winPickerPageSize) || "50");
+        syncMappingPageSizeSelects();
+        syncWinPickerPageSizeSelects();
         updateQuotaSortHint();
 
         // 定时刷新默认值
@@ -3501,6 +3675,41 @@
       document.getElementById("btnRefreshMappingStats")?.addEventListener("click", (e) => refreshMappingStatsOnly(e.currentTarget));
       document.getElementById("btnAutoRefreshToggle")?.addEventListener("click", toggleAutoRefresh);
       document.getElementById("btnAutoRefreshErrors")?.addEventListener("click", () => openAutoRefreshErrorModal({ mappingId: null }));
+      document.addEventListener("click", (e) => {
+        const btn = e.target?.closest?.('[data-action="mapping-page"]');
+        if (!btn) return;
+        const dir = String(btn.getAttribute("data-dir") || "").toLowerCase();
+        if (dir === "prev") ui.mappingList.page = Math.max(1, ui.mappingList.page - 1);
+        if (dir === "next") ui.mappingList.page = ui.mappingList.page + 1;
+        renderMappings();
+      });
+      document.addEventListener("click", (e) => {
+        const btn = e.target?.closest?.('[data-action="win-picker-page"]');
+        if (!btn) return;
+        const dir = String(btn.getAttribute("data-dir") || "").toLowerCase();
+        if (dir === "prev") ui.winPicker.page = Math.max(1, ui.winPicker.page - 1);
+        if (dir === "next") ui.winPicker.page = ui.winPicker.page + 1;
+        renderWinList();
+      });
+      document.addEventListener("change", (e) => {
+        const el = e.target;
+        if (!(el instanceof HTMLSelectElement)) return;
+        if (el.classList.contains("mapping-page-size")) {
+          ui.mappingList.pageSize = normalizePageSize(el.value);
+          ui.mappingList.page = 1;
+          lsSet(LS_KEYS_UI.mappingPageSize, String(ui.mappingList.pageSize));
+          syncMappingPageSizeSelects();
+          renderMappings();
+          return;
+        }
+        if (el.classList.contains("win-picker-page-size")) {
+          ui.winPicker.pageSize = normalizePageSize(el.value);
+          ui.winPicker.page = 1;
+          lsSet(LS_KEYS_UI.winPickerPageSize, String(ui.winPicker.pageSize));
+          syncWinPickerPageSizeSelects();
+          renderWinList();
+        }
+      });
       errorModalBody?.addEventListener("click", async (e) => {
         const btn = e.target?.closest?.('[data-action="window-task-page"]');
         if (!btn) return;
