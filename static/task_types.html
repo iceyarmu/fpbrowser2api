@@ -3485,38 +3485,9 @@
         if (!typeId) return toast("请先选择任务类型", "warning");
         try {
           setBtnBusy(btn, true, { loadingText: "刷新中", keepWidth: false });
-
-          if (!Array.isArray(state.mappings) || !state.mappings.length) {
-            await loadMappings({ preserveSelection: true });
-          }
-          const spacePks = Array.from(new Set(
-            (state.mappings || [])
-              .map(x => Number(x?.space_pk || 0))
-              .filter(x => x > 0)
-          ));
-          if (!spacePks.length) {
-            toast("当前任务类型暂无可同步的空间", "warning");
-            return;
-          }
-
-          let ok = 0;
-          let fail = 0;
-          for (let i = 0; i < spacePks.length; i += 1) {
-            const spacePk = spacePks[i];
-            try {
-              await postJson(`/api/admin/spaces/${spacePk}/sync-window-status`, { method: "POST", body: {} });
-              ok += 1;
-            } catch (_e) {
-              fail += 1;
-            }
-          }
-
+          // 只从数据库读取 window_status 字段，不通过指纹浏览器
           await loadMappings({ preserveSelection: true });
-          if (fail > 0) {
-            toast(`刷新窗口状态完成：成功 ${ok}，失败 ${fail}`, "warning");
-          } else {
-            toast(`刷新窗口状态完成：${ok} 个空间`, "success");
-          }
+          toast("窗口状态已刷新", "success");
         } catch (e) {
           toast(e.message || "刷新窗口状态失败", "error");
         } finally {
