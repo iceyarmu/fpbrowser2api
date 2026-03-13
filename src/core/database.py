@@ -426,6 +426,7 @@ class Database:
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_generation_id ON tasks(generation_id)")
             except Exception:
                 pass
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
             # 调度挑选路径索引：按 task_type 过滤 + 活跃记录排序挑选
@@ -776,6 +777,9 @@ class Database:
                     WHERE deleted = 0 AND enabled = 1
                     """
                 )
+
+            if await self._table_exists(db, "tasks"):
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
 
             # Step 3: 默认行（不覆盖已有）
             await self._ensure_default_rows(db, config_dict=config_dict)
@@ -2819,14 +2823,14 @@ class Database:
                     FROM tasks
                     WHERE window_pk = m.window_pk
                       AND status = 'completed'
-                      AND datetime(created_at) >= datetime('now', '-24 hours', 'localtime')
+                      AND created_at >= datetime('now', '-24 hours', 'localtime')
                   ) AS success_count_24h,
                   (
                     SELECT COUNT(*)
                     FROM tasks
                     WHERE window_pk = m.window_pk
                       AND status = 'failed'
-                      AND datetime(created_at) >= datetime('now', '-24 hours', 'localtime')
+                      AND created_at >= datetime('now', '-24 hours', 'localtime')
                   ) AS failed_count_24h
                 FROM task_type_windows m
                 JOIN windows w ON m.window_pk = w.id
