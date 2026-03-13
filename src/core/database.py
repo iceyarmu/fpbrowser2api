@@ -1611,8 +1611,8 @@ class Database:
             await db.commit()
             return int(cur.rowcount or 0)
 
-    async def count_proxy_bindings(self, space_pk: int) -> Dict[int, int]:
-        """统计某个空间下：每个 proxy_id 被多少个“本地未删除窗口”绑定。
+    async def count_proxy_bindings(self, space_pk: int = 0) -> Dict[int, int]:
+        """统计全局：每个 proxy_id 被多少个“本地未删除窗口”绑定（跨所有空间，代理是全局共用的）。
 
         说明：
         - 优先使用 windows.proxy_id 统计（选择代理 moduleId 的场景）。
@@ -1629,11 +1629,10 @@ class Database:
                 WITH win AS (
                   SELECT
                     id,
-                    space_pk,
                     COALESCE(proxy_id, 0) AS pid,
                     TRIM(COALESCE(proxy_addr, '')) AS proxy_addr
                   FROM windows
-                  WHERE deleted = 0 AND space_pk = ?
+                  WHERE deleted = 0
                 ),
                 matched AS (
                   SELECT
@@ -1641,8 +1640,7 @@ class Database:
                     MIN(p.proxy_id) AS matched_proxy_id
                   FROM win w
                   JOIN proxies p
-                    ON p.space_pk = w.space_pk
-                   AND p.deleted = 0
+                    ON p.deleted = 0
                    AND w.pid = 0
                    AND w.proxy_addr <> ''
                    AND (
@@ -1659,7 +1657,6 @@ class Database:
                 LEFT JOIN matched ON matched.window_id = win.id
                 GROUP BY COALESCE(NULLIF(win.pid, 0), matched.matched_proxy_id, 0)
                 """,
-                (int(space_pk),),
             )
             rows = await cur.fetchall()
             out: Dict[int, int] = {}
@@ -1674,8 +1671,8 @@ class Database:
                     out[pid] = 0
             return out
 
-    async def count_proxy_success_tasks(self, space_pk: int) -> Dict[int, int]:
-        """统计某个空间下：每个 proxy_id 对应的成功任务数（基于 tasks.window_ip）。"""
+    async def count_proxy_success_tasks(self, space_pk: int = 0) -> Dict[int, int]:
+        """统计全局：每个 proxy_id 对应的成功任务数（基于 tasks.window_ip，跨所有空间）。"""
         stats = await self.count_proxy_task_stats(space_pk)
         out: Dict[int, int] = {}
         for pid, row in stats.items():
@@ -1685,8 +1682,8 @@ class Database:
                 out[int(pid)] = 0
         return out
 
-    async def count_proxy_task_stats(self, space_pk: int) -> Dict[int, Dict[str, int]]:
-        """统计某个空间下：每个 proxy_id 的成功/失败任务数（按 tasks.window_ip 精确匹配）。"""
+    async def count_proxy_task_stats(self, space_pk: int = 0) -> Dict[int, Dict[str, int]]:
+        """统计全局：每个 proxy_id 的成功/失败任务数（按 tasks.window_ip 精确匹配，跨所有空间）。"""
         async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
@@ -1702,7 +1699,7 @@ class Database:
                       ELSE ''
                     END AS key_host_port
                   FROM proxies
-                  WHERE deleted = 0 AND space_pk = ?
+                  WHERE deleted = 0
                 )
                 SELECT
                   px.proxy_id AS proxy_id,
@@ -1728,7 +1725,6 @@ class Database:
                  )
                 GROUP BY px.proxy_id
                 """,
-                (int(space_pk),),
             )
             rows = await cur.fetchall()
             out: Dict[int, Dict[str, int]] = {}
@@ -2125,6 +2121,33 @@ class Database:
                 result.append(PlatformAccount(**d))
             return result
 
+    async def list_all_platform_accounts(self, *, include_deleted: bool = False) -> List[PlatformAccount]:
+        """返回所有空间的平台账号（按 account_id 去重，保留最近更新的记录）。"""
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            where = "" if include_deleted else "WHERE deleted = 0"
+            cur = await db.execute(
+                f"SELECT * FROM platform_accounts {where} ORDER BY updated_at DESC, id DESC"
+            )
+            rows = await cur.fetchall()
+            seen_account_ids: set = set()
+            result: List[PlatformAccount] = []
+            for r in rows:
+                d = dict(r)
+                aid = d.get("account_id", 0)
+                if aid in seen_account_ids:
+                    continue
+                seen_account_ids.add(aid)
+                if d.get("raw_json"):
+                    try:
+                        raw_obj = json.loads(d["raw_json"])
+                        d["raw"] = raw_obj if isinstance(raw_obj, dict) else None
+                    except Exception:
+                        d["raw"] = None
+                d.pop("raw_json", None)
+                result.append(PlatformAccount(**d))
+            return result
+
     async def upsert_platform_accounts(
         self,
         space_pk: int,
@@ -2285,8 +2308,8 @@ class Database:
             except Exception:
                 return 0
 
-    async def list_account_bindings(self, space_pk: int) -> Dict[int, Dict[str, Any]]:
-        """返回账号绑定信息：account_id -> {count, windows}。"""
+    async def list_account_bindings(self, space_pk: int = 0) -> Dict[int, Dict[str, Any]]:
+        """返回全局账号绑定信息：account_id -> {count, windows}（跨所有空间）。"""
         async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
@@ -2303,8 +2326,7 @@ class Database:
                   ) AS windows
                 FROM platform_accounts a
                 LEFT JOIN windows w
-                  ON w.space_pk = a.space_pk
-                 AND w.deleted = 0
+                  ON w.deleted = 0
                  AND (
                       (w.platform_account_id IS NOT NULL AND w.platform_account_id = a.account_id)
                    OR (
@@ -2317,10 +2339,9 @@ class Database:
                     )
                    )
                  )
-                WHERE a.deleted = 0 AND a.space_pk = ?
+                WHERE a.deleted = 0
                 GROUP BY a.account_id
                 """,
-                (int(space_pk),),
             )
             rows = await cur.fetchall()
             out: Dict[int, Dict[str, Any]] = {}
@@ -2361,6 +2382,32 @@ class Database:
             result: List[ProxyInfo] = []
             for r in rows:
                 d = dict(r)
+                if d.get("raw_json"):
+                    try:
+                        d["raw"] = json.loads(d["raw_json"])
+                    except Exception:
+                        d["raw"] = None
+                d.pop("raw_json", None)
+                result.append(ProxyInfo(**d))
+            return result
+
+    async def list_all_proxies(self, *, include_deleted: bool = False) -> List[ProxyInfo]:
+        """返回所有空间的代理列表（按 proxy_id 去重，保留最近更新的记录）。"""
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            where = "" if include_deleted else "WHERE deleted = 0"
+            cur = await db.execute(
+                f"SELECT * FROM proxies {where} ORDER BY updated_at DESC, id DESC"
+            )
+            rows = await cur.fetchall()
+            seen_proxy_ids: set = set()
+            result: List[ProxyInfo] = []
+            for r in rows:
+                d = dict(r)
+                pid = d.get("proxy_id", 0)
+                if pid in seen_proxy_ids:
+                    continue
+                seen_proxy_ids.add(pid)
                 if d.get("raw_json"):
                     try:
                         d["raw"] = json.loads(d["raw_json"])

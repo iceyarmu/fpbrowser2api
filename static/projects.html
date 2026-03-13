@@ -192,7 +192,7 @@
               <span class="text-muted small ms-auto" id="proxiesSummary"></span>
             </div>
             <div id="proxiesBody"></div>
-            <div class="form-text">说明：这里展示的是“已同步到本地数据库”的代理信息（包含已删除记录）；点击“同步”会从指纹浏览器拉取该空间(workspaceId)的代理列表并写入本地，默认保留本地删除状态与本地备注。</div>
+            <div class="form-text">说明：这里展示的是“已同步到本地数据库”的所有代理信息（跨空间，包含已删除记录）；点击“同步”会从指纹浏览器拉取当前空间(workspaceId)的代理列表并写入本地，默认保留本地删除状态与本地备注。</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
@@ -1749,7 +1749,7 @@
 
       async function loadLocalAccounts(spacePk, { force } = { force: false }) {
         if (!force && accountsCache.has(spacePk)) return accountsCache.get(spacePk) || [];
-        const r = await adminFetch(`/api/admin/spaces/${spacePk}/accounts`);
+        const r = await adminFetch(`/api/admin/accounts`);
         if (!r) return [];
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "读取本地账号失败");
@@ -1772,29 +1772,28 @@
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "读取项目树失败");
         const spaces = collectAllSpacesFromTree(d.tree || []);
-        if (!spaces.length) return [];
 
-        const merged = [];
-        await Promise.all(spaces.map(async (s) => {
+        const spaceMap = new Map();
+        for (const s of spaces) {
           const spk = Number(s.space_pk || 0) || 0;
-          if (!spk) return;
-          try {
-            const items = await loadLocalAccounts(spk, { force });
-            for (const a of normalizeAccounts(items)) {
-              merged.push({
-                ...a,
-                space_pk: spk,
-                project_id: Number(s.project_id || 0) || 0,
-                project_name: String(s.project_name || "").trim(),
-                browser_id: Number(s.browser_id || 0) || 0,
-                browser_name: String(s.browser_name || "").trim(),
-                space_name: String(s.space_name || "").trim(),
-              });
-            }
-          } catch (_e) {
-            // ignore single-space failures, keep others available
-          }
-        }));
+          if (spk) spaceMap.set(spk, s);
+        }
+
+        const items = await loadLocalAccounts(0, { force });
+        const merged = [];
+        for (const a of normalizeAccounts(items)) {
+          const spk = Number(a.space_pk || 0) || 0;
+          const s = spaceMap.get(spk) || {};
+          merged.push({
+            ...a,
+            space_pk: spk,
+            project_id: Number(s.project_id || 0) || 0,
+            project_name: String(s.project_name || "").trim(),
+            browser_id: Number(s.browser_id || 0) || 0,
+            browser_name: String(s.browser_name || "").trim(),
+            space_name: String(s.space_name || "").trim(),
+          });
+        }
         return merged;
       }
 
@@ -1849,7 +1848,7 @@
 
       async function openAccountsModal(spacePk) {
         accountsState.spacePk = spacePk;
-        document.getElementById("accountsModalTitle").textContent = `账号管理（全部项目账号，当前空间space_pk=${spacePk}）`;
+        document.getElementById("accountsModalTitle").textContent = `账号管理（全局）`;
         if (accountsFilter) accountsFilter.value = "";
         if (accountsImportText) accountsImportText.value = "";
         accountsModal.show();
@@ -2438,7 +2437,7 @@
 
       async function loadLocalProxies(spacePk, { force } = { force: false }) {
         if (!force && proxiesCache.has(spacePk)) return proxiesCache.get(spacePk) || [];
-        const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies?include_deleted=1`);
+        const r = await adminFetch(`/api/admin/proxies?include_deleted=1`);
         if (!r) return [];
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "读取本地代理失败");
@@ -2580,8 +2579,8 @@
       function recomputeProxyBindingsFromUi(spacePk) {
         const arr = proxiesCache.get(spacePk) || [];
         if (!Array.isArray(arr) || !arr.length) return;
-        const counts = new Map(); // proxy_id -> count
-        const selects = document.querySelectorAll(`select[data-role="proxySelect"][data-space_pk="${spacePk}"]`);
+        const counts = new Map(); // proxy_id -> count (across ALL spaces)
+        const selects = document.querySelectorAll(`select[data-role="proxySelect"]`);
         selects.forEach(sel => {
           const pidFromValue = parseInt(String(sel?.value || "0"), 10) || 0;
           const pidFromDs = parseInt(String(sel?.dataset?.current_proxy_id || "0"), 10) || 0;
@@ -2602,7 +2601,7 @@
 
       async function openProxiesModal(spacePk) {
         proxiesState.spacePk = spacePk;
-        document.getElementById("proxiesModalTitle").textContent = `代理列表（space_pk=${spacePk}）`;
+        document.getElementById("proxiesModalTitle").textContent = `代理列表（全局）`;
         proxiesFilter.value = "";
         proxiesModal.show();
         await refreshProxies(spacePk);

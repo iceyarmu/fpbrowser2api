@@ -819,6 +819,20 @@ async def list_local_proxies(
     }
 
 
+@router.get("/api/admin/proxies")
+async def list_all_proxies(
+    include_deleted: bool = False,
+    token: str = Depends(verify_admin_token),
+):
+    """返回所有空间的代理列表（按 proxy_id 去重），代理是跨空间共用的。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {
+        "success": True,
+        "proxies": [p.model_dump(exclude={"raw"}) for p in await db.list_all_proxies(include_deleted=include_deleted)],
+    }
+
+
 @router.get("/api/admin/spaces/{space_pk}/proxy-bindings")
 async def list_proxy_bindings(space_pk: int, token: str = Depends(verify_admin_token)):
     """返回代理绑定数：proxy_id -> 被多少个本地未删除窗口绑定。"""
@@ -1018,6 +1032,30 @@ async def sync_space_proxies(
         overwrite_remark=(not keep_local_remark),
     )
     return {"success": True, "message": f"同步完成，写入/更新 {affected} 条代理记录", "affected": affected}
+
+
+@router.get("/api/admin/accounts")
+async def list_all_accounts_global(
+    include_deleted: bool = True,
+    token: str = Depends(verify_admin_token),
+):
+    """返回所有空间的平台账号列表（按 account_id 去重），账号是跨空间共用的。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    rows = [a.model_dump(exclude={"raw"}) for a in await db.list_all_platform_accounts(include_deleted=include_deleted)]
+    bindings = await db.list_account_bindings()
+    merged: List[Dict[str, Any]] = []
+    for x in rows:
+        aid = int(x.get("account_id") or 0)
+        b = bindings.get(aid) or {}
+        merged.append(
+            {
+                **x,
+                "binding_count": int(b.get("count") or 0),
+                "binding_windows": str(b.get("windows") or "").strip(),
+            }
+        )
+    return {"success": True, "accounts": merged}
 
 
 @router.get("/api/admin/spaces/{space_pk}/accounts")
