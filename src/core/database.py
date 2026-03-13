@@ -1448,8 +1448,9 @@ class Database:
         """把同步到的窗口信息保存到 DB（按 space_pk+window_key 唯一 upsert）。
 
         返回：本次写入/更新的行数（粗略统计）。
+        使用 _write_conn 避免与任务创建/进度查询等并发写导致死锁。
         """
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             for w in windows:
@@ -1956,9 +1957,9 @@ class Database:
                 return 0
 
     async def sync_window_statuses(self, *, space_pk: int, open_window_keys: List[str]) -> int:
-        """按窗口 key 批量同步窗口状态（1=打开，0=未打开）。"""
+        """按窗口 key 批量同步窗口状态（1=打开，0=未打开）。使用 _write_conn 避免死锁。"""
         keys = [str(x or "").strip() for x in (open_window_keys or []) if str(x or "").strip()]
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             if keys:
                 placeholders = ",".join(["?"] * len(keys))
                 sql = f"""
@@ -2134,8 +2135,10 @@ class Database:
         - full_replace=True：以输入结果为准，未出现账号会标记 deleted=1（全量同步）
         - full_replace=False：仅增量写入，不删除其他本地账号（适合导入后回填）
         - restore_deleted=False：若本地账号已被手动删除（deleted=1），同步时保持删除状态
+
+        使用 _write_conn 避免批量导入时与同步窗口等并发写导致死锁。
         """
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             incoming_ids: List[int] = []
@@ -2371,8 +2374,11 @@ class Database:
         restore_deleted: bool = False,
         overwrite_remark: bool = False,
     ) -> int:
-        """把同步到的代理列表保存到 DB（按 space_pk+proxy_id 唯一 upsert）。"""
-        async with self._read_conn() as db:
+        """把同步到的代理列表保存到 DB（按 space_pk+proxy_id 唯一 upsert）。
+
+        使用 _write_conn 避免与同步窗口等并发写导致死锁。
+        """
+        async with self._write_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
             incoming_ids: List[int] = []

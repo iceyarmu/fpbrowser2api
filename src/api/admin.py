@@ -1444,7 +1444,6 @@ async def sync_window_proxy_addr_local(space_pk: int, window_key: str, token: st
 
     updated_windows = await db.list_windows(space_pk)
     updated = next((w for w in (updated_windows or []) if str(getattr(w, "window_key", "") or "").strip() == wk), None)
-    print(updated)
     return {
         "success": True,
         "message": "窗口代理信息已同步到本地",

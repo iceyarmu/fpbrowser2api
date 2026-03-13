@@ -25,11 +25,56 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import http.client
 from urllib.parse import urlsplit
 
 import httpx
+
+
+class RoxyRateLimiter:
+    """RoxyBrowser API 速率限制：每分钟最多 200 次调用。留余量 180/分钟。"""
+
+    def __init__(self, max_per_minute: int = 180, min_interval: float = 0.35):
+        self.max_per_minute = max_per_minute
+        self.min_interval = min_interval  # 秒，两次调用最小间隔
+        self._calls: List[float] = []
+        self._lock = asyncio.Lock()
+        self._last_call_time = 0.0
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            # 清理 60 秒前的记录
+            cutoff = now - 60.0
+            self._calls = [t for t in self._calls if t > cutoff]
+            # 若已达上限，等待最老的一次过期
+            if len(self._calls) >= self.max_per_minute:
+                wait = 60.0 - (now - self._calls[0])
+                if wait > 0.01:
+                    await asyncio.sleep(wait)
+                    now = time.monotonic()
+                    self._calls = [t for t in self._calls if t > now - 60.0]
+            # 最小间隔
+            elapsed = now - self._last_call_time
+            if elapsed < self.min_interval and self._last_call_time > 0:
+                await asyncio.sleep(self.min_interval - elapsed)
+            self._last_call_time = time.monotonic()
+            self._calls.append(self._last_call_time)
+
+
+# 全局 Roxy 速率限制器（按 base_url 区分不同浏览器实例）
+_roxy_limiters: Dict[str, RoxyRateLimiter] = {}
+_roxy_limiters_lock = asyncio.Lock()
+
+
+async def _get_roxy_limiter(base_url: str) -> RoxyRateLimiter:
+    key = (base_url or "").strip().rstrip("/") or "_default"
+    async with _roxy_limiters_lock:
+        if key not in _roxy_limiters:
+            _roxy_limiters[key] = RoxyRateLimiter(max_per_minute=180, min_interval=0.35)
+        return _roxy_limiters[key]
 
 
 class FPBrowserClient:
@@ -618,6 +663,7 @@ class FPBrowserClient:
         return h
 
     async def _roxy_get(self, base_url: str, token: Optional[str], path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        await _get_roxy_limiter(base_url).acquire()
         url = base_url.rstrip("/") + "/" + path.lstrip("/")
         async with self._client() as client:
             resp = await client.get(url, headers=self._roxy_headers(token), params={k: v for k, v in (params or {}).items() if v is not None and v != ""})
@@ -634,6 +680,7 @@ class FPBrowserClient:
         timeout_seconds: Optional[float] = None,
         allow_non_json: bool = False,
     ) -> Dict[str, Any]:
+        await _get_roxy_limiter(base_url).acquire()
         url = base_url.rstrip("/") + "/" + path.lstrip("/")
         async with self._client() as client:
             headers = self._roxy_headers(token)
@@ -788,6 +835,7 @@ class FPBrowserClient:
             )
         except Exception:
             close_timeout = 12.0
+            await _get_roxy_limiter(base_url).acquire()
             try:
                 rsp = await asyncio.wait_for(
                     asyncio.to_thread(
