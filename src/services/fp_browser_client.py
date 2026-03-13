@@ -663,7 +663,8 @@ class FPBrowserClient:
         return h
 
     async def _roxy_get(self, base_url: str, token: Optional[str], path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        await _get_roxy_limiter(base_url).acquire()
+        limiter = await _get_roxy_limiter(base_url)
+        await limiter.acquire()
         url = base_url.rstrip("/") + "/" + path.lstrip("/")
         async with self._client() as client:
             resp = await client.get(url, headers=self._roxy_headers(token), params={k: v for k, v in (params or {}).items() if v is not None and v != ""})
@@ -680,7 +681,8 @@ class FPBrowserClient:
         timeout_seconds: Optional[float] = None,
         allow_non_json: bool = False,
     ) -> Dict[str, Any]:
-        await _get_roxy_limiter(base_url).acquire()
+        limiter = await _get_roxy_limiter(base_url)
+        await limiter.acquire()
         url = base_url.rstrip("/") + "/" + path.lstrip("/")
         async with self._client() as client:
             headers = self._roxy_headers(token)
@@ -835,7 +837,8 @@ class FPBrowserClient:
             )
         except Exception:
             close_timeout = 12.0
-            await _get_roxy_limiter(base_url).acquire()
+            limiter = await _get_roxy_limiter(base_url)
+            await limiter.acquire()
             try:
                 rsp = await asyncio.wait_for(
                     asyncio.to_thread(
