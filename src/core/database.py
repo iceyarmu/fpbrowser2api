@@ -824,7 +824,7 @@ class Database:
         stop_accepting_tasks: Optional[bool] = None,
         public_create_task_max_inflight: Optional[int] = None,
     ) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM system_config WHERE id = 1")
             row = await cur.fetchone()
@@ -941,7 +941,7 @@ class Database:
             return [AdminUser(**dict(r)) for r in rows]
 
     async def create_admin_user(self, username: str, password_hash: str, is_admin: bool = False) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO admin_users (username, password_hash, is_admin)
@@ -953,7 +953,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_admin_user_role(self, user_id: int, is_admin: bool) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -965,7 +965,7 @@ class Database:
             await db.commit()
 
     async def update_admin_password(self, username: str, new_password_hash: str) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -977,7 +977,7 @@ class Database:
             await db.commit()
 
     async def update_admin_username(self, old_username: str, new_username: str) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -989,7 +989,7 @@ class Database:
             await db.commit()
 
     async def update_admin_password_by_id(self, user_id: int, new_password_hash: str) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 """
                 UPDATE admin_users
@@ -1041,7 +1041,7 @@ class Database:
 
     async def set_user_page_permissions(self, user_id: int, page_keys: List[str]) -> None:
         clean = sorted({str(x or "").strip() for x in (page_keys or []) if str(x or "").strip()})
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("DELETE FROM user_page_permissions WHERE user_id = ?", (int(user_id),))
             for k in clean:
                 await db.execute(
@@ -1060,7 +1060,7 @@ class Database:
             if v > 0:
                 clean_set.add(v)
         clean = sorted(clean_set)
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("DELETE FROM user_project_permissions WHERE user_id = ?", (int(user_id),))
             for pid in clean:
                 await db.execute(
@@ -1079,7 +1079,7 @@ class Database:
             if v > 0:
                 clean_set.add(v)
         clean = sorted(clean_set)
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("DELETE FROM user_task_type_permissions WHERE user_id = ?", (int(user_id),))
             for tid in clean:
                 await db.execute(
@@ -1090,7 +1090,7 @@ class Database:
 
     # ---------- request logs ----------
     async def add_request_log(self, log: RequestLog) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 """
                 INSERT INTO request_logs (actor, method, path, request_body, response_body, status_code, duration)
@@ -1111,7 +1111,7 @@ class Database:
             return [dict(r) for r in rows]
 
     async def clear_request_logs(self) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("DELETE FROM request_logs")
             await db.commit()
 
@@ -1260,7 +1260,7 @@ class Database:
             return [Project(**dict(r)) for r in rows]
 
     async def create_project(self, name: str) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 "INSERT INTO projects (name, deleted) VALUES (?, 0)",
                 (name.strip(),),
@@ -1269,7 +1269,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_project(self, project_id: int, name: str) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "UPDATE projects SET name = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (name.strip(), project_id),
@@ -1277,7 +1277,7 @@ class Database:
             await db.commit()
 
     async def delete_project(self, project_id: int) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("UPDATE projects SET deleted = 1, updated_at = datetime('now','localtime') WHERE id = ?", (project_id,))
             await db.commit()
 
@@ -1300,7 +1300,7 @@ class Database:
         vendor: str = "generic",
         access_key: Optional[str] = None,
     ) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO browsers (project_id, name, lan_addr, vendor, access_key, deleted)
@@ -1312,7 +1312,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_browser(self, browser_id: int, name: str, lan_addr: str, vendor: str, access_key: Optional[str]) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 """
                 UPDATE browsers
@@ -1324,7 +1324,7 @@ class Database:
             await db.commit()
 
     async def delete_browser(self, browser_id: int) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("UPDATE browsers SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ?", (browser_id,))
             await db.commit()
 
@@ -1347,7 +1347,7 @@ class Database:
             return [BrowserSpace(**dict(r)) for r in rows]
 
     async def create_space(self, browser_id: int, name: str, space_id: str, project_ids: Optional[str] = None) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO spaces (browser_id, name, space_id, project_ids, deleted)
@@ -1359,7 +1359,7 @@ class Database:
             return int(cur.lastrowid)
 
     async def update_space(self, space_pk: int, name: str, space_id: str, project_ids: Optional[str] = None) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "UPDATE spaces SET name=?, space_id=?, project_ids=?, updated_at=datetime('now','localtime') WHERE id=?",
                 (name.strip(), space_id.strip(), (project_ids or "").strip() or None, space_pk),
@@ -1367,7 +1367,7 @@ class Database:
             await db.commit()
 
     async def delete_space(self, space_pk: int) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("UPDATE spaces SET deleted = 1, updated_at=datetime('now','localtime') WHERE id = ?", (space_pk,))
             await db.commit()
 
@@ -1595,7 +1595,7 @@ class Database:
         wk = str(window_key or "").strip()
         if not wk:
             return 0
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -1878,7 +1878,7 @@ class Database:
         spk = int(space_pk)
         wk = str(window_key).strip()
         pid = int(proxy_id or 0)
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             if pid <= 0:
                 cur = await db.execute(
                     """
@@ -1936,7 +1936,7 @@ class Database:
         platform_url: Optional[str],
     ) -> int:
         """更新窗口绑定的平台账号信息（本地立即生效）。"""
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -1997,7 +1997,7 @@ class Database:
         if not sid or not wk:
             return 0
         st = 1 if int(window_status or 0) == 1 else 0
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -2025,7 +2025,7 @@ class Database:
 
     async def clear_window_platform_binding_by_account(self, *, space_pk: int, account_id: int) -> int:
         """当账号被删除时，清空引用该账号的窗口绑定。"""
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE windows
@@ -2254,7 +2254,7 @@ class Database:
             return PlatformAccount(**d)
 
     async def delete_platform_account(self, *, space_pk: int, account_id: int) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE platform_accounts
@@ -2270,7 +2270,7 @@ class Database:
                 return 0
 
     async def update_platform_account_remark(self, *, space_pk: int, account_id: int, remark: str) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE platform_accounts
@@ -2550,7 +2550,7 @@ class Database:
 
     async def update_proxy_remark(self, *, space_pk: int, proxy_id: int, remark: str) -> int:
         """仅更新本地代理备注。"""
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE proxies
@@ -2564,7 +2564,7 @@ class Database:
 
     async def delete_proxy(self, *, space_pk: int, proxy_id: int) -> int:
         """本地删除某个代理（仅标记 deleted=1，不影响指纹浏览器侧）。"""
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE proxies
@@ -2607,7 +2607,7 @@ class Database:
         risk_level: Optional[str],
         asn_type: Optional[str],
     ) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE proxies
@@ -2735,7 +2735,7 @@ class Database:
         create_task_handler: Optional[str] = None,
         refresh_quota_handler: Optional[str] = None,
     ) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO task_types (
@@ -2774,7 +2774,7 @@ class Database:
         refresh_quota_handler: Optional[str],
         enabled: bool,
     ) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT code FROM task_types WHERE id=? AND deleted=0", (task_type_id,))
             row = await cur.fetchone()
@@ -2856,7 +2856,7 @@ class Database:
 
     # ---------- auto refresh error logs ----------
     async def add_auto_refresh_error_log(self, log: AutoRefreshErrorLog) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO auto_refresh_error_logs (
@@ -2922,7 +2922,7 @@ class Database:
             return [dict(r) for r in rows]
 
     async def delete_task_type(self, task_type_id: int) -> None:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             await db.execute("UPDATE task_types SET deleted=1, updated_at=datetime('now','localtime') WHERE id=?", (task_type_id,))
             await db.commit()
 
@@ -3000,7 +3000,7 @@ class Database:
         remaining_quota: int,
         enabled: bool = True,
     ) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             affected = 0
             for wid in window_pks:
                 await db.execute(
@@ -3771,7 +3771,7 @@ class Database:
         同时：
         - 重置 `task_type_windows.inflight_slots`，避免预占并发槽位在异常退出后“泄漏”
         """
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             tasks_failed = 0
             mapping_slots_reset = 0
 
@@ -3817,7 +3817,7 @@ class Database:
             return {"tasks_failed": tasks_failed, "mapping_slots_reset": mapping_slots_reset}
 
     async def create_task(self, task: Task) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, window_ip, created_at)
