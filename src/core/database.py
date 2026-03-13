@@ -1770,8 +1770,10 @@ class Database:
         返回：
         - window_affected: windows 表影响行数（0 表示未找到该窗口或已被删除）
         - task_type_window_affected: task_type_windows 表影响行数
+
+        使用 _write_conn 避免与同步窗口等并发写导致死锁。
         """
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur_win = await db.execute(
                 "SELECT id FROM windows WHERE space_pk = ? AND window_key = ? AND deleted = 0 LIMIT 1",
@@ -1811,6 +1813,8 @@ class Database:
         - 迁移后保留账号绑定信息，避免 UI 中“当前账号”被意外清空。
         - 迁移后清空代理绑定，避免跨空间引用无效代理数据。
         - 若目标空间已存在同 window_key 的有效窗口，抛出 ValueError。
+
+        使用 _write_conn 避免与同步窗口、删除窗口等并发写导致死锁。
         """
         src = int(source_space_pk)
         dst = int(target_space_pk)
@@ -1820,7 +1824,7 @@ class Database:
         if src == dst:
             raise ValueError("目标空间不能与源空间相同")
 
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
 
             cur_space = await db.execute("SELECT id FROM spaces WHERE id = ? AND deleted = 0", (dst,))
@@ -2638,7 +2642,7 @@ class Database:
 
         inserted = 0
         skipped = 0
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT COALESCE(MAX(sort_order), 0) AS mx FROM card_keys")
             row = await cur.fetchone()
@@ -2663,7 +2667,7 @@ class Database:
         new_val = str(card_key or "").strip()
         if not new_val:
             raise ValueError("卡密不能为空")
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 UPDATE card_keys
@@ -2676,7 +2680,7 @@ class Database:
             return int(cur.rowcount or 0)
 
     async def delete_card_key(self, card_key_id: int) -> int:
-        async with self._read_conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute("DELETE FROM card_keys WHERE id = ?", (int(card_key_id),))
             await db.commit()
             return int(cur.rowcount or 0)
