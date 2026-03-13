@@ -1715,29 +1715,12 @@ async def get_project_tree(project_id: Optional[int] = None, token: str = Depend
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
-    projects = await db.list_projects(allowed_project_ids=None)
-    if project_id is not None:
-        projects = [p for p in projects if p.id == project_id]
+    tree = await db.get_project_tree(
+        project_id=project_id,
+        allowed_project_ids=None,
+    )
 
-    out: List[Dict[str, Any]] = []
-    for p in projects:
-        browsers = await db.list_browsers(p.id)  # type: ignore[arg-type]
-        b_items: List[Dict[str, Any]] = []
-        for b in browsers:
-            spaces = await db.list_spaces(b.id)  # type: ignore[arg-type]
-            s_items: List[Dict[str, Any]] = []
-            for s in spaces:
-                win_items = await db.list_windows(s.id)  # type: ignore[arg-type]
-                s_items.append(
-                    {
-                        **s.model_dump(),
-                        "windows": [w.model_dump(exclude={"raw"}) for w in win_items],
-                    }
-                )
-            b_items.append({**b.model_dump(), "spaces": s_items})
-        out.append({**p.model_dump(), "browsers": b_items})
-
-    return {"success": True, "tree": out}
+    return {"success": True, "tree": tree}
 
 
 @router.get("/api/admin/windows/all")
@@ -1748,26 +1731,10 @@ async def list_all_windows(project_id: Optional[int] = None, token: str = Depend
         raise HTTPException(status_code=500, detail="db not initialized")
 
     allowed_ids = await _get_allowed_project_ids(user)
-    projects = await db.list_projects(allowed_project_ids=allowed_ids)
-    if project_id is not None:
-        projects = [p for p in projects if int(p.id or 0) == int(project_id)]
-    tree: List[Dict[str, Any]] = []
-    for p in projects:
-        browsers = await db.list_browsers(int(p.id or 0))
-        b_items: List[Dict[str, Any]] = []
-        for b in browsers:
-            spaces = await db.list_spaces(int(b.id or 0))
-            s_items: List[Dict[str, Any]] = []
-            for s in spaces:
-                win_items = await db.list_windows(int(s.id or 0))
-                s_items.append(
-                    {
-                        **s.model_dump(),
-                        "windows": [w.model_dump(exclude={"raw"}) for w in win_items],
-                    }
-                )
-            b_items.append({**b.model_dump(), "spaces": s_items})
-        tree.append({**p.model_dump(), "browsers": b_items})
+    tree = await db.get_project_tree(
+        project_id=project_id,
+        allowed_project_ids=allowed_ids,
+    )
 
     flat: List[Dict[str, Any]] = []
     for p in tree:

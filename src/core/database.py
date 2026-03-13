@@ -430,6 +430,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_spaces_browser_id ON spaces(browser_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
             # 调度挑选路径索引：按 task_type 过滤 + 活跃记录排序挑选
             await db.execute(
@@ -785,6 +787,11 @@ class Database:
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
 
+            if await self._table_exists(db, "browsers"):
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
+            if await self._table_exists(db, "spaces"):
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_spaces_browser_id ON spaces(browser_id)")
+
             # Step 3: 默认行（不覆盖已有）
             await self._ensure_default_rows(db, config_dict=config_dict)
             await db.commit()
@@ -1107,6 +1114,132 @@ class Database:
         async with self._read_conn() as db:
             await db.execute("DELETE FROM request_logs")
             await db.commit()
+
+    # ---------- project tree (single-query optimization) ----------
+    async def get_project_tree(
+        self,
+        project_id: Optional[int] = None,
+        allowed_project_ids: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
+        """用单条 JOIN 查询构建完整项目树，避免 N+1 嵌套查询。"""
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+
+            where_parts = ["p.deleted = 0"]
+            params: List[Any] = []
+
+            if project_id is not None:
+                where_parts.append("p.id = ?")
+                params.append(int(project_id))
+            if allowed_project_ids is not None:
+                safe_ids = [int(x) for x in allowed_project_ids if int(x) > 0]
+                if not safe_ids:
+                    return []
+                placeholders = ",".join("?" for _ in safe_ids)
+                where_parts.append(f"p.id IN ({placeholders})")
+                params.extend(safe_ids)
+
+            cur = await db.execute(
+                f"""
+                SELECT
+                  p.id AS p_id, p.name AS p_name, p.deleted AS p_deleted,
+                  p.created_at AS p_created_at, p.updated_at AS p_updated_at,
+                  b.id AS b_id, b.project_id AS b_project_id, b.name AS b_name,
+                  b.lan_addr AS b_lan_addr, b.vendor AS b_vendor, b.access_key AS b_access_key,
+                  b.deleted AS b_deleted, b.created_at AS b_created_at, b.updated_at AS b_updated_at,
+                  s.id AS s_id, s.browser_id AS s_browser_id, s.name AS s_name,
+                  s.space_id AS s_space_id, s.project_ids AS s_project_ids,
+                  s.deleted AS s_deleted, s.created_at AS s_created_at, s.updated_at AS s_updated_at,
+                  w.id AS w_id, w.space_pk AS w_space_pk, w.window_key AS w_window_key,
+                  w.window_sort_num AS w_window_sort_num, w.window_name AS w_window_name,
+                  w.window_remark AS w_window_remark,
+                  w.platform_account AS w_platform_account, w.platform_url AS w_platform_url,
+                  w.platform_account_id AS w_platform_account_id,
+                  w.proxy_id AS w_proxy_id, w.proxy_addr AS w_proxy_addr,
+                  w.proxy_country AS w_proxy_country, w.proxy_expire_at AS w_proxy_expire_at,
+                  w.enabled AS w_enabled, w.window_status AS w_window_status,
+                  w.deleted AS w_deleted, w.synced_at AS w_synced_at,
+                  w.created_at AS w_created_at, w.updated_at AS w_updated_at
+                FROM projects p
+                LEFT JOIN browsers b ON b.project_id = p.id AND b.deleted = 0
+                LEFT JOIN spaces s ON s.browser_id = b.id AND s.deleted = 0
+                LEFT JOIN windows w ON w.space_pk = s.id AND w.deleted = 0
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY
+                  p.updated_at DESC, p.id DESC,
+                  b.updated_at DESC, b.id DESC,
+                  s.updated_at DESC, s.id DESC,
+                  (w.window_sort_num IS NULL) ASC, w.window_sort_num ASC, w.window_name ASC, w.id ASC
+                """,
+                params,
+            )
+            rows = await cur.fetchall()
+
+            from collections import OrderedDict
+            projects_map: OrderedDict[int, Dict[str, Any]] = OrderedDict()
+            browsers_map: OrderedDict[int, Dict[str, Any]] = OrderedDict()
+            spaces_map: OrderedDict[int, Dict[str, Any]] = OrderedDict()
+
+            for r in rows:
+                pid = r["p_id"]
+                if pid not in projects_map:
+                    projects_map[pid] = {
+                        "id": pid, "name": r["p_name"], "deleted": bool(r["p_deleted"]),
+                        "created_at": r["p_created_at"], "updated_at": r["p_updated_at"],
+                        "browsers": [],
+                    }
+
+                bid = r["b_id"]
+                if bid is None:
+                    continue
+                if bid not in browsers_map:
+                    b_dict = {
+                        "id": bid, "project_id": r["b_project_id"], "name": r["b_name"],
+                        "lan_addr": r["b_lan_addr"], "vendor": r["b_vendor"],
+                        "access_key": r["b_access_key"], "deleted": bool(r["b_deleted"]),
+                        "created_at": r["b_created_at"], "updated_at": r["b_updated_at"],
+                        "spaces": [],
+                    }
+                    browsers_map[bid] = b_dict
+                    projects_map[pid]["browsers"].append(b_dict)
+
+                sid = r["s_id"]
+                if sid is None:
+                    continue
+                if sid not in spaces_map:
+                    s_dict = {
+                        "id": sid, "browser_id": r["s_browser_id"], "name": r["s_name"],
+                        "space_id": r["s_space_id"], "project_ids": r["s_project_ids"],
+                        "deleted": bool(r["s_deleted"]),
+                        "created_at": r["s_created_at"], "updated_at": r["s_updated_at"],
+                        "windows": [],
+                    }
+                    spaces_map[sid] = s_dict
+                    browsers_map[bid]["spaces"].append(s_dict)
+
+                wid = r["w_id"]
+                if wid is None:
+                    continue
+                spaces_map[sid]["windows"].append({
+                    "id": wid, "space_pk": r["w_space_pk"],
+                    "window_key": r["w_window_key"],
+                    "window_sort_num": r["w_window_sort_num"],
+                    "window_name": r["w_window_name"],
+                    "window_remark": r["w_window_remark"],
+                    "platform_account": r["w_platform_account"],
+                    "platform_url": r["w_platform_url"],
+                    "platform_account_id": r["w_platform_account_id"],
+                    "proxy_id": r["w_proxy_id"], "proxy_addr": r["w_proxy_addr"],
+                    "proxy_country": r["w_proxy_country"],
+                    "proxy_expire_at": r["w_proxy_expire_at"],
+                    "enabled": bool(r["w_enabled"]) if r["w_enabled"] is not None else True,
+                    "window_status": r["w_window_status"] or 0,
+                    "deleted": bool(r["w_deleted"]) if r["w_deleted"] is not None else False,
+                    "synced_at": r["w_synced_at"],
+                    "created_at": r["w_created_at"], "updated_at": r["w_updated_at"],
+                })
+
+            return list(projects_map.values())
 
     # ---------- projects ----------
     async def list_projects(self, allowed_project_ids: Optional[List[int]] = None) -> List[Project]:
