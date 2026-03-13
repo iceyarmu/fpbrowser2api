@@ -1380,6 +1380,12 @@ async def _sora_create_task_pw(
                 status_code=status_i,
             )
 
+        if status_i == 403 and ("just a moment" in bt_lower or "cloudflare" in bt_lower or "/cdn-cgi/" in bt_lower):
+            raise NonPenalizedTaskError(
+                f"create 失败（cloudflare_challenge）：{safe_trim(body_text, 400)}",
+                status_code=status_i,
+            )
+
         raise RuntimeError(f"create failed：status={status_i} body={safe_trim(body_text, 400)}")
 
     auth_state: Dict[str, Any] = {
@@ -2859,6 +2865,20 @@ class SoraSession:
                                     f"create 失败（token_expired）：刷新 access_token 失败：{safe_trim(str(te), 400)}",
                                     status_code=401,
                                 ) from te
+                            continue
+
+                        is_cloudflare = (
+                            isinstance(e, NonPenalizedTaskError)
+                            and "cloudflare_challenge" in err_msg_lower
+                        )
+                        if is_cloudflare:
+                            append_log(
+                                log_file,
+                                f"[sora][create] 命中 Cloudflare 挑战页（403），准备刷新页面并自愈（{attempt}/{max_create_attempts}）",
+                            )
+                            await self._bring_sora_drafts_to_front()
+                            if attempt >= max_create_attempts:
+                                raise
                             continue
 
                         is_upload_err = "上传首帧失败" in err_msg
