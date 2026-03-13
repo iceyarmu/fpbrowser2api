@@ -2685,6 +2685,18 @@ class Database:
             await db.commit()
             return int(cur.rowcount or 0)
 
+    async def batch_delete_card_keys(self, ids: List[int]) -> int:
+        if not ids:
+            return 0
+        safe_ids = [int(x) for x in ids if int(x) > 0]
+        if not safe_ids:
+            return 0
+        placeholders = ",".join("?" for _ in safe_ids)
+        async with self._write_conn() as db:
+            cur = await db.execute(f"DELETE FROM card_keys WHERE id IN ({placeholders})", safe_ids)
+            await db.commit()
+            return int(cur.rowcount or 0)
+
     # ---------- task types ----------
     async def list_task_types(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskType]:
         async with self._read_conn() as db:

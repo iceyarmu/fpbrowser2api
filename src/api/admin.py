@@ -305,6 +305,10 @@ class UpdateCardKeyRequest(BaseModel):
     card_key: str = Field(min_length=1, max_length=256)
 
 
+class BatchDeleteCardKeysRequest(BaseModel):
+    ids: List[int] = Field(default_factory=list, description="要删除的卡密 ID 列表")
+
+
 # -------------------- auth helper --------------------
 def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
     """解析批量账号文本：邮箱——密码——忽略——EFA。"""
@@ -1804,6 +1808,17 @@ async def delete_card_key(card_key_id: int, token: str = Depends(verify_admin_to
     if affected <= 0:
         raise HTTPException(status_code=404, detail="card key not found")
     return {"success": True}
+
+
+@router.post("/api/admin/card-keys/batch-delete")
+async def batch_delete_card_keys(req: BatchDeleteCardKeysRequest, token: str = Depends(verify_admin_token)):
+    await _ensure_any_page_access(token, {"card_keys", "test"})
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    affected = await db.batch_delete_card_keys(req.ids)
+    return {"success": True, "deleted": affected}
 
 
 # -------------------- task types --------------------
