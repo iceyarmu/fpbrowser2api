@@ -642,17 +642,33 @@ class FPBrowserClient:
             raise RuntimeError(f"暂不支持 vendor={vendor} 的 connection_info，请设置为 roxy")
 
         keys = [str(x or "").strip() for x in (window_keys or []) if str(x or "").strip()]
-        params: Dict[str, Any] = {}
-        if keys:
-            # Roxy 文档：多个窗口 ID 以英文逗号分隔
-            params["dirIds"] = ",".join(keys)
-        rsp = await self._roxy_get(base_url, access_key, "/browser/connection_info", params)
-        if (rsp or {}).get("code") != 0:
-            return []
-        data = (rsp or {}).get("data")
-        if not isinstance(data, list):
-            return []
-        return [x for x in data if isinstance(x, dict)]
+
+        if not keys:
+            # 不传 dirIds，查询全部已打开窗口
+            rsp = await self._roxy_get(base_url, access_key, "/browser/connection_info", {})
+            if (rsp or {}).get("code") != 0:
+                return []
+            data = (rsp or {}).get("data")
+            if not isinstance(data, list):
+                return []
+            return [x for x in data if isinstance(x, dict)]
+
+        # 分批请求，每批最多 50 个 dirId，避免 URL 过长导致服务端断开连接
+        batch_size = 50
+        all_results: List[Dict[str, Any]] = []
+        for i in range(0, len(keys), batch_size):
+            batch = keys[i : i + batch_size]
+            params: Dict[str, Any] = {"dirIds": ",".join(batch)}
+            try:
+                rsp = await self._roxy_get(base_url, access_key, "/browser/connection_info", params)
+            except Exception:
+                continue
+            if (rsp or {}).get("code") != 0:
+                continue
+            data = (rsp or {}).get("data")
+            if isinstance(data, list):
+                all_results.extend(x for x in data if isinstance(x, dict))
+        return all_results
 
     # -------------------- RoxyBrowser --------------------
     def _roxy_headers(self, token: Optional[str]) -> Dict[str, str]:

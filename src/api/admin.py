@@ -1561,6 +1561,8 @@ async def sync_window_status(space_pk: int, token: str = Depends(verify_admin_to
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"查询浏览器窗口状态失败: {e}")
 
     open_keys: List[str] = []
     for row in opened:
