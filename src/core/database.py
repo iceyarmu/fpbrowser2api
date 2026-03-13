@@ -2186,6 +2186,15 @@ class Database:
                 platform_remarks = a.get("platformRemarks") if a.get("platformRemarks") is not None else a.get("platform_remarks")
 
                 raw_json = json.dumps(a, ensure_ascii=False)
+
+                # 跨空间查重：如果该 account_id 已存在于其他空间，复用其 space_pk 避免重复
+                _cur_existing = await db.execute(
+                    "SELECT space_pk FROM platform_accounts WHERE account_id = ? LIMIT 1",
+                    (int(account_id),),
+                )
+                _existing_row = await _cur_existing.fetchone()
+                effective_space_pk = int(_existing_row[0]) if _existing_row else int(space_pk)
+
                 await db.execute(
                     """
                     INSERT INTO platform_accounts (
@@ -2198,7 +2207,6 @@ class Database:
                         platform_username=excluded.platform_username,
                         platform_password=excluded.platform_password,
                         platform_efa=excluded.platform_efa,
-                        -- 同步账号时保留本地备注，避免被远端返回值覆盖
                         platform_remarks=platform_accounts.platform_remarks,
                         deleted=CASE
                           WHEN ? = 1 THEN excluded.deleted
@@ -2210,7 +2218,7 @@ class Database:
                         updated_at=datetime('now','localtime')
                     """,
                     (
-                        int(space_pk),
+                        effective_space_pk,
                         int(account_id),
                         str(platform_url).strip() if platform_url is not None else None,
                         str(platform_username).strip() if platform_username is not None else None,
@@ -2482,6 +2490,15 @@ class Database:
                 update_time = p.get("updateTime")
 
                 raw_json = json.dumps(p, ensure_ascii=False)
+
+                # 跨空间查重：如果该 proxy_id 已存在于其他空间，复用其 space_pk 避免重复
+                _cur_existing = await db.execute(
+                    "SELECT space_pk FROM proxies WHERE proxy_id = ? LIMIT 1",
+                    (int(proxy_id),),
+                )
+                _existing_row = await _cur_existing.fetchone()
+                effective_space_pk = int(_existing_row[0]) if _existing_row else int(space_pk)
+
                 await db.execute(
                     """
                     INSERT INTO proxies (
@@ -2529,7 +2546,7 @@ class Database:
                         updated_at=datetime('now','localtime')
                     """,
                     (
-                        int(space_pk),
+                        effective_space_pk,
                         int(proxy_id),
                         str(purchase_type).strip() if purchase_type is not None else None,
                         str(expire_at).strip() if expire_at is not None else None,
