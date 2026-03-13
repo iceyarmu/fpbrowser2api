@@ -439,10 +439,15 @@
           <div class="modal-body">
             <input type="hidden" id="mapTransferId" />
             <div class="small text-muted mb-2" id="mapTransferHint">-</div>
-            <div>
+            <div class="mb-3">
               <label class="form-label">目标任务类型</label>
               <select class="form-select" id="mapTransferTypeId"></select>
-              <div class="form-text">转移后，该窗口会从当前任务类型列表移除，并出现在目标任务类型中；若目标任务类型绑定了其他项目，也会自动把该窗口迁移到目标项目的空间。</div>
+              <div class="form-text">转移后，该窗口会从当前任务类型列表移除，并出现在目标任务类型中。</div>
+            </div>
+            <div class="mb-3" id="mapTransferSpaceGroup" style="display:none;">
+              <label class="form-label">目标项目空间 <span class="badge bg-warning text-dark">跨项目</span></label>
+              <select class="form-select" id="mapTransferSpaceId"></select>
+              <div class="form-text">目标任务类型属于不同项目，需选择窗口迁移到的目标空间（指纹浏览器）。</div>
             </div>
           </div>
           <div class="modal-footer">
@@ -467,7 +472,12 @@
             <div class="mb-3">
               <label class="form-label">回退目标任务类型</label>
               <select class="form-select" id="mapRollbackTypeId"></select>
-              <div class="form-text">回退后，会删除当前任务类型与窗口的绑定；窗口会按目标任务类型所属项目迁移到目标项目空间（如有跨项目）。</div>
+              <div class="form-text">回退后，会删除当前任务类型与窗口的绑定。</div>
+            </div>
+            <div class="mb-3" id="mapRollbackSpaceGroup" style="display:none;">
+              <label class="form-label">目标项目空间 <span class="badge bg-warning text-dark">跨项目</span></label>
+              <select class="form-select" id="mapRollbackSpaceId"></select>
+              <div class="form-text">目标任务类型属于不同项目，需选择窗口迁移到的目标空间（指纹浏览器）。</div>
             </div>
             <div>
               <label class="form-label">回退原因</label>
@@ -591,6 +601,7 @@
       const LS_KEYS = {
         currentTypeId: `${LS_PREFIX}task_types.current_type_id`,
         transferTargetTypeId: `${LS_PREFIX}task_types.transfer_target_type_id`,
+        transferTargetSpacePk: `${LS_PREFIX}task_types.transfer_target_space_pk`,
         rollbackTargetTypeId: `${LS_PREFIX}task_types.rollback_target_type_id`,
       };
       function lsGet(key) {
@@ -2534,19 +2545,128 @@
         return out.filter(x => x.space_pk > 0 && x.project_id > 0);
       }
 
-      async function resolveTargetSpaceForTypeTransfer({ sourceSpacePk, targetProjectId, preferredBrowserName }) {
-        if (!targetProjectId) throw new Error("目标任务类型未绑定项目，无法迁移窗口");
+      let _transferAllSpaces = [];
+
+      async function loadAllSpacesFromTree() {
         const r = await adminFetch("/api/admin/tree");
         if (!r) throw new Error("读取项目空间失败");
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "读取项目空间失败");
-        const allSpaces = collectAllSpacesFromTree(d.tree || []);
+        _transferAllSpaces = collectAllSpacesFromTree(d.tree || []);
+        return _transferAllSpaces;
+      }
+
+      async function resolveTargetSpaceForTypeTransfer({ sourceSpacePk, targetProjectId, preferredBrowserName }) {
+        if (!targetProjectId) throw new Error("目标任务类型未绑定项目，无法迁移窗口");
+        const allSpaces = _transferAllSpaces.length ? _transferAllSpaces : await loadAllSpacesFromTree();
         const targetSpaces = allSpaces.filter(x => Number(x.project_id) === Number(targetProjectId));
         if (!targetSpaces.length) throw new Error("目标项目下没有可用空间，无法迁移窗口");
 
         const byBrowser = targetSpaces.find(x => String(x.browser_name || "").trim() && String(x.browser_name || "").trim() === String(preferredBrowserName || "").trim());
         const byNotSource = targetSpaces.find(x => Number(x.space_pk) !== Number(sourceSpacePk || 0));
         return byBrowser || byNotSource || targetSpaces[0];
+      }
+
+      async function updateTransferSpaceSelect(targetTypeId) {
+        const group = document.getElementById("mapTransferSpaceGroup");
+        const sel = document.getElementById("mapTransferSpaceId");
+        if (!group || !sel) return;
+
+        const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
+        const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
+        const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
+        const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
+
+        if (!sourceProjectId || !targetProjectId || sourceProjectId === targetProjectId) {
+          group.style.display = "none";
+          sel.innerHTML = "";
+          return;
+        }
+
+        try {
+          const allSpaces = _transferAllSpaces.length ? _transferAllSpaces : await loadAllSpacesFromTree();
+          const targetSpaces = allSpaces.filter(x => Number(x.project_id) === Number(targetProjectId));
+          if (!targetSpaces.length) {
+            group.style.display = "block";
+            sel.innerHTML = `<option value="">目标项目下没有可用空间</option>`;
+            sel.disabled = true;
+            return;
+          }
+
+          group.style.display = "block";
+          sel.disabled = false;
+          sel.innerHTML = targetSpaces
+            .map(s => `<option value="${s.space_pk}">${escapeHtml(s.browser_name)} / ${escapeHtml(s.space_name || s.space_id)}</option>`)
+            .join("");
+
+          const cachedSpacePk = parseInt(lsGet(LS_KEYS.transferTargetSpacePk) || "", 10);
+          const hit = targetSpaces.find(s => Number(s.space_pk) === cachedSpacePk);
+
+          const firstMapping = (state.mappings || []).find(x => {
+            const transferIdEl = document.getElementById("mapTransferId");
+            const bulkIds = String(transferIdEl?.dataset.bulkIds || "").split(",").map(Number).filter(n => n > 0);
+            const mid = parseInt(transferIdEl?.value || "0", 10);
+            const ids = bulkIds.length ? bulkIds : [mid];
+            return ids.includes(Number(x.id));
+          });
+          const preferredBrowserName = String(firstMapping?.browser_name || "").trim();
+          const byBrowser = preferredBrowserName
+            ? targetSpaces.find(s => String(s.browser_name || "").trim() === preferredBrowserName)
+            : null;
+
+          sel.value = String(hit?.space_pk || byBrowser?.space_pk || targetSpaces[0].space_pk);
+        } catch (e) {
+          group.style.display = "block";
+          sel.innerHTML = `<option value="">加载失败: ${escapeHtml(e.message || "未知错误")}</option>`;
+          sel.disabled = true;
+        }
+      }
+
+      async function updateRollbackSpaceSelect(targetTypeId) {
+        const group = document.getElementById("mapRollbackSpaceGroup");
+        const sel = document.getElementById("mapRollbackSpaceId");
+        if (!group || !sel) return;
+
+        const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
+        const targetType = typePool.find(t => String(t.id || "") === String(targetTypeId));
+        const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
+        const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
+
+        if (!sourceProjectId || !targetProjectId || sourceProjectId === targetProjectId) {
+          group.style.display = "none";
+          sel.innerHTML = "";
+          return;
+        }
+
+        try {
+          const allSpaces = _transferAllSpaces.length ? _transferAllSpaces : await loadAllSpacesFromTree();
+          const targetSpaces = allSpaces.filter(x => Number(x.project_id) === Number(targetProjectId));
+          if (!targetSpaces.length) {
+            group.style.display = "block";
+            sel.innerHTML = `<option value="">目标项目下没有可用空间</option>`;
+            sel.disabled = true;
+            return;
+          }
+
+          group.style.display = "block";
+          sel.disabled = false;
+          sel.innerHTML = targetSpaces
+            .map(s => `<option value="${s.space_pk}">${escapeHtml(s.browser_name)} / ${escapeHtml(s.space_name || s.space_id)}</option>`)
+            .join("");
+
+          const mappingId = parseInt(document.getElementById("mapRollbackId")?.value || "0", 10);
+          const m = (state.mappings || []).find(x => Number(x.id) === mappingId);
+          const preferredBrowserName = String(m?.browser_name || "").trim();
+          const byBrowser = preferredBrowserName
+            ? targetSpaces.find(s => String(s.browser_name || "").trim() === preferredBrowserName)
+            : null;
+
+          sel.value = String(byBrowser?.space_pk || targetSpaces[0].space_pk);
+        } catch (e) {
+          group.style.display = "block";
+          sel.innerHTML = `<option value="">加载失败: ${escapeHtml(e.message || "未知错误")}</option>`;
+          sel.disabled = true;
+        }
       }
 
       async function openMappingTransferModal(mappingId, { preferBulk = false } = {}) {
@@ -2610,6 +2730,10 @@
           btn.disabled = false;
           btn.textContent = isBulk ? `确认批量转移（${ids.length}个）` : "确认转移";
         }
+
+        try { await loadAllSpacesFromTree(); } catch {}
+        await updateTransferSpaceSelect(sel.value);
+
         mappingTransferModal.show();
       }
 
@@ -2650,16 +2774,12 @@
               const windowKey = String(m.window_key || "").trim();
               let movedSpacePk = 0;
 
-              // 仅当目标任务类型所属项目与当前项目不同时，才需要迁移窗口空间。
               if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
                 if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
-                const picked = await resolveTargetSpaceForTypeTransfer({
-                  sourceSpacePk,
-                  targetProjectId,
-                  preferredBrowserName: m.browser_name || "",
-                });
-                movedSpacePk = Number(picked?.space_pk || 0) || 0;
-                if (!movedSpacePk) throw new Error("未找到目标项目空间，无法迁移窗口");
+                const userPickedSpacePk = parseInt(document.getElementById("mapTransferSpaceId")?.value || "0", 10) || 0;
+                if (!userPickedSpacePk) throw new Error("请选择目标项目空间");
+                movedSpacePk = userPickedSpacePk;
+                lsSet(LS_KEYS.transferTargetSpacePk, String(movedSpacePk));
                 await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
                   method: "POST",
                   body: { target_space_pk: movedSpacePk },
@@ -2750,6 +2870,10 @@
         sel.value = String(hit?.id || targetTypes[0].id);
         const btn = document.getElementById("btnRollbackMapping");
         if (btn) btn.disabled = false;
+
+        try { await loadAllSpacesFromTree(); } catch {}
+        await updateRollbackSpaceSelect(sel.value);
+
         mappingRollbackModal.show();
       }
 
@@ -2777,16 +2901,11 @@
           const windowKey = String(m.window_key || "").trim();
           let movedSpacePk = 0;
 
-          // 仅当目标任务类型所属项目与当前项目不同时，才需要迁移窗口空间。
           if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
             if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
-            const picked = await resolveTargetSpaceForTypeTransfer({
-              sourceSpacePk,
-              targetProjectId,
-              preferredBrowserName: m.browser_name || "",
-            });
-            movedSpacePk = Number(picked?.space_pk || 0) || 0;
-            if (!movedSpacePk) throw new Error("未找到目标项目空间，无法迁移窗口");
+            const userPickedSpacePk = parseInt(document.getElementById("mapRollbackSpaceId")?.value || "0", 10) || 0;
+            if (!userPickedSpacePk) throw new Error("请选择目标项目空间");
+            movedSpacePk = userPickedSpacePk;
             await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
               method: "POST",
               body: { target_space_pk: movedSpacePk },
@@ -3206,10 +3325,16 @@
       document.getElementById("mapTransferTypeId")?.addEventListener("change", (e) => {
         const id = parseInt(String(e.target?.value || ""), 10);
         if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.transferTargetTypeId, String(id));
+        updateTransferSpaceSelect(id);
+      });
+      document.getElementById("mapTransferSpaceId")?.addEventListener("change", (e) => {
+        const pk = parseInt(String(e.target?.value || ""), 10);
+        if (!Number.isNaN(pk) && pk > 0) lsSet(LS_KEYS.transferTargetSpacePk, String(pk));
       });
       document.getElementById("mapRollbackTypeId")?.addEventListener("change", (e) => {
         const id = parseInt(String(e.target?.value || ""), 10);
         if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.rollbackTargetTypeId, String(id));
+        updateRollbackSpaceSelect(id);
       });
       document.getElementById("btnUpdateToken").addEventListener("click", updateTokenByAutoFetch);
       document.getElementById("btnConvertToken").addEventListener("click", convertAndSaveToken);
