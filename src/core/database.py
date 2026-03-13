@@ -427,6 +427,8 @@ class Database:
             except Exception:
                 pass
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
             # 调度挑选路径索引：按 task_type 过滤 + 活跃记录排序挑选
@@ -780,6 +782,8 @@ class Database:
 
             if await self._table_exists(db, "tasks"):
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
 
             # Step 3: 默认行（不覆盖已有）
             await self._ensure_default_rows(db, config_dict=config_dict)
