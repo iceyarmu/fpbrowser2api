@@ -3253,6 +3253,7 @@ class SoraSession:
 
         # 优先回传可下载的视频直链（downloadable_url）；取不到再回退到帖子链接
         downloadable_url = ""
+        thumb_url = ""
         try:
             post_obj = (post_resp or {}).get("post") or {}
             attachments = post_obj.get("attachments")
@@ -3263,6 +3264,12 @@ class SoraSession:
                     du = str(att.get("downloadable_url") or "").strip()
                     if du:
                         downloadable_url = du
+                    encodings = att.get("encodings") or {}
+                    thumbnail = encodings.get("thumbnail") or {}
+                    tu = str(thumbnail.get("path") or "").strip()
+                    if tu:
+                        thumb_url = tu
+                    if downloadable_url:
                         break
         except Exception:
             downloadable_url = ""
@@ -3283,6 +3290,7 @@ class SoraSession:
             "share_url": share_url,
             "watermark_free_url": watermark_free_url,
             "draft": draft_item,
+            "thumb_url": thumb_url,
         }
 
 
@@ -3752,5 +3760,6 @@ async def sora_gen_video(
         "generation_id": publish_result.get("generation_id"),
         "share_url": publish_result.get("share_url"),
         "watermark_free_url": publish_result.get("watermark_free_url"),
+        "thumb_url": publish_result.get("thumb_url"),
     }
 
