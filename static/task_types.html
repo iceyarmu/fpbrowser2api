@@ -2458,7 +2458,7 @@
           return refreshSubscription(mappingId);
         }
         if (act === "convertAccessToken") {
-          return openTokenModal(mappingId);
+          return autoFetchAccessToken(mappingId, el);
         }
         if (act === "analyzeSelectedProxy") {
           return analyzeSelectedProxy(mappingId, el);
@@ -3033,6 +3033,51 @@
         }
       }
 
+      async function autoFetchAccessToken(mappingId, btnEl) {
+        try {
+          setBtnBusy(btnEl, true, { loadingText: "获取中" });
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+            method: "POST",
+            body: { access_token: "", expires: "" },
+          });
+          const tok = String(d?.access_token || "").trim();
+          const exp = String(d?.expires || "").trim();
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (m) {
+            m.sora_access_token = tok || null;
+            m.sora_access_expires = exp || null;
+          }
+          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
+          toast("已自动获取并保存", "success");
+        } catch (e) {
+          toast(e.message || "获取 access_token 失败", "error");
+        } finally {
+          setBtnBusy(btnEl, false);
+        }
+      }
+
+      async function autoFetchAccessToken(mappingId, btnEl) {
+        const btn = btnEl?.closest("[data-act='convertAccessToken']") || btnEl;
+        if (!btn) return;
+        try {
+          setBtnBusy(btn, true, { loadingText: "⏳" });
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+            method: "POST",
+            body: { access_token: "", expires: "" },
+          });
+          const tok = String(d?.access_token || "").trim();
+          const exp = String(d?.expires || "").trim();
+          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+          if (m) { m.sora_access_token = tok || null; m.sora_access_expires = exp || null; }
+          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
+          toast("已自动获取并保存", "success");
+        } catch (e) {
+          toast(e.message || "获取 access_token 失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       function openTokenModal(mappingId) {
         const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
         document.getElementById("tokenEditMappingId").value = String(mappingId);
@@ -3213,9 +3258,11 @@
       async function restartAllInOne(mappingId, fromEl) {
         const m = state.mappings.find(x => x.id === mappingId);
         const { restartAllBtn, openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
-        const steps = ["重启", "Token", "会员", "额度"];
+        const steps = ["关闭", "等待", "打开", "Token", "会员", "额度"];
         let stepIdx = 0;
         const setStep = (i) => { stepIdx = i; setBtnBusy(restartAllBtn, true, { loadingText: `${steps[i]}中`, keepWidth: false }); };
+        const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
         try {
           cancelCloseHintCountdown({ hideModal: true });
           setStep(0);
@@ -3223,12 +3270,45 @@
           if (startBtn) startBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
 
-          // 1) 立即重启窗口（关闭 + 重新打开，与 manualStart 相同）
-          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
+          // 1) 先关闭窗口（触发 idle_close 调度）
+          try {
+            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
+          } catch (_) {}
+
+          // 2) 等待窗口完全关闭，让指纹浏览器释放资源
+          setStep(1);
+          const waitSec = Math.max(5, ui.idleCloseSecondsDefault ?? 30);
+          for (let elapsed = 0; elapsed < waitSec; elapsed += 1) {
+            setBtnBusy(restartAllBtn, true, { loadingText: `等${waitSec - elapsed}s`, keepWidth: false });
+            await delay(1000);
+          }
+
+          // 3) 重新打开窗口（调用 manualStart：立即 close_and_drop + ensure_open）
+          //    此时窗口已关闭，close_and_drop 基本是空操作，ensure_open 可以干净地重新打开
+          setStep(2);
+          let openOk = false;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              if (attempt === 0) {
+                await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
+              } else {
+                await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+              }
+              openOk = true;
+              break;
+            } catch (openErr) {
+              if (attempt < 2) {
+                setBtnBusy(restartAllBtn, true, { loadingText: `重试打开${attempt + 1}`, keepWidth: false });
+                await delay(5000);
+              } else {
+                throw openErr;
+              }
+            }
+          }
           updateMappingRowUI(mappingId, { enabled: true }, { fromEl });
 
-          // 2) 获取 access_token
-          setStep(1);
+          // 4) 获取 access_token（convert-access-token 内部会 ensure_open + 获取 session）
+          setStep(3);
           const tokenData = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
             method: "POST",
             body: { access_token: "", expires: "" },
@@ -3238,16 +3318,16 @@
           if (m) { m.sora_access_token = tok || null; m.sora_access_expires = exp || null; }
           updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
 
-          // 3) 刷新会员信息
-          setStep(2);
+          // 5) 刷新会员信息
+          setStep(4);
           const subData = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info`, { method: "POST" });
           updateMappingRowUI(mappingId, {
             sora_plan_title: subData?.plan_title || "",
             sora_subscription_end: subData?.subscription_end || "",
           });
 
-          // 4) 刷新剩余额度
-          setStep(3);
+          // 6) 刷新剩余额度
+          setStep(5);
           const quotaData = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
           const v = (quotaData?.remaining_quota ?? 0);
           updateMappingRowUI(mappingId, { remaining_quota: v });
