@@ -252,6 +252,7 @@ async def get_task_status(task_id: str, api_key: str = Depends(verify_api_key_he
                 progress=int(task.progress or 0),
                 result=task.result,
                 error_message=task.error_message,
+                content_violation=int(task.content_violation or 0),
             ).model_dump()
             await _set_task_status_cache(tid, payload)
         fut.set_result(payload)

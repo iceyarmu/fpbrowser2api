@@ -369,6 +369,7 @@ class Database:
                     window_ip TEXT,
                     result_json TEXT,
                     error_message TEXT,
+                    content_violation INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     updated_at TIMESTAMP,
                     started_at TIMESTAMP,
@@ -575,12 +576,13 @@ class Database:
                     if not await self._column_exists(db, "spaces", col_name):
                         await db.execute(f"ALTER TABLE spaces ADD COLUMN {col_name} {col_type}")
 
-            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）；window_ip（窗口绑定 IP）；updated_at
+            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）；window_ip（窗口绑定 IP）；updated_at；content_violation
             if await self._table_exists(db, "tasks"):
                 columns_to_add = [
                     ("generation_id", "TEXT"),
                     ("window_ip", "TEXT"),
                     ("updated_at", "TIMESTAMP"),
+                    ("content_violation", "INTEGER DEFAULT 0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "tasks", col_name):
@@ -4051,6 +4053,7 @@ class Database:
                   w.platform_account AS window_account,
                   w.window_sort_num AS window_sort_num,
                   t.error_message,
+                  t.content_violation,
                   t.result_json,
                   t.created_at,
                   t.updated_at
@@ -4364,6 +4367,7 @@ class Database:
         generation_id: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None,
+        content_violation: Optional[int] = None,
         set_started: bool = False,
         set_completed: bool = False,
     ) -> None:
@@ -4389,6 +4393,9 @@ class Database:
         if error_message is not None:
             updates.append("error_message=?")
             params.append(error_message)
+        if content_violation is not None:
+            updates.append("content_violation=?")
+            params.append(int(content_violation))
         if set_started:
             updates.append("started_at=datetime('now','localtime')")
         if set_completed:

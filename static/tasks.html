@@ -103,6 +103,7 @@
                   <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 150px;">IP</th>
                   <th style="min-width: 200px;">错误信息</th>
+                  <th style="min-width: 60px;">违规</th>
                   <th style="min-width: 80px;">prompt</th>
                   <th style="min-width: 80px;">result</th>
                   <th style="min-width: 145px;">创建时间</th>
@@ -727,6 +728,7 @@
               </td>
               <td class="mono truncate-1" title="${escapeHtml(windowIp)}">${escapeHtml(windowIp)}</td>
               <td class="mono truncate-1 truncate-err" title="${escapeHtml(err)}">${errCell}</td>
+              <td class="text-center">${Number(x.content_violation) === 1 ? '<span class="badge bg-danger">违规</span>' : '<span class="text-muted">-</span>'}</td>
               <td class="mono">
                 <button class="btn btn-outline-secondary btn-sm btn-compact" data-action="view-prompt" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>

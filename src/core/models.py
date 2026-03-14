@@ -232,6 +232,7 @@ class Task(BaseModel):
     window_ip: Optional[str] = None  # 窗口绑定的 IP/代理地址（来自 windows.proxy_addr）
     result: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    content_violation: int = 0
 
     created_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
@@ -283,4 +284,5 @@ class TaskStatusResponse(BaseModel):
     progress: int
     result: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    content_violation: int = 0
 

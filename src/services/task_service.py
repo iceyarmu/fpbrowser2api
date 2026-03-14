@@ -535,11 +535,20 @@ class TaskService:
                         err_result["status_code"] = int(status_code)
                     except Exception:
                         err_result["status_code"] = str(status_code)
+                _err_lower = str(e).lower()
+                _is_violation = int(
+                    "sora_content_violation" in _err_lower
+                    or "cameo_not_found" in _err_lower
+                    or "cameo_permission_denied" in _err_lower
+                    or "包含违禁画面" in str(e)
+                    or "包含违规内容" in str(e)
+                )
                 await self.db.update_task(
                     task_id,
                     status="failed",
                     error_message=str(e),
                     result=err_result,
+                    content_violation=_is_violation if _is_violation else None,
                     set_completed=True,
                 )
                 # 某些错误不应计入“窗口连续错误”（例如：Sora create 400 invalid_request、未抓到 POST 等环境/请求错误）
