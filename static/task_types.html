@@ -3034,29 +3034,6 @@
       }
 
       async function autoFetchAccessToken(mappingId, btnEl) {
-        try {
-          setBtnBusy(btnEl, true, { loadingText: "获取中" });
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
-            method: "POST",
-            body: { access_token: "", expires: "" },
-          });
-          const tok = String(d?.access_token || "").trim();
-          const exp = String(d?.expires || "").trim();
-          const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-          if (m) {
-            m.sora_access_token = tok || null;
-            m.sora_access_expires = exp || null;
-          }
-          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
-          toast("已自动获取并保存", "success");
-        } catch (e) {
-          toast(e.message || "获取 access_token 失败", "error");
-        } finally {
-          setBtnBusy(btnEl, false);
-        }
-      }
-
-      async function autoFetchAccessToken(mappingId, btnEl) {
         const btn = btnEl?.closest("[data-act='convertAccessToken']") || btnEl;
         if (!btn) return;
         try {
