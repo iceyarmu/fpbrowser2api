@@ -553,7 +553,7 @@ class TaskService:
                 )
                 # 某些错误不应计入“窗口连续错误”（例如：Sora create 400 invalid_request、未抓到 POST 等环境/请求错误）
                 # 执行器侧会抛出带 no_penalty=true 的异常（或同名属性），这里做兼容判断。
-                if not no_penalty:
+                if not no_penalty and not picked.create_task_handler == "sora_wm_remove":
                     await self.db.mark_mapping_error(
                         picked.mapping_id,
                         threshold=picked.threshold,
