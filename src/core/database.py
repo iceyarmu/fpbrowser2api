@@ -1449,6 +1449,9 @@ class Database:
 
         返回：本次写入/更新的行数（粗略统计）。
         使用 _write_conn 避免与任务创建/进度查询等并发写导致死锁。
+
+        注意：若某个 window_key 已存在于其他 space_pk 下（窗口已被转移到别的空间），
+        则跳过该窗口，不在当前空间下新增或更新。
         """
         async with self._write_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
@@ -1459,6 +1462,13 @@ class Database:
                     raw_obj = {}
                 window_key = str(w.get("window_key") or w.get("id") or w.get("dirId") or w.get("name") or "").strip()
                 if not window_key:
+                    continue
+                # 若该 window_key 已存在于其他 space_pk 下，跳过（窗口可能已被转移到别的项目空间）
+                cur_chk = await db.execute(
+                    "SELECT 1 FROM windows WHERE window_key = ? AND space_pk != ? AND deleted = 0 LIMIT 1",
+                    (window_key, space_pk),
+                )
+                if await cur_chk.fetchone():
                     continue
                 # window_sort_num: 优先取标准 snake_case，其次取 Roxy 的 camelCase，最后从 raw 里兜底
                 window_sort_num_raw = (

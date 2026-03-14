@@ -350,6 +350,11 @@
           <div class="modal-body">
             <div class="alert alert-light border small mb-3" id="deleteWindowMeta">-</div>
             <div class="form-check mb-2">
+              <input class="form-check-input" type="checkbox" id="deleteWindowRemote" checked>
+              <label class="form-check-label" for="deleteWindowRemote">同时删除指纹浏览器窗口</label>
+              <div class="form-text mt-0">取消勾选则仅删除本地数据，不调用指纹浏览器接口删除远程窗口。</div>
+            </div>
+            <div class="form-check mb-2">
               <input class="form-check-input" type="checkbox" id="deleteWindowWithAccount">
               <label class="form-check-label" for="deleteWindowWithAccount">同时删除绑定账号</label>
             </div>
@@ -913,7 +918,7 @@
         }
       }
 
-      async function deleteWindow(spacePk, windowKey, windowName, fromEl) {
+      async function deleteWindow(spacePk, windowKey, windowName, fromEl, { deleteRemote = true } = {}) {
         const wk = String(windowKey || "").trim();
         const name = String(windowName || "").trim() || wk;
         if (!wk) return toast("缺少窗口标识(window_key/dirId)，无法删除", "error");
@@ -923,7 +928,7 @@
           setBtnBusy(btn, true, { loadingText: "删除中" });
           const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/delete`, {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify({ delete_remote: !!deleteRemote }),
           });
           if (!r) return;
           const d = await r.json();
@@ -1022,6 +1027,7 @@
         };
 
         const metaEl = document.getElementById("deleteWindowMeta");
+        const remoteChk = document.getElementById("deleteWindowRemote");
         const chk = document.getElementById("deleteWindowWithAccount");
         const hint = document.getElementById("deleteWindowAccountHint");
         if (metaEl) {
@@ -1029,8 +1035,10 @@
             <div class="mono"><span class="text-muted">窗口sort：</span>${escapeHtml(ws)}</div>
             <div><span class="text-muted">窗口：</span><span class="fw-semibold">${escapeHtml(wn)}</span></div>
             <div class="mono"><span class="text-muted">dirId：</span>${escapeHtml(wk)}</div>
-            <div class="small text-muted">说明：会先调用指纹浏览器接口删除远程窗口，再在本地 DB 标记 deleted=1。</div>
           `;
+        }
+        if (remoteChk) {
+          remoteChk.checked = true;
         }
         if (chk) {
           chk.checked = false;
@@ -1100,7 +1108,9 @@
             }
           }
 
-          await deleteWindow(spk, deleteWindowState.windowKey, deleteWindowState.windowName, deleteWindowState.triggerBtn);
+          const remoteChk = document.getElementById("deleteWindowRemote");
+          const deleteRemote = !!(remoteChk && remoteChk.checked);
+          await deleteWindow(spk, deleteWindowState.windowKey, deleteWindowState.windowName, deleteWindowState.triggerBtn, { deleteRemote });
           deleteWindowModal.hide();
           if (accountDeleteWarning) {
             toast(`窗口已删除，但账号删除失败：${accountDeleteWarning}`, "warning");

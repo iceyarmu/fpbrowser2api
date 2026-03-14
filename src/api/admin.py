@@ -264,6 +264,12 @@ class UpdateWindowAccountRequest(BaseModel):
     account_id: int = Field(ge=0, description="本地账号列表中的 account_id；0 表示清空窗口账号")
 
 
+class DeleteWindowRequest(BaseModel):
+    """删除窗口请求。"""
+
+    delete_remote: bool = Field(default=True, description="是否同时删除指纹浏览器远程窗口；False 则仅删除本地数据")
+
+
 class MoveWindowRequest(BaseModel):
     """把本地窗口转移到另一个空间。"""
 
@@ -1581,8 +1587,8 @@ async def sync_window_status(space_pk: int, token: str = Depends(verify_admin_to
 
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/delete")
-async def delete_window_local(space_pk: int, window_key: str, token: str = Depends(verify_admin_token)):
-    """删除窗口（先删指纹浏览器远端，再本地标记 deleted=1）。"""
+async def delete_window_local(space_pk: int, window_key: str, req: DeleteWindowRequest = DeleteWindowRequest(), token: str = Depends(verify_admin_token)):
+    """删除窗口（可选删指纹浏览器远端，再本地标记 deleted=1）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -1598,45 +1604,52 @@ async def delete_window_local(space_pk: int, window_key: str, token: str = Depen
     if not wk:
         raise HTTPException(status_code=400, detail="window_key is required")
 
-    syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
-    try:
-        roxy_rsp = await client.delete_windows(
-            vendor=browser.vendor,
-            base_url=browser.lan_addr,
-            access_key=browser.access_key,
-            space_id=space.space_id,
-            window_keys=[wk],
-            is_soft_deleted=False,
+    roxy_rsp = None
+    remote_already_missing = False
+
+    if req.delete_remote:
+        syscfg = await db.get_system_config()
+        client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+        try:
+            roxy_rsp = await client.delete_windows(
+                vendor=browser.vendor,
+                base_url=browser.lan_addr,
+                access_key=browser.access_key,
+                space_id=space.space_id,
+                window_keys=[wk],
+                is_soft_deleted=False,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        roxy_msg = str((roxy_rsp or {}).get("msg") or "").strip()
+        try:
+            roxy_code = int((roxy_rsp or {}).get("code") or -1)
+        except Exception:
+            roxy_code = -1
+
+        roxy_not_found_hints = (
+            "待删除的窗口不存在",
+            "窗口不存在",
+            "window not found",
+            "not found",
         )
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    roxy_msg = str((roxy_rsp or {}).get("msg") or "").strip()
-    try:
-        roxy_code = int((roxy_rsp or {}).get("code") or -1)
-    except Exception:
-        roxy_code = -1
-
-    # 远端已不存在时，不阻断本地删除（常见于远端已手工删除或状态不同步）。
-    roxy_not_found_hints = (
-        "待删除的窗口不存在",
-        "窗口不存在",
-        "window not found",
-        "not found",
-    )
-    remote_already_missing = (roxy_code != 0) and any(k in roxy_msg.lower() for k in (s.lower() for s in roxy_not_found_hints))
-    if roxy_code != 0 and not remote_already_missing:
-        raise HTTPException(status_code=400, detail=roxy_msg or "指纹浏览器删除窗口失败")
+        remote_already_missing = (roxy_code != 0) and any(k in roxy_msg.lower() for k in (s.lower() for s in roxy_not_found_hints))
+        if roxy_code != 0 and not remote_already_missing:
+            raise HTTPException(status_code=400, detail=roxy_msg or "指纹浏览器删除窗口失败")
 
     affected = await db.delete_window_by_key(space_pk=space_pk, window_key=wk)
     window_affected = int((affected or {}).get("window_affected") or 0)
     task_type_window_affected = int((affected or {}).get("task_type_window_affected") or 0)
     if window_affected <= 0:
         raise HTTPException(status_code=404, detail="window not found or already deleted")
-    final_message = "窗口已删除（远程 + 本地），并级联标记 task_type_window 删除"
-    if remote_already_missing:
+
+    if not req.delete_remote:
+        final_message = "窗口已删除（仅本地），并级联标记 task_type_window 删除"
+    elif remote_already_missing:
         final_message = "远端窗口已不存在，已完成本地删除，并级联标记 task_type_window 删除"
+    else:
+        final_message = "窗口已删除（远程 + 本地），并级联标记 task_type_window 删除"
     return {
         "success": True,
         "message": final_message,
