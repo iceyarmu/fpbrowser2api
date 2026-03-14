@@ -1460,10 +1460,11 @@
 
       function getRowActionButtons(mappingId, fromEl) {
         const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
-        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
+        if (!tr) return { tr: null, openBtn: null, restartAllBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
         return {
           tr,
           openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
+          restartAllBtn: tr.querySelector(`button[data-act="restartAllInOne"][data-mid="${mappingId}"]`),
           startBtn: tr.querySelector(`button[data-act="manualStart"][data-mid="${mappingId}"]`),
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
           transferBtn: tr.querySelector(`button[data-act="transfer"][data-mid="${mappingId}"]`),
@@ -2158,6 +2159,7 @@
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="打开窗口（禁止自动关闭）" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
+                  <button class="btn btn-outline-warning btn-sm btn-icon" title="一键重启：关闭→启动→获取Token→刷新会员→刷新额度" aria-label="一键重启" data-act="restartAllInOne" data-mid="${m.id}"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">一键重启</span></button>
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
@@ -2430,6 +2432,9 @@
         }
         if (act === "manualOpen") {
           return manualOpenWindow(mappingId, el);
+        }
+        if (act === "restartAllInOne") {
+          return restartAllInOne(mappingId, el);
         }
         if (act === "manualStart") {
           return manualStartWindow(mappingId, el);
@@ -3181,6 +3186,86 @@
           if (openBtn) openBtn.disabled = false;
           if (startBtn) startBtn.disabled = false;
           if (closeBtn) closeBtn.disabled = false;
+        }
+      }
+
+      async function saveRemarkDirect(mappingId, remarkText) {
+        const m = state.mappings.find(x => x.id === mappingId);
+        if (!m) return;
+        const spacePk = m.space_pk;
+        const windowKey = m.window_key;
+        if (!spacePk || !windowKey) return;
+        try {
+          await postJson(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(windowKey)}/remark`, {
+            method: "POST",
+            body: { window_remark: remarkText },
+          });
+          m.window_remark = remarkText;
+          const spanEl = document.querySelector(`#mappingBody span[data-act="editRemark"][data-mid="${mappingId}"]`);
+          if (spanEl) {
+            spanEl.textContent = remarkText || "-";
+            spanEl.dataset.remark = remarkText;
+            spanEl.title = remarkText || "点击编辑备注";
+          }
+        } catch {}
+      }
+
+      async function restartAllInOne(mappingId, fromEl) {
+        const m = state.mappings.find(x => x.id === mappingId);
+        const { restartAllBtn, openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+        const steps = ["重启", "Token", "会员", "额度"];
+        let stepIdx = 0;
+        const setStep = (i) => { stepIdx = i; setBtnBusy(restartAllBtn, true, { loadingText: `${steps[i]}中`, keepWidth: false }); };
+        try {
+          cancelCloseHintCountdown({ hideModal: true });
+          setStep(0);
+          if (openBtn) openBtn.disabled = true;
+          if (startBtn) startBtn.disabled = true;
+          if (closeBtn) closeBtn.disabled = true;
+
+          // 1) 立即重启窗口（关闭 + 重新打开，与 manualStart 相同）
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
+          updateMappingRowUI(mappingId, { enabled: true }, { fromEl });
+
+          // 2) 获取 access_token
+          setStep(1);
+          const tokenData = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+            method: "POST",
+            body: { access_token: "", expires: "" },
+          });
+          const tok = String(tokenData?.access_token || "").trim();
+          const exp = String(tokenData?.expires || "").trim();
+          if (m) { m.sora_access_token = tok || null; m.sora_access_expires = exp || null; }
+          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
+
+          // 3) 刷新会员信息
+          setStep(2);
+          const subData = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info`, { method: "POST" });
+          updateMappingRowUI(mappingId, {
+            sora_plan_title: subData?.plan_title || "",
+            sora_subscription_end: subData?.subscription_end || "",
+          });
+
+          // 4) 刷新剩余额度
+          setStep(3);
+          const quotaData = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
+          const v = (quotaData?.remaining_quota ?? 0);
+          updateMappingRowUI(mappingId, { remaining_quota: v });
+
+          toast("一键重启全部完成", "success");
+          flashBtnText(restartAllBtn, "完成");
+          await saveRemarkDirect(mappingId, "一键重启:成功");
+        } catch (e) {
+          const failStep = steps[stepIdx] || "未知";
+          const msg = `${failStep}失败:${(e.message || "").slice(0, 30)}`;
+          toast(`一键重启在[${failStep}]步骤失败: ${e.message}`, "error");
+          await saveRemarkDirect(mappingId, msg);
+        } finally {
+          const btns = getRowActionButtons(mappingId, fromEl);
+          setBtnBusy(btns.restartAllBtn, false);
+          if (btns.openBtn) btns.openBtn.disabled = false;
+          if (btns.startBtn) btns.startBtn.disabled = false;
+          if (btns.closeBtn) btns.closeBtn.disabled = false;
         }
       }
 
