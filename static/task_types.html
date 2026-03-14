@@ -11,6 +11,7 @@
       body { display: flex; flex-direction: column; }
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .small2 { font-size: 11px; }
+      .chkMap.form-check-input { border-color: #333; }
       .cell-stack > div { line-height: 1.15; }
       .truncate-1 { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .btn-w-72 { min-width: 54px; padding-left: .4rem; padding-right: .4rem; }
@@ -56,6 +57,8 @@
         line-height: 1;
       }
       .btn-icon i { font-size: 0.95rem; line-height: 1; }
+      .btn-group-xs .btn-icon.btn-sm { width: 22px; height: 18px; }
+      .btn-group-xs .btn-icon i { font-size: 0.72rem; }
 
       .sort-head { cursor: pointer; user-select: none; }
       .quota-sort { cursor: pointer; user-select: none; }
@@ -199,9 +202,6 @@
                 </div>
                 <button class="btn btn-outline-primary btn-sm" id="btnAddWindows">添加窗口</button>
               </div>
-              <div class="text-muted small mt-0">
-                每个窗口可绑定多个任务类型；这里做“多窗口管理”：批量打开、定时刷新、按额度排序。
-              </div>
               <hr class="hr-tight" />
 
               <div class="win-toolbar border rounded p-1 mb-1">
@@ -219,7 +219,7 @@
                   <div class="btn-group btn-group-sm" role="group" aria-label="bulk-actions">
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
-                    <button class="btn btn-outline-warning" id="btnBulkTransfer">批量转移</button>
+                    <button class="btn btn-outline-danger" id="btnBulkTransfer">批量转移</button>
                     <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
@@ -259,10 +259,11 @@
                     <tr class="small2">
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
+                      <th>备注</th>
                       <th>状态</th>
                       <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">空间 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
-                      <th>检测代理</th>
+                      <th>测IP</th>
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
@@ -587,6 +588,30 @@
       </div>
     </div>
 
+    <!-- Edit Window Remark Modal -->
+    <div class="modal fade" id="remarkModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">编辑窗口备注</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-2 small text-muted">窗口：<span class="fw-semibold" id="remarkWinLabel">-</span></div>
+            <textarea class="form-control" id="remarkInput" rows="3" placeholder="输入备注内容"></textarea>
+            <input type="hidden" id="remarkMid" />
+            <input type="hidden" id="remarkSpacePk" />
+            <input type="hidden" id="remarkWindowKey" />
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-danger btn-sm" id="btnRemarkClear">清空备注</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary btn-sm" id="btnRemarkSave">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml, initAdminPage, getAdminProfile } from "/assets/app.js";
@@ -621,6 +646,7 @@
       const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
       const tokenModal = new bootstrap.Modal("#tokenModal");
+      const remarkBsModal = new bootstrap.Modal("#remarkModal");
 
       let state = {
         types: [],
@@ -1841,7 +1867,7 @@
           ui.mappingList.page = 1;
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="15" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -2095,14 +2121,14 @@
         updateQuotaSortHint();
         if (!state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="14" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="15" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
         const sortedItems = getFilteredMappings(getSortedMappings());
         if (!sortedItems.length && state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="14" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
+          body.innerHTML = `<tr><td colspan="15" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -2129,18 +2155,27 @@
             </td>
             <td style="width: 80px; min-width: 80px;">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")}</span>
-                <div class="btn-group btn-group-sm" role="group" aria-label="window-manual-open-close">
+                <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
+                <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="打开窗口（禁止自动关闭）" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
-                  <button class="btn btn-outline-warning btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
+                  <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                   <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
                 </div>
               </div>
-              <div class="text-muted truncate-1" title="${escapeHtml(String(m.platform_account || "-") + " · " + String(m.browser_name || "-"))}">
-                <span class="mono">账号：${escapeHtml(m.platform_account || "-")}</span>
-              </div>
+            </td>
+            <td class="small2" style="max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+              <span
+                class="text-muted remark-click"
+                style="cursor: pointer;"
+                title="${escapeHtml(m.window_remark || '点击编辑备注')}"
+                data-act="editRemark"
+                data-mid="${m.id}"
+                data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
+                data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
+                data-remark="${escapeHtml(m.window_remark || "")}"
+              >${escapeHtml(m.window_remark || "-")}</span>
             </td>
             <td>
               ${Number(m.window_status || 0) === 1 ? `<span class="badge text-bg-success">打开</span>` : `<span class="badge text-bg-secondary">未打开</span>`}
@@ -2154,9 +2189,10 @@
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="刷新会员信息" data-act="refreshSubscription" data-mid="${m.id}">⟳</button>
               </div>
             </td>
-            <td style="width: 430px; min-width: 430px;">
+            <td style="width: 260px; min-width: 260px;">
               <select
                 class="form-select form-select-sm mono"
+                style="font-size: 10px;"
                 data-role="proxySelect"
                 data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
                 data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
@@ -2170,11 +2206,11 @@
             </td>
             <td>
               <button
-                class="btn btn-outline-primary btn-sm"
+                class="btn btn-outline-primary btn-sm btn-icon"
                 title="检测该窗口当前选择的代理（并更新本地代理库）"
                 data-act="analyzeSelectedProxy"
                 data-mid="${m.id}"
-              >检测</button>
+              ><i class="bi bi-globe2" aria-hidden="true"></i></button>
             </td>
             <td class="mono">
               <button
@@ -2422,6 +2458,9 @@
         if (act === "analyzeSelectedProxy") {
           return analyzeSelectedProxy(mappingId, el);
         }
+        if (act === "editRemark") {
+          return openRemarkModal(el);
+        }
         if (act === "resetConsecutiveErrors") {
           return resetConsecutiveErrors(mappingId);
         }
@@ -2520,6 +2559,58 @@
         if (!r.ok) throw new Error(d.detail || "请求失败");
         return d;
       }
+
+      // -------------------- remark modal --------------------
+      function openRemarkModal(el) {
+        const mid = parseInt(String(el.dataset.mid || ""), 10) || 0;
+        const spacePk = String(el.dataset.space_pk || "");
+        const windowKey = String(el.dataset.window_key || "");
+        const remark = String(el.dataset.remark || "");
+        const m = state.mappings.find(x => x.id === mid);
+        document.getElementById("remarkWinLabel").textContent = m
+          ? `#${m.window_sort_num ?? m.window_pk ?? "-"}-${m.window_name || "-"}`
+          : `mapping#${mid}`;
+        document.getElementById("remarkMid").value = mid;
+        document.getElementById("remarkSpacePk").value = spacePk;
+        document.getElementById("remarkWindowKey").value = windowKey;
+        document.getElementById("remarkInput").value = remark;
+        remarkBsModal.show();
+      }
+
+      async function saveRemark(remarkText) {
+        const spacePk = document.getElementById("remarkSpacePk").value;
+        const windowKey = document.getElementById("remarkWindowKey").value;
+        const mid = parseInt(document.getElementById("remarkMid").value, 10) || 0;
+        if (!spacePk || !windowKey) return toast("缺少窗口信息，无法保存", "warning");
+        try {
+          await postJson(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(windowKey)}/remark`, {
+            method: "POST",
+            body: { window_remark: remarkText },
+          });
+          const m = state.mappings.find(x => x.id === mid);
+          if (m) m.window_remark = remarkText;
+          const spanEl = document.querySelector(`#mappingBody span[data-act="editRemark"][data-mid="${mid}"]`);
+          if (spanEl) {
+            spanEl.textContent = remarkText || "-";
+            spanEl.dataset.remark = remarkText;
+            spanEl.title = remarkText || "点击编辑备注";
+          }
+          toast("备注已更新", "success");
+          remarkBsModal.hide();
+        } catch (e) {
+          toast(e.message || "保存备注失败", "error");
+        }
+      }
+
+      document.getElementById("btnRemarkSave").addEventListener("click", () => {
+        const txt = document.getElementById("remarkInput").value.trim();
+        saveRemark(txt);
+      });
+
+      document.getElementById("btnRemarkClear").addEventListener("click", () => {
+        document.getElementById("remarkInput").value = "";
+        saveRemark("");
+      });
 
       function collectAllSpacesFromTree(tree) {
         const out = [];
@@ -3311,7 +3402,7 @@
         document.getElementById("typeSelect").value = "";
         updateMappingsHeaderSummaryUI();
         updateMappingPaginationUI(0);
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="15" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -3347,7 +3438,7 @@
           fillTypeForm(null);
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="14" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="15" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));

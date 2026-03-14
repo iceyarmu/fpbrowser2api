@@ -3046,6 +3046,7 @@ class Database:
                   w.proxy_country,
                   w.proxy_expire_at,
                   w.window_status,
+                  w.window_remark,
                   w.enabled AS window_enabled,
                   s.space_id AS space_id,
                   s.name AS space_name,
