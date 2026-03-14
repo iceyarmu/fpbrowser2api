@@ -3487,7 +3487,7 @@ async def sora_gen_video(
                 out = out.strip(".")
                 return out or "character"
 
-            base_username = _sanitize_username(username_hint)
+            base_username = "mrr_" + _sanitize_username(username_hint)
             username = base_username
             is_available = False
             for _i in range(8):
@@ -3648,7 +3648,7 @@ async def sora_gen_video(
             safe_base = "".join([ch for ch in base_username.lower() if (ch.isalnum() or ch == "_")])
             if not safe_base:
                 safe_base = "character"
-            username = f"{safe_base}{random.randint(100, 999)}"
+            username = f"mrr_{safe_base}{random.randint(100, 999)}"
             await progress_cb(70, {"stage": "character_identified", "cameo_id": cameo_id, "display_name": display_name, "username": username})
 
             profile_asset_url = str(cameo_status.get("profile_asset_url") or "").strip() or None
