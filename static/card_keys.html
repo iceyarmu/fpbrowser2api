@@ -49,6 +49,7 @@
             <a class="btn btn-link btn-sm ms-3 p-0" href="https://chong.databrain.sbs/" target="_blank" rel="noopener noreferrer">充值入口</a>
             <div class="ms-auto d-flex gap-2">
               <button class="btn btn-outline-info btn-sm" id="btnCopyAll" title="复制所有卡密到剪贴板">一键复制所有卡密</button>
+              <button class="btn btn-outline-success btn-sm" id="btnCopySelected" title="复制勾选的卡密到剪贴板" disabled>复制勾选卡密</button>
               <button class="btn btn-outline-danger btn-sm" id="btnBatchDelete" title="删除选中的卡密" disabled>批量删除</button>
               <button class="btn btn-outline-secondary btn-sm" id="btnRefresh">刷新</button>
             </div>
@@ -161,6 +162,7 @@
       function updateBatchDeleteState() {
         const ids = getSelectedIds();
         document.getElementById("btnBatchDelete").disabled = ids.length === 0;
+        document.getElementById("btnCopySelected").disabled = ids.length === 0;
         const checkAll = document.getElementById("checkAll");
         const rowChecks = document.querySelectorAll(".row-check");
         if (!rowChecks.length) {
@@ -269,6 +271,23 @@
         await loadCardKeys();
       }
 
+      function copyToClipboard(text) {
+        if (navigator.clipboard?.writeText) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise((resolve, reject) => {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0";
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand("copy") ? resolve() : reject(new Error("execCommand 返回 false"));
+          } catch (e) { reject(e); }
+          finally { document.body.removeChild(ta); }
+        });
+      }
+
       async function copyAllCardKeys() {
         if (!cardKeys.length) {
           toast("暂无卡密可复制", "warn");
@@ -280,8 +299,32 @@
           return;
         }
         try {
-          await navigator.clipboard.writeText(text);
+          await copyToClipboard(text);
           toast(`已复制 ${cardKeys.length} 条卡密到剪贴板`, "success");
+        } catch (err) {
+          toast(`复制失败：${err?.message || "请检查浏览器权限"}`, "error");
+        }
+      }
+
+      async function copySelectedCardKeys() {
+        const ids = getSelectedIds();
+        if (!ids.length) {
+          toast("请先勾选要复制的卡密", "warn");
+          return;
+        }
+        const idSet = new Set(ids);
+        const text = cardKeys
+          .filter((x) => idSet.has(Number(x.id)))
+          .map((x) => String(x.card_key || "").trim())
+          .filter(Boolean)
+          .join("\n");
+        if (!text) {
+          toast("勾选的卡密无有效内容", "warn");
+          return;
+        }
+        try {
+          await copyToClipboard(text);
+          toast(`已复制 ${ids.length} 条卡密到剪贴板`, "success");
         } catch (err) {
           toast(`复制失败：${err?.message || "请检查浏览器权限"}`, "error");
         }
@@ -342,6 +385,7 @@
       document.getElementById("btnImport").addEventListener("click", importCardKeys);
       document.getElementById("btnRefresh").addEventListener("click", loadCardKeys);
       document.getElementById("btnCopyAll").addEventListener("click", copyAllCardKeys);
+      document.getElementById("btnCopySelected").addEventListener("click", copySelectedCardKeys);
       document.getElementById("btnBatchDelete").addEventListener("click", batchDelete);
 
       document.getElementById("btnFirstPage").addEventListener("click", () => { currentPage = 1; renderTable(); });
