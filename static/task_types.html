@@ -1475,7 +1475,7 @@
           if (el) el.textContent = String(m.cooldown_until || "-");
         }
         if (has("error_cooldown_until")) {
-          const el = tr.querySelector(`[data-role="errorCooldownUntil"][data-mid="${mappingId}"]`);
+          const el = tr.querySelector(`[data-field="errorCooldownUntil"][data-mid="${mappingId}"]`);
           if (el) el.textContent = String(m.error_cooldown_until || "-");
         }
         if (has("enabled")) {
@@ -1487,8 +1487,8 @@
           }
         }
         if (has("consecutive_errors") || has("total_errors")) {
-          const ceEl = tr.querySelector(`[data-role="consecutiveErrors"][data-mid="${mappingId}"]`);
-          const teEl = tr.querySelector(`[data-role="totalErrors"][data-mid="${mappingId}"]`);
+          const ceEl = tr.querySelector(`[data-field="consecutiveErrors"][data-mid="${mappingId}"]`);
+          const teEl = tr.querySelector(`[data-field="totalErrors"][data-mid="${mappingId}"]`);
           if (ceEl) ceEl.textContent = String(m.consecutive_errors ?? 0);
           if (teEl) teEl.textContent = String(m.total_errors ?? 0);
           const btn = tr.querySelector(`button[data-act="viewErrors"][data-mid="${mappingId}"]`);
@@ -2183,7 +2183,7 @@
                 title="点击查看该窗口任务列表（按时间倒序）"
                 data-role="taskStats"
                 data-mid="${m.id}"
-              ><span class="text-primary fw-semibold" data-role="success24h" data-mid="${m.id}">${success24h}</span>/<span class="text-primary fw-semibold" data-role="successTotal" data-mid="${m.id}">${successTotal}</span>/<span class="text-danger fw-semibold" data-role="consecutiveErrors" data-mid="${m.id}">${failConsecutive}</span>/<span class="text-danger fw-semibold" data-role="failed24h" data-mid="${m.id}">${fail24h}</span>/<span class="text-danger fw-semibold" data-role="totalErrors" data-mid="${m.id}">${failTotal}</span>|<span class="fw-semibold small2" data-role="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></button>
+              ><span class="text-primary fw-semibold" data-field="success24h" data-mid="${m.id}">${success24h}</span>/<span class="text-primary fw-semibold" data-field="successTotal" data-mid="${m.id}">${successTotal}</span>/<span class="text-danger fw-semibold" data-field="consecutiveErrors" data-mid="${m.id}">${failConsecutive}</span>/<span class="text-danger fw-semibold" data-field="failed24h" data-mid="${m.id}">${fail24h}</span>/<span class="text-danger fw-semibold" data-field="totalErrors" data-mid="${m.id}">${failTotal}</span>|<span class="fw-semibold small2" data-field="errorCooldownUntil" data-mid="${m.id}">${escapeHtml(m.error_cooldown_until || "-")}</span></button>
               <button class="btn btn-outline-secondary btn-sm" title="重置连续错误并清空错误重置时间（error_cooldown_until）" aria-label="重置连续错误" data-act="resetConsecutiveErrors" data-mid="${m.id}">⟳</button>
               <div class="text-muted d-flex flex-wrap align-items-center gap-2 small2">
                 <span  class="text-muted d-flex flex-wrap align-items-center gap-2 small2">24h成功|总成功|连续失败|24h失败|总失败</span>
