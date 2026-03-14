@@ -200,7 +200,7 @@
                 <button class="btn btn-outline-primary btn-sm" id="btnAddWindows">添加窗口</button>
               </div>
               <div class="text-muted small mt-0">
-                每个窗口可绑定多个任务类型；这里做“多窗口管理”：批量打开、批量刷新额度、定时刷新、按额度排序。
+                每个窗口可绑定多个任务类型；这里做“多窗口管理”：批量打开、定时刷新、按额度排序。
               </div>
               <hr class="hr-tight" />
 
@@ -219,24 +219,23 @@
                   <div class="btn-group btn-group-sm" role="group" aria-label="bulk-actions">
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
-                    <button class="btn btn-outline-secondary" id="btnBulkRefreshQuota">批量刷新额度</button>
                     <button class="btn btn-outline-warning" id="btnBulkTransfer">批量转移</button>
                     <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
+                  <input class="form-control form-control-sm" id="mappingFilter" placeholder="搜索：窗口名 / 账号 / 空间 / 代理 / 邀请码" style="max-width: 360px;" />
+                  <button class="btn btn-outline-secondary btn-sm" id="btnClearMappingFilter" title="清除搜索">✕</button>
+                  <span class="small text-muted" id="mappingFilterHint"></span>
                   <div class="d-flex flex-wrap gap-1 align-items-center ms-auto">
                     <div class="small text-muted">
                       <span id="mappingQuickStats">打开/总数/冷却0/启用/占用: 0/0/0/0/0</span>
                     </div>
                     <button class="btn btn-outline-secondary btn-sm" id="btnRefreshMappingStats" title="仅刷新统计信息">⟳</button>
                   </div>
+                  <div class="vr d-none d-md-block"></div>
+                  
                 </div>
                 <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
-                <div class="d-flex flex-wrap gap-1 align-items-center mt-1">
-                  <input class="form-control form-control-sm" id="mappingFilter" placeholder="搜索：窗口名 / 账号 / 空间 / 代理 / 邀请码" style="max-width: 420px;" />
-                  <button class="btn btn-outline-secondary btn-sm" id="btnClearMappingFilter" title="清除搜索">✕</button>
-                  <span class="small text-muted" id="mappingFilterHint"></span>
-                </div>
               </div>
               <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-1">
                 <div class="small text-muted" data-role="mapping-page-info">总计 0 条 · 第 0/0 页</div>
@@ -3503,7 +3502,6 @@
 
         setBtnDisabledById("btnBulkOpen", true);
         setBtnDisabledById("btnBulkClose", true);
-        setBtnDisabledById("btnBulkRefreshQuota", true);
         setBtnDisabledById("btnBulkTransfer", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
@@ -3522,7 +3520,6 @@
         } finally {
           setBtnDisabledById("btnBulkOpen", false);
           setBtnDisabledById("btnBulkClose", false);
-          setBtnDisabledById("btnBulkRefreshQuota", false);
           setBtnDisabledById("btnBulkTransfer", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
@@ -3776,7 +3773,6 @@
       });
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
       document.getElementById("btnBulkClose")?.addEventListener("click", bulkCloseSelected);
-      document.getElementById("btnBulkRefreshQuota")?.addEventListener("click", () => bulkRefreshQuotaSelected({ silent: false }));
       document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
       document.getElementById("btnSyncAllWindowStatus")?.addEventListener("click", (e) => syncAllWindowStatusForCurrentType(e.currentTarget));
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
