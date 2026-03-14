@@ -370,6 +370,7 @@ class Database:
                     result_json TEXT,
                     error_message TEXT,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP,
                     started_at TIMESTAMP,
                     completed_at TIMESTAMP
                 )
@@ -574,11 +575,12 @@ class Database:
                     if not await self._column_exists(db, "spaces", col_name):
                         await db.execute(f"ALTER TABLE spaces ADD COLUMN {col_name} {col_type}")
 
-            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）；window_ip（窗口绑定 IP）
+            # tasks: generation_id（用于按 generation_id 反查历史任务窗口）；window_ip（窗口绑定 IP）；updated_at
             if await self._table_exists(db, "tasks"):
                 columns_to_add = [
                     ("generation_id", "TEXT"),
                     ("window_ip", "TEXT"),
+                    ("updated_at", "TIMESTAMP"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "tasks", col_name):
@@ -4050,7 +4052,8 @@ class Database:
                   w.window_sort_num AS window_sort_num,
                   t.error_message,
                   t.result_json,
-                  t.created_at
+                  t.created_at,
+                  t.updated_at
                 FROM tasks t
                 LEFT JOIN windows w ON w.id = t.window_pk
                 WHERE {' AND '.join(where)}
@@ -4390,6 +4393,8 @@ class Database:
             updates.append("started_at=datetime('now','localtime')")
         if set_completed:
             updates.append("completed_at=datetime('now','localtime')")
+
+        updates.append("updated_at=datetime('now','localtime')")
 
         if not updates:
             return

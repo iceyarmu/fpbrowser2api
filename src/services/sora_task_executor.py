@@ -3353,7 +3353,7 @@ async def sora_gen_video(
     target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
     monitor_log_path = (str(payload.get("sora_monitor_log_path") or "").strip() or None)
 
-    max_wait_seconds = float(payload.get("sora_pending_max_wait_seconds") or max(30.0, min(float(timeout_seconds), 60.0 * 10)))
+    max_wait_seconds = float(payload.get("sora_pending_max_wait_seconds") or max(30.0, min(float(timeout_seconds), 90.0 * 10)))
     poll_interval_seconds = float(payload.get("sora_pending_poll_interval_seconds") or 5.0)
     sniff_timeout_seconds = float(payload.get("sora_pending_sniff_timeout_seconds") or 4.0)
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)

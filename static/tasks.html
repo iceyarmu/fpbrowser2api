@@ -99,13 +99,14 @@
                   <th style="min-width: 120px;">task_id</th>
                   <th style="min-width: 120px;">任务类型</th>
                   <th style="min-width: 100px;">状态</th>
-                  <th style="min-width: 150px;">进度</th>
+                  <th style="min-width: 100px;">进度</th>
                   <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 150px;">IP</th>
                   <th style="min-width: 200px;">错误信息</th>
                   <th style="min-width: 80px;">prompt</th>
                   <th style="min-width: 80px;">result</th>
                   <th style="min-width: 145px;">创建时间</th>
+                  <th style="min-width: 145px;">更新时间</th>
                 </tr>
               </thead>
               <tbody id="body"></tbody>
@@ -670,7 +671,7 @@
         document.getElementById("btnNextBottom").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="10" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="11" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
@@ -681,6 +682,7 @@
           const pNum = Number(x?.progress);
           const progress = Number.isFinite(pNum) ? Math.max(0, Math.min(100, Math.trunc(pNum))) : null;
           const createdAtText = formatCreatedAtLocal(x.created_at);
+          const updatedAtText = formatCreatedAtLocal(x.updated_at);
           const windowInfo = buildWindowInfo(x);
           const windowIp = String(x.window_ip ?? "").trim() || "-";
           const windowPk = x.window_pk;
@@ -700,8 +702,8 @@
                   progress === null
                     ? `<span class="text-muted">-</span>`
                     : `
-                      <div class="d-flex align-items-center gap-2" style="min-width: 140px;">
-                        <div class="progress flex-grow-1" style="height: 8px; min-width: 80px;">
+                      <div class="d-flex align-items-center gap-1" style="min-width: 90px;">
+                        <div class="progress flex-grow-1" style="height: 8px; min-width: 50px;">
                           <div class="progress-bar" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
                         <span class="mono text-muted" style="min-width: 44px; text-align: right;">${progress}%</span>
@@ -732,6 +734,7 @@
                 <button class="btn btn-outline-secondary btn-sm btn-compact" data-action="view-result" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>
               <td class="mono text-nowrap">${escapeHtml(createdAtText)}</td>
+              <td class="mono text-nowrap">${escapeHtml(updatedAtText || "-")}</td>
             </tr>
           `;
         }).join("");
