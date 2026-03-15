@@ -1778,6 +1778,25 @@ class Database:
             d.pop("raw_json", None)
             return WindowInfo(**d)
 
+    async def get_window_by_key(self, *, space_pk: int, window_key: str) -> Optional[WindowInfo]:
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT * FROM windows WHERE space_pk = ? AND window_key = ? AND deleted = 0 LIMIT 1",
+                (space_pk, window_key),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("raw_json"):
+                try:
+                    d["raw"] = json.loads(d["raw_json"])
+                except Exception:
+                    d["raw"] = None
+            d.pop("raw_json", None)
+            return WindowInfo(**d)
+
     async def delete_window_by_key(self, *, space_pk: int, window_key: str) -> Dict[str, int]:
         """本地标记删除窗口（不物理删除）。
 

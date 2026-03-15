@@ -2894,8 +2894,8 @@
         });
       }
 
-      // 窗口下拉改动（代理/账号）：立即调用后端 /browser/mdf
-      treeContainer.addEventListener("change", async (ev) => {
+      // 窗口下拉改动（代理/账号）：乐观更新 UI + 异步提交后端，不阻塞用户连续操作
+      treeContainer.addEventListener("change", (ev) => {
         const el = ev.target;
         if (!el || !(el instanceof HTMLSelectElement)) return;
         if (el.dataset.role === "accountSelect") {
@@ -2903,37 +2903,38 @@
           const wk = String(el.dataset.window_key || "").trim();
           const accountId = parseInt(String(el.value || "0"), 10) || 0;
           if (!spacePk || !wk) return;
-          try {
-            el.disabled = true;
-            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-account`, {
-              method: "POST",
-              body: JSON.stringify({ account_id: accountId }),
-            });
-            if (!r) return;
-            const d = await r.json();
-            if (!r.ok) throw new Error(d.detail || "修改账号失败");
-            toast("已提交窗口账号修改", "success");
-            el.dataset.current_account_id = String(accountId);
 
-            const td = el.closest("td");
-            const row = el.closest("tr");
-            const infoEl = td ? td.querySelector(`[data-role="accountBindInfo"]`) : null;
-            const urlCell = row ? row.querySelector(`[data-role="platformUrlCell"]`) : null;
-            const arr = normalizeAccounts(accountsCache.get(spacePk) || []);
-            const picked = accountId > 0 ? arr.find(x => String(x.account_id) === String(accountId)) : null;
+          el.dataset.current_account_id = String(accountId);
+          const td = el.closest("td");
+          const row = el.closest("tr");
+          const infoEl = td ? td.querySelector(`[data-role="accountBindInfo"]`) : null;
+          const urlCell = row ? row.querySelector(`[data-role="platformUrlCell"]`) : null;
+          const arr = normalizeAccounts(accountsCache.get(spacePk) || []);
+          const picked = accountId > 0 ? arr.find(x => String(x.account_id) === String(accountId)) : null;
+          if (picked) {
+            el.dataset.current_account = String(picked.platform_username || "").trim();
+            el.dataset.current_url = String(picked.platform_url || "").trim();
+            if (infoEl) infoEl.textContent = `当前账号：${picked.platform_username || "-"}`;
+            if (urlCell) urlCell.innerHTML = renderLink(String(picked.platform_url || "").trim());
+          } else {
+            el.dataset.current_account = "";
+            el.dataset.current_url = "";
+            if (infoEl) infoEl.textContent = "当前账号：-";
+            if (urlCell) urlCell.textContent = "-";
+          }
 
-            if (picked) {
-              el.dataset.current_account = String(picked.platform_username || "").trim();
-              el.dataset.current_url = String(picked.platform_url || "").trim();
-              if (infoEl) infoEl.textContent = `当前账号：${picked.platform_username || "-"}`;
-              if (urlCell) urlCell.innerHTML = renderLink(String(picked.platform_url || "").trim());
-            } else {
-              el.dataset.current_account = "";
-              el.dataset.current_url = "";
-              if (infoEl) infoEl.textContent = "当前账号：-";
-              if (urlCell) urlCell.textContent = "-";
+          (async () => {
+            try {
+              const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-account`, {
+                method: "POST",
+                body: JSON.stringify({ account_id: accountId }),
+              });
+              if (!r) return;
+              const d = await r.json();
+              if (!r.ok) throw new Error(d.detail || "修改账号失败");
+            } catch (e) {
+              toast(e.message || "修改账号失败", "error");
             }
-
             try {
               await loadLocalAccounts(spacePk, { force: true });
               fillAccountSelects(spacePk);
@@ -2941,14 +2942,8 @@
                 accountsState.accounts = accountsCache.get(spacePk) || [];
                 renderAccounts();
               }
-            } catch (_e) {
-              // ignore
-            }
-          } catch (e) {
-            toast(e.message || "修改账号失败", "error");
-          } finally {
-            el.disabled = false;
-          }
+            } catch (_e) { /* ignore */ }
+          })();
           return;
         }
 
@@ -2958,79 +2953,66 @@
         const proxyId = parseInt(String(el.value || "0"), 10);
         const oldProxyId = parseInt(String(el.dataset.current_proxy_id || "0"), 10) || 0;
         if (!spacePk || !wk) return;
+
+        el.dataset.current_proxy_id = String(proxyId);
         try {
-          el.disabled = true;
-          const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-proxy`, {
-            method: "POST",
-            body: JSON.stringify({ proxy_id: proxyId }),
-          });
-          if (!r) return;
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "修改代理失败");
-          toast("已提交窗口代理修改", "success");
-          el.dataset.current_proxy_id = String(proxyId);
-
-          // 更新该行“同步到的代理信息”为当前选择的代理
-          try {
-            const td = el.closest("td");
-            const infoEl = td ? td.querySelector(`[data-role="proxySyncedInfo"]`) : null;
-            const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
-            const picked = proxyId > 0 ? arr.find(x => String(x.proxy_id) === String(proxyId)) : null;
-            const ipOrHost = picked
-              ? (String(picked.last_ip || "").trim() || `${picked.host || "-"}:${picked.port || "-"}`)
-              : "";
-            const ctry = picked ? (String(picked.last_country || "-").trim() || "-") : "-";
-            if (picked) {
-              el.dataset.proxy_method = "choose";
-              el.dataset.proxy_category = String(picked.protocol || "").trim() || el.dataset.proxy_category || "";
-              el.dataset.proxy_host = String(picked.host || "").trim();
-              el.dataset.proxy_port = String(picked.port || "").trim();
-              el.dataset.proxy_addr = String(ipOrHost || "").trim();
-              el.dataset.proxy_country = String(ctry || "").trim();
-            } else {
-              el.dataset.proxy_method = "custom";
-              el.dataset.proxy_addr = "";
-              el.dataset.proxy_country = "";
-            }
-            if (infoEl) {
-              infoEl.textContent = `同步到的代理信息：${proxyId > 0 ? `${ipOrHost || "-"} / ${ctry}` : "- / -"}`;
-            }
-          } catch (_e) {
-            // ignore
+          const td = el.closest("td");
+          const infoEl = td ? td.querySelector(`[data-role="proxySyncedInfo"]`) : null;
+          const parr = normalizeProxies(proxiesCache.get(spacePk) || []);
+          const ppicked = proxyId > 0 ? parr.find(x => String(x.proxy_id) === String(proxyId)) : null;
+          const ipOrHost = ppicked
+            ? (String(ppicked.last_ip || "").trim() || `${ppicked.host || "-"}:${ppicked.port || "-"}`)
+            : "";
+          const ctry = ppicked ? (String(ppicked.last_country || "-").trim() || "-") : "-";
+          if (ppicked) {
+            el.dataset.proxy_method = "choose";
+            el.dataset.proxy_category = String(ppicked.protocol || "").trim() || el.dataset.proxy_category || "";
+            el.dataset.proxy_host = String(ppicked.host || "").trim();
+            el.dataset.proxy_port = String(ppicked.port || "").trim();
+            el.dataset.proxy_addr = String(ipOrHost || "").trim();
+            el.dataset.proxy_country = String(ctry || "").trim();
+          } else {
+            el.dataset.proxy_method = "custom";
+            el.dataset.proxy_addr = "";
+            el.dataset.proxy_country = "";
           }
-
-          // 尽量在前端即时更新缓存中的“绑定数”，让下拉标签也能立刻反映变化
-          try {
-            if (oldProxyId !== proxyId && proxiesCache.has(spacePk)) {
-              const arr = proxiesCache.get(spacePk) || [];
-              const bump = (pid, delta) => {
-                const it = arr.find(x => String(x?.proxy_id ?? x?.id ?? "") === String(pid));
-                if (!it) return;
-                const cur = Number(it.binding_count ?? it.bindingCount ?? 0) || 0;
-                it.binding_count = Math.max(0, cur + delta);
-              };
-              bump(oldProxyId, -1);
-              bump(proxyId, +1);
-              proxiesCache.set(spacePk, arr);
-              fillProxySelects(spacePk);
-            }
-          } catch (_e) {
-            // ignore
+          if (infoEl) {
+            infoEl.textContent = `同步到的代理信息：${proxyId > 0 ? `${ipOrHost || "-"} / ${ctry}` : "- / -"}`;
           }
+          if (oldProxyId !== proxyId && proxiesCache.has(spacePk)) {
+            const carr = proxiesCache.get(spacePk) || [];
+            const bump = (pid, delta) => {
+              const it = carr.find(x => String(x?.proxy_id ?? x?.id ?? "") === String(pid));
+              if (!it) return;
+              const cur = Number(it.binding_count ?? it.bindingCount ?? 0) || 0;
+              it.binding_count = Math.max(0, cur + delta);
+            };
+            bump(oldProxyId, -1);
+            bump(proxyId, +1);
+            proxiesCache.set(spacePk, carr);
+            fillProxySelects(spacePk);
+          }
+        } catch (_e) { /* ignore */ }
 
-          // 再做一次“按 UI 实时统计”的兜底（同步窗口后的自动匹配也能更新绑定数）
+        (async () => {
+          try {
+            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-proxy`, {
+              method: "POST",
+              body: JSON.stringify({ proxy_id: proxyId }),
+            });
+            if (!r) return;
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "修改代理失败");
+          } catch (e) {
+            toast(e.message || "修改代理失败", "error");
+          }
           try {
             await recomputeProxyBindingsFromUi(spacePk);
             fillProxySelects(spacePk);
-          } catch (_e) {
-            // ignore
-          }
-        } catch (e) {
-          toast(e.message || "修改代理失败", "error");
-        } finally {
-          el.disabled = false;
-        }
+          } catch (_e) { /* ignore */ }
+        })();
       });
+
 
       function openProjectModal(mode) {
         document.getElementById("projectModalTitle").textContent = mode === "new" ? "新增项目" : "修改项目";

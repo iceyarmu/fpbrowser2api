@@ -1304,61 +1304,20 @@ async def set_window_account(
         if not selected:
             raise HTTPException(status_code=404, detail="account not found")
 
+    # 从本地 DB 读取窗口当前 proxy_id，直接构造 proxyInfo（与 set-proxy 一致），
+    # 避免从 detail 重建 proxyInfo 时因字段缺失/异常而丢失代理设置。
+    target_win = await db.get_window_by_key(space_pk=space_pk, window_key=wk)
+    local_proxy_id = int(getattr(target_win, "proxy_id", 0) or 0) if target_win else 0
+
     syscfg = await db.get_system_config()
     client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
     try:
-        detail = {}
-        try:
-            detail = await client.get_browser_detail(
-                vendor=browser.vendor,
-                base_url=browser.lan_addr,
-                access_key=browser.access_key,
-                space_id=space.space_id,
-                window_key=wk,
-            )
-        except Exception:
-            detail = {}
+        if local_proxy_id > 0:
+            local_proxy_info: Dict[str, Any] = {"moduleId": local_proxy_id, "proxyMethod": "choose"}
+        else:
+            local_proxy_info = {"moduleId": 0, "proxyMethod": "custom", "proxyCategory": "noproxy"}
 
-        mdf_payload: Dict[str, Any] = {}
-        if isinstance((detail or {}).get("proxyInfo"), dict):
-            # 不能直接透传 detail.proxyInfo：某些字段（如 checkChannel）在 /browser/mdf 会被校验拒绝。
-            # 这里仅重建“安全子集”，实现“只改账号，不改代理”的效果。
-            raw_proxy = dict((detail or {}).get("proxyInfo") or {})
-            raw_module = raw_proxy.get("moduleId")
-            if raw_module is None:
-                raw_module = raw_proxy.get("proxyModuleId")
-            try:
-                module_id = int(raw_module or 0)
-            except Exception:
-                module_id = 0
-
-            proxy_method = str(raw_proxy.get("proxyMethod") or "").strip().lower()
-            proxy_category = str(raw_proxy.get("proxyCategory") or "").strip().lower()
-
-            if module_id > 0:
-                mdf_payload["proxyInfo"] = {"moduleId": module_id, "proxyMethod": "choose"}
-            else:
-                host = str(raw_proxy.get("proxyHost") or raw_proxy.get("host") or "").strip()
-                port = str(raw_proxy.get("proxyPort") or raw_proxy.get("port") or "").strip()
-                user = str(raw_proxy.get("proxyUserName") or raw_proxy.get("userName") or "").strip()
-                pwd = str(raw_proxy.get("proxyPassword") or raw_proxy.get("password") or "").strip()
-                if host and port:
-                    safe_category = proxy_category or "http"
-                    proxy_info: Dict[str, Any] = {
-                        "moduleId": 0,
-                        "proxyMethod": "custom",
-                        "proxyCategory": safe_category,
-                        "proxyHost": host,
-                        "proxyPort": port,
-                    }
-                    if user:
-                        proxy_info["proxyUserName"] = user
-                    if pwd:
-                        proxy_info["proxyPassword"] = pwd
-                    mdf_payload["proxyInfo"] = proxy_info
-                elif proxy_category == "noproxy" or proxy_method in ("", "custom"):
-                    mdf_payload["proxyInfo"] = {"moduleId": 0, "proxyMethod": "custom", "proxyCategory": "noproxy"}
-
+        mdf_payload: Dict[str, Any] = {"proxyInfo": local_proxy_info}
         if selected and account_id > 0:
             mdf_payload["windowPlatformList"] = [
                 {
@@ -1423,27 +1382,28 @@ async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProx
     else:
         proxy_info = {"moduleId": proxy_id, "proxyMethod": "choose"}
 
+    # 从本地 DB 读取窗口当前绑定的账号，直接构造 windowPlatformList，
+    # 避免额外调用 get_browser_detail（省掉一次 Roxy API 往返）。
+    target_win = await db.get_window_by_key(space_pk=space_pk, window_key=wk)
+    local_account_id = int(getattr(target_win, "platform_account_id", 0) or 0) if target_win else 0
+    wpl: list = []
+    if local_account_id > 0:
+        acct = await db.get_platform_account(space_pk=space_pk, account_id=local_account_id)
+        if acct:
+            wpl = [{
+                "id": int(acct.account_id),
+                "platformUrl": str(acct.platform_url or "").strip(),
+                "platformUserName": str(acct.platform_username or "").strip(),
+                "platformPassword": str(acct.platform_password or "").strip(),
+                "platformEfa": str(acct.platform_efa or "").strip(),
+                "platformRemarks": str(acct.platform_remarks or "").strip(),
+            }]
+
     syscfg = await db.get_system_config()
     client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
     try:
-        # 关键：先读取窗口明细并保留 windowPlatformList，避免某些 Roxy 版本在 /browser/mdf 时把账号/网址清空
-        # 参考文档：/browser/detail + /browser/mdf
-        # https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E4%BF%AE%E6%94%B9%E6%B5%8F%E8%A7%88%E5%99%A8%E7%AA%97%E5%8F%A3
-        detail = {}
-        try:
-            detail = await client.get_browser_detail(
-                vendor=browser.vendor,
-                base_url=browser.lan_addr,
-                access_key=browser.access_key,
-                space_id=space.space_id,
-                window_key=wk,
-            )
-        except Exception:
-            detail = {}
-
-        mdf_payload = {"proxyInfo": proxy_info}
-        wpl = (detail or {}).get("windowPlatformList")
-        if isinstance(wpl, list) and wpl:
+        mdf_payload: Dict[str, Any] = {"proxyInfo": proxy_info}
+        if wpl:
             mdf_payload["windowPlatformList"] = wpl
 
         rsp = await client.browser_mdf(
