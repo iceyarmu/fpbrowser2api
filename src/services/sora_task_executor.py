@@ -3387,8 +3387,8 @@ async def sora_gen_video(
         sess.monitor_log_path = monitor_log_path
         sess.idle_close_seconds = max(0.0, float(idle_close_seconds))
 
-        # 依你的约束：最多轮询 60 秒，每 2 秒一次
-        character_max_wait_seconds = 60.0
+        # 依你的约束：最多轮询 240 秒，每 2 秒一次
+        character_max_wait_seconds = 240.0
         character_poll_interval_seconds = 2.0
 
         tmp_img: Optional[Path] = None
