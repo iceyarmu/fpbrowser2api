@@ -1163,7 +1163,9 @@ class Database:
                   w.proxy_country AS w_proxy_country, w.proxy_expire_at AS w_proxy_expire_at,
                   w.enabled AS w_enabled, w.window_status AS w_window_status,
                   w.deleted AS w_deleted, w.synced_at AS w_synced_at,
-                  w.created_at AS w_created_at, w.updated_at AS w_updated_at
+                  w.created_at AS w_created_at, w.updated_at AS w_updated_at,
+                  (SELECT COUNT(*) FROM task_type_windows ttw
+                   WHERE ttw.window_pk = w.id AND ttw.deleted = 0) AS w_bound_task_type_count
                 FROM projects p
                 LEFT JOIN browsers b ON b.project_id = p.id AND b.deleted = 0
                 LEFT JOIN spaces s ON s.browser_id = b.id AND s.deleted = 0
@@ -1238,6 +1240,7 @@ class Database:
                     "proxy_expire_at": r["w_proxy_expire_at"],
                     "enabled": bool(r["w_enabled"]) if r["w_enabled"] is not None else True,
                     "window_status": r["w_window_status"] or 0,
+                    "bound_task_type_count": r["w_bound_task_type_count"] or 0,
                     "deleted": bool(r["w_deleted"]) if r["w_deleted"] is not None else False,
                     "synced_at": r["w_synced_at"],
                     "created_at": r["w_created_at"], "updated_at": r["w_updated_at"],
@@ -1388,9 +1391,12 @@ class Database:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
-                SELECT * FROM windows
-                WHERE deleted = 0 AND space_pk = ?
-                ORDER BY (window_sort_num IS NULL) ASC, window_sort_num ASC, window_name ASC, id ASC
+                SELECT w.*,
+                       (SELECT COUNT(*) FROM task_type_windows t
+                        WHERE t.window_pk = w.id AND t.deleted = 0) AS bound_task_type_count
+                FROM windows w
+                WHERE w.deleted = 0 AND w.space_pk = ?
+                ORDER BY (w.window_sort_num IS NULL) ASC, w.window_sort_num ASC, w.window_name ASC, w.id ASC
                 """,
                 (space_pk,),
             )

@@ -98,6 +98,8 @@ class WindowInfo(BaseModel):
     enabled: bool = True
     # 窗口状态：1=已打开，0=未打开（来源：Roxy /browser/connection_info）
     window_status: int = 0
+    # task_type_windows 中绑定该窗口的记录数（未删除）
+    bound_task_type_count: int = 0
     deleted: bool = False
 
     raw: Optional[Dict[str, Any]] = None  # 保存原始窗口信息 JSON（便于排查/扩展）

@@ -848,7 +848,7 @@
                           data-window_key="${escapeHtml(String(w.window_key ?? ""))}">&#x21bb;</button>
                       </div>
                     </td>
-                    <td>${enabledBadge(!!w.enabled)}</td>
+                    <td>${enabledBadge((w.bound_task_type_count || 0) > 0)}</td>
                     <td>${windowStatusBadge(w.window_status)}</td>
                   </tr>
                 `).join("")}
@@ -1566,7 +1566,7 @@
               <div class="text-muted small" data-role="proxySyncedInfo">同步到的代理信息：${escapeHtml(w.proxy_addr || "-")} / ${escapeHtml(w.proxy_country || "-")}</div>
             </td>
             <td>${escapeHtml(w.proxy_expire_at || "-")}</td>
-            <td>${enabledBadge(!!w.enabled)}</td>
+            <td>${enabledBadge((w.bound_task_type_count || 0) > 0)}</td>
             <td>${windowStatusBadge(w.window_status)}</td>
             <td>
               <button class="btn btn-outline-danger btn-sm" type="button"
