@@ -2382,20 +2382,27 @@ class SoraSession:
         await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
         await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
-        async with self._bring_drafts_lock:
-            if self.pw_ctx.page is None:
-                raise RuntimeError("page 未初始化")
-            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-            token = self._get_bearer_token_required()
-            # 不新开页面：直接复用当前已登录的 drafts 页面，降低 429/机器人风控概率
-            return await _sora_api_upload_character_video_pw(
-                self.pw_ctx.page,
-                target_url=target_url,
-                bearer_token=str(token),
-                video_path=Path(video_path),
-                timestamps=str(timestamps or "0,3"),
-                log_file=log_file,
-            )
+        last_err: Exception | None = None
+        for _attempt in range(3):
+            async with self._bring_drafts_lock:
+                if self.pw_ctx.page is None:
+                    raise RuntimeError("page 未初始化")
+                log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+                token = self._get_bearer_token_required()
+                try:
+                    return await _sora_api_upload_character_video_pw(
+                        self.pw_ctx.page,
+                        target_url=target_url,
+                        bearer_token=str(token),
+                        video_path=Path(video_path),
+                        timestamps=str(timestamps or "0,3"),
+                        log_file=log_file,
+                    )
+                except Exception as exc:
+                    last_err = exc
+                    append_log(log_file, f"[sora][upload_character] 上传角色视频失败(第{_attempt + 1}次): {exc}, 尝试刷新治愈…")
+            await self._bring_sora_drafts_to_front()
+        raise last_err  # type: ignore[misc]
 
     async def api_characters_from_generation(self, *, target_url: str, generation_id: str) -> Dict[str, Any]:
         """POST /backend/characters/from-generation：用 generation_id 创建 cameo，返回 cameo 对象（含 id）。"""
@@ -3387,8 +3394,8 @@ async def sora_gen_video(
         sess.monitor_log_path = monitor_log_path
         sess.idle_close_seconds = max(0.0, float(idle_close_seconds))
 
-        # 依你的约束：最多轮询 240 秒，每 2 秒一次
-        character_max_wait_seconds = 240.0
+        # 依你的约束：最多轮询 360 秒，每 2 秒一次
+        character_max_wait_seconds = 360.0
         character_poll_interval_seconds = 2.0
 
         tmp_img: Optional[Path] = None
