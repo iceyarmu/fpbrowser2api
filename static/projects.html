@@ -636,9 +636,9 @@
             const sp = parseInt(card.dataset.spacePk || "", 10);
             if (!sp) return;
             ensureProxiesLoaded(sp)
-              .then(() => {
+              .then(async () => {
                 fillProxySelects(sp);
-                recomputeProxyBindingsFromUi(sp);
+                await recomputeProxyBindingsFromUi(sp);
                 fillProxySelects(sp);
               })
               .catch(() => fillProxySelects(sp));
@@ -2586,21 +2586,27 @@
         });
       }
 
-      function recomputeProxyBindingsFromUi(spacePk) {
+      async function recomputeProxyBindingsFromUi(spacePk) {
         const arr = proxiesCache.get(spacePk) || [];
         if (!Array.isArray(arr) || !arr.length) return;
-        const counts = new Map(); // proxy_id -> count (across ALL spaces)
-        const selects = document.querySelectorAll(`select[data-role="proxySelect"]`);
-        selects.forEach(sel => {
-          const pidFromValue = parseInt(String(sel?.value || "0"), 10) || 0;
-          const pidFromDs = parseInt(String(sel?.dataset?.current_proxy_id || "0"), 10) || 0;
-          const pid = pidFromValue > 0 ? pidFromValue : pidFromDs;
-          if (pid > 0) counts.set(pid, (counts.get(pid) || 0) + 1);
-        });
+        let counts = {};
+        try {
+          counts = await loadProxyBindings(spacePk);
+        } catch (_e) {
+          const countsMap = new Map();
+          const selects = document.querySelectorAll(`select[data-role="proxySelect"]`);
+          selects.forEach(sel => {
+            const pidFromValue = parseInt(String(sel?.value || "0"), 10) || 0;
+            const pidFromDs = parseInt(String(sel?.dataset?.current_proxy_id || "0"), 10) || 0;
+            const pid = pidFromValue > 0 ? pidFromValue : pidFromDs;
+            if (pid > 0) countsMap.set(pid, (countsMap.get(pid) || 0) + 1);
+          });
+          countsMap.forEach((v, k) => { counts[String(k)] = v; });
+        }
         arr.forEach(p => {
           const pid = parseInt(String(p?.proxy_id ?? p?.id ?? 0), 10) || 0;
           if (pid <= 0) return;
-          p.binding_count = counts.get(pid) || 0;
+          p.binding_count = (counts && typeof counts === "object") ? (counts[String(pid)] ?? counts[pid] ?? 0) : 0;
         });
         proxiesCache.set(spacePk, arr);
         if (proxiesState?.spacePk === spacePk) {
@@ -3014,7 +3020,7 @@
 
           // 再做一次“按 UI 实时统计”的兜底（同步窗口后的自动匹配也能更新绑定数）
           try {
-            recomputeProxyBindingsFromUi(spacePk);
+            await recomputeProxyBindingsFromUi(spacePk);
             fillProxySelects(spacePk);
           } catch (_e) {
             // ignore
@@ -3237,7 +3243,7 @@
             // ignore
           }
           fillProxySelects(spacePk);
-          recomputeProxyBindingsFromUi(spacePk);
+          await recomputeProxyBindingsFromUi(spacePk);
           fillProxySelects(spacePk);
           fillAccountSelects(spacePk);
 
