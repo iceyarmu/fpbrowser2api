@@ -33,6 +33,8 @@ class SystemConfig(BaseModel):
     stop_accepting_tasks: bool = False
     # 对外创建任务并发上限（必须为 3 的整数倍）
     public_create_task_max_inflight: int = 180
+    # 服务器数量（用于计算每台服务器的并发量）
+    server_count: int = 1
     updated_at: Optional[datetime] = None
 
 

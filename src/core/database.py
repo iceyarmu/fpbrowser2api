@@ -157,6 +157,7 @@ class Database:
                     log_to_file BOOLEAN DEFAULT 0,
                     stop_accepting_tasks BOOLEAN DEFAULT 0,
                     public_create_task_max_inflight INTEGER DEFAULT 180,
+                    server_count INTEGER DEFAULT 1,
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
                 )
                 """
@@ -484,14 +485,18 @@ class Database:
             public_create_task_max_inflight = int(
                 config_dict.get("system", {}).get("public_create_task_max_inflight", 180) or 180
             )
+            server_count = int(
+                config_dict.get("system", {}).get("server_count", 1) or 1
+            )
             await db.execute(
                 """
                 INSERT INTO system_config (
-                    id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, public_create_task_max_inflight
+                    id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file,
+                    public_create_task_max_inflight, server_count
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, public_create_task_max_inflight),
+                (proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, public_create_task_max_inflight, server_count),
             )
 
         # admin_users: 仅当空表时创建默认管理员
@@ -546,6 +551,7 @@ class Database:
                     ("log_to_file", "BOOLEAN DEFAULT 0"),
                     ("stop_accepting_tasks", "BOOLEAN DEFAULT 0"),
                     ("public_create_task_max_inflight", "INTEGER DEFAULT 180"),
+                    ("server_count", "INTEGER DEFAULT 1"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "system_config", col_name):
@@ -827,6 +833,7 @@ class Database:
         log_to_file: Optional[bool] = None,
         stop_accepting_tasks: Optional[bool] = None,
         public_create_task_max_inflight: Optional[int] = None,
+        server_count: Optional[int] = None,
     ) -> None:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -848,14 +855,20 @@ class Database:
                 if public_create_task_max_inflight is not None
                 else current_inflight
             )
+            current_server_count = int(current.get("server_count", 1) or 1)
+            new_server_count = (
+                max(1, int(server_count))
+                if server_count is not None
+                else current_server_count
+            )
 
             await db.execute(
                 """
                 INSERT INTO system_config (
                   id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file,
-                  stop_accepting_tasks, public_create_task_max_inflight, updated_at
+                  stop_accepting_tasks, public_create_task_max_inflight, server_count, updated_at
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(id) DO UPDATE SET
                   proxy_enabled=excluded.proxy_enabled,
                   proxy_url=excluded.proxy_url,
@@ -864,6 +877,7 @@ class Database:
                   log_to_file=excluded.log_to_file,
                   stop_accepting_tasks=excluded.stop_accepting_tasks,
                   public_create_task_max_inflight=excluded.public_create_task_max_inflight,
+                  server_count=excluded.server_count,
                   updated_at=datetime('now','localtime')
                 """,
                 (
@@ -874,6 +888,7 @@ class Database:
                     new_log_to_file,
                     new_stop_accepting,
                     new_public_create_task_max_inflight,
+                    new_server_count,
                 ),
             )
             await db.commit()

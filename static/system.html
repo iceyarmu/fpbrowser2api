@@ -70,7 +70,18 @@
                 <div class="col-12">
                   <label class="form-label" for="publicCreateTaskMaxInflight">对外创建任务并发上限</label>
                   <input class="form-control mono" id="publicCreateTaskMaxInflight" type="number" min="3" step="3" placeholder="例如 180" />
-                  <div class="form-text">必须是 3 的整数倍；窗口候选池大小会按该值的 1/3 自动计算。</div>
+                  <div class="form-text">必须是 3 的整数倍。</div>
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="serverCount">服务器数量</label>
+                  <input class="form-control mono" id="serverCount" type="number" min="1" step="1" placeholder="例如 1" />
+                  <div class="form-text">部署的服务器总数，用于均分并发。</div>
+                </div>
+                <div class="col-12">
+                  <div class="alert alert-info py-2 mb-0">
+                    每台服务器并发量（窗口候选池）= <strong id="perServerPoolLimit">—</strong>
+                    <span class="text-muted ms-2">（公式：并发上限 ÷ 服务器数量 ÷ 3）</span>
+                  </div>
                 </div>
                 <div class="col-12">
                   <button class="btn btn-primary" id="btnSaveSystem">保存系统配置</button>
@@ -137,9 +148,20 @@
         document.getElementById("logToFile").checked = !!c.log_to_file;
         document.getElementById("stopAcceptingTasks").checked = !!c.stop_accepting_tasks;
         document.getElementById("publicCreateTaskMaxInflight").value = Number(c.public_create_task_max_inflight || 180);
+        document.getElementById("serverCount").value = Number(c.server_count || 1);
         document.getElementById("currentApiKey").value = c.api_key || "";
         document.getElementById("adminUsername").value = c.admin_username || "admin";
+        recalcPoolLimit();
       }
+
+      function recalcPoolLimit() {
+        const inflight = Number(document.getElementById("publicCreateTaskMaxInflight").value) || 0;
+        const sc = Math.max(1, Number(document.getElementById("serverCount").value) || 1);
+        const pool = Math.max(1, Math.floor(inflight / sc / 3));
+        document.getElementById("perServerPoolLimit").textContent = pool;
+      }
+      document.getElementById("publicCreateTaskMaxInflight").addEventListener("input", recalcPoolLimit);
+      document.getElementById("serverCount").addEventListener("input", recalcPoolLimit);
 
       document.getElementById("btnSaveSystem").addEventListener("click", async () => {
         try {
@@ -150,6 +172,10 @@
           if (publicCreateTaskMaxInflight % 3 !== 0) {
             throw new Error("并发上限必须是 3 的整数倍");
           }
+          const serverCount = Number(document.getElementById("serverCount").value || 1);
+          if (!Number.isInteger(serverCount) || serverCount < 1) {
+            throw new Error("服务器数量必须是大于等于 1 的整数");
+          }
           const r = await adminFetch("/api/admin/system-config", {
             method: "POST",
             body: JSON.stringify({
@@ -159,6 +185,7 @@
               log_to_file: document.getElementById("logToFile").checked,
               stop_accepting_tasks: document.getElementById("stopAcceptingTasks").checked,
               public_create_task_max_inflight: publicCreateTaskMaxInflight,
+              server_count: serverCount,
             }),
           });
           if (!r) return;

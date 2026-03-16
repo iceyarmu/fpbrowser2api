@@ -156,6 +156,7 @@ class UpdateSystemConfigRequest(BaseModel):
     log_to_file: bool
     stop_accepting_tasks: bool = False
     public_create_task_max_inflight: int = Field(default=180, ge=3)
+    server_count: int = Field(default=1, ge=1)
 
     @field_validator("public_create_task_max_inflight")
     @classmethod
@@ -642,6 +643,7 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
             "public_create_task_max_inflight": normalize_public_create_task_max_inflight(
                 getattr(syscfg, "public_create_task_max_inflight", None)
             ),
+            "server_count": max(1, int(getattr(syscfg, "server_count", 1) or 1)),
             "admin_username": admin_user.username if admin_user else "admin",
         },
     }
@@ -683,6 +685,7 @@ async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depe
         log_to_file=req.log_to_file,
         stop_accepting_tasks=req.stop_accepting_tasks,
         public_create_task_max_inflight=req.public_create_task_max_inflight,
+        server_count=req.server_count,
     )
     await db.reload_config_to_memory()
     setup_logging()  # 让日志配置立刻生效

@@ -16,8 +16,10 @@ from ..core.database import Database
 from ..core.models import TaskStatusResponse
 from ..core.public_api_limits import (
     DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT,
+    DEFAULT_SERVER_COUNT,
     calc_public_browser_pool_limit,
     normalize_public_create_task_max_inflight,
+    normalize_server_count,
 )
 from ..services.task_service import TaskService
 from ..services.task_handler_registry import CreateTaskContext, get_create_task_handler
@@ -45,7 +47,7 @@ _status_lock = asyncio.Lock()
 # create_task 读前置配置的短缓存（降低热点读库）。
 _SYSTEM_CONFIG_TTL_SEC = max(0.1, float(os.getenv("SYSTEM_CONFIG_CACHE_TTL_SEC", "5.0")))
 _TASK_TYPE_TTL_SEC = max(0.1, float(os.getenv("TASK_TYPE_CACHE_TTL_SEC", "60.0")))
-_system_config_cache: tuple[float, Optional[bool], Optional[int]] = (0.0, None, None)
+_system_config_cache: tuple[float, Optional[bool], Optional[int], Optional[int]] = (0.0, None, None, None)
 _task_type_cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -64,32 +66,33 @@ class CreateTaskRequest(BaseModel):
     window_pk: Optional[int] = Field(default=None, ge=1)
 
 
-async def _get_public_runtime_limits_cached() -> tuple[bool, int]:
+async def _get_public_runtime_limits_cached() -> tuple[bool, int, int]:
     if not db:
-        return False, DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
+        return False, DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT, DEFAULT_SERVER_COUNT
     now = time.monotonic()
     global _system_config_cache
-    expire_at, cached_flag, cached_inflight = _system_config_cache
-    if now < expire_at and cached_flag is not None and cached_inflight is not None:
-        return bool(cached_flag), int(cached_inflight)
+    expire_at, cached_flag, cached_inflight, cached_sc = _system_config_cache
+    if now < expire_at and cached_flag is not None and cached_inflight is not None and cached_sc is not None:
+        return bool(cached_flag), int(cached_inflight), int(cached_sc)
     syscfg = await db.get_system_config()
     flag = bool(getattr(syscfg, "stop_accepting_tasks", False))
     inflight = normalize_public_create_task_max_inflight(getattr(syscfg, "public_create_task_max_inflight", None))
-    _system_config_cache = (now + _SYSTEM_CONFIG_TTL_SEC, flag, inflight)
-    return flag, inflight
+    sc = normalize_server_count(getattr(syscfg, "server_count", None))
+    _system_config_cache = (now + _SYSTEM_CONFIG_TTL_SEC, flag, inflight, sc)
+    return flag, inflight, sc
 
 
 async def _ensure_create_task_gate_by_db_config() -> tuple[asyncio.Semaphore, bool]:
     """Apply cached DB limits to runtime gate and scheduler pool."""
     if not task_service:
         raise RuntimeError("task_service not initialized")
-    stop_accepting, inflight = await _get_public_runtime_limits_cached()
+    stop_accepting, inflight, server_count = await _get_public_runtime_limits_cached()
     async with _create_task_gate_lock:
         global _CREATE_TASK_MAX_INFLIGHT, _create_task_semaphore
         if _create_task_semaphore is None or inflight != _CREATE_TASK_MAX_INFLIGHT:
             _CREATE_TASK_MAX_INFLIGHT = inflight
             _create_task_semaphore = asyncio.Semaphore(_CREATE_TASK_MAX_INFLIGHT)
-            task_service.set_browser_pool_limit(calc_public_browser_pool_limit(_CREATE_TASK_MAX_INFLIGHT))
+            task_service.set_browser_pool_limit(calc_public_browser_pool_limit(_CREATE_TASK_MAX_INFLIGHT, server_count))
     if _create_task_semaphore is None:
         raise RuntimeError("create task gate not initialized")
     return _create_task_semaphore, stop_accepting
