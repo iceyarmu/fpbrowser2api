@@ -1905,6 +1905,7 @@ class Database:
                 """
                 UPDATE windows
                 SET space_pk = ?,
+                    window_status = 0,
                     updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
