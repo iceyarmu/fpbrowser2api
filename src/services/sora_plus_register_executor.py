@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from ..core.database import Database
-from .playwright_broswer_context import get_or_create_ctx, pick_working_page_from_context
+from .playwright_broswer_context import acquire_browser_open_slot, get_or_create_ctx, pick_working_page_from_context
 from .task_executor_types import ProgressCB
 
 
@@ -638,34 +638,36 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
         except Exception:
             pass
 
-        try:
-            await ctx.fp_client.browser_open(
-                vendor=ctx.vendor,
-                base_url=ctx.base_url,
-                access_key=ctx.access_key,
-                space_id=ctx.space_id,
-                window_key=ctx.window_key,
-                args=[],
-                force_open=False,
-                headless=False,
-            )
-        except Exception:
-            pass
+        # browser_open + 稳定等待受并发信号量保护，防止同时启动过多浏览器
+        async with acquire_browser_open_slot():
+            try:
+                await ctx.fp_client.browser_open(
+                    vendor=ctx.vendor,
+                    base_url=ctx.base_url,
+                    access_key=ctx.access_key,
+                    space_id=ctx.space_id,
+                    window_key=ctx.window_key,
+                    args=[],
+                    force_open=False,
+                    headless=False,
+                )
+            except Exception:
+                pass
 
-        # 清空旧句柄，避免误复用
-        try:
-            ctx.browser = None
-            ctx.context = None
-            ctx.page = None
-            ctx.cdp_endpoint = None
-        except Exception:
-            pass
+            # 清空旧句柄，避免误复用
+            try:
+                ctx.browser = None
+                ctx.context = None
+                ctx.page = None
+                ctx.cdp_endpoint = None
+            except Exception:
+                pass
 
-        # 给 Cloudflare 验证窗口留出处理时间
-        try:
-            await asyncio.sleep(20.0)
-        except Exception:
-            pass
+            # 给 Cloudflare 验证窗口留出处理时间
+            try:
+                await asyncio.sleep(20.0)
+            except Exception:
+                pass
 
         # 仅重连 browser/context，不强制探测/创建 page
         try:

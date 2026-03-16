@@ -17,6 +17,7 @@ import asyncio
 import json
 import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -24,6 +25,67 @@ from urllib.parse import urlparse, urlunparse
 
 from ..core.database import Database
 from .fp_browser_client import FPBrowserClient
+
+# ---------------------------------------------------------------------------
+# 浏览器打开并发控制：限制同一时间最多 N 个浏览器同时执行 browser_open（CPU 密集）
+# ---------------------------------------------------------------------------
+_BROWSER_OPEN_SEM: Optional[asyncio.Semaphore] = None
+_BROWSER_OPEN_SEM_LIMIT: int = 3
+_BROWSER_OPEN_QUEUE_TIMEOUT: float = 120.0
+
+
+def get_browser_open_semaphore() -> asyncio.Semaphore:
+    """获取浏览器打开并发信号量（延迟初始化，避免在模块导入时绑定事件循环）。"""
+    global _BROWSER_OPEN_SEM
+    if _BROWSER_OPEN_SEM is None:
+        _BROWSER_OPEN_SEM = asyncio.Semaphore(_BROWSER_OPEN_SEM_LIMIT)
+    return _BROWSER_OPEN_SEM
+
+
+def set_browser_open_concurrency(limit: int) -> None:
+    """动态调整浏览器打开并发上限（热更新，会创建新的 Semaphore）。"""
+    global _BROWSER_OPEN_SEM, _BROWSER_OPEN_SEM_LIMIT
+    limit = max(1, int(limit))
+    _BROWSER_OPEN_SEM_LIMIT = limit
+    _BROWSER_OPEN_SEM = asyncio.Semaphore(limit)
+
+
+def set_browser_open_queue_timeout(seconds: float) -> None:
+    """动态调整排队等待超时（秒）。"""
+    global _BROWSER_OPEN_QUEUE_TIMEOUT
+    _BROWSER_OPEN_QUEUE_TIMEOUT = max(10.0, float(seconds))
+
+
+def get_browser_open_concurrency() -> int:
+    """返回当前浏览器打开并发上限。"""
+    return _BROWSER_OPEN_SEM_LIMIT
+
+
+def get_browser_open_queue_timeout() -> float:
+    """返回当前排队等待超时（秒）。"""
+    return _BROWSER_OPEN_QUEUE_TIMEOUT
+
+
+@asynccontextmanager
+async def acquire_browser_open_slot():
+    """带超时的浏览器打开信号量上下文管理器。
+
+    - 排队等待最多 _BROWSER_OPEN_QUEUE_TIMEOUT 秒
+    - 超时后抛出 RuntimeError 让任务快速失败，而非一直阻塞
+    - 正常获取到信号量后，退出 with 块时自动释放
+    """
+    sem = get_browser_open_semaphore()
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=_BROWSER_OPEN_QUEUE_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"browser_open 打开排队超时（当前并发上限={_BROWSER_OPEN_SEM_LIMIT}，"
+            f"排队等待已超过 {_BROWSER_OPEN_QUEUE_TIMEOUT:.0f}s），请稍后重试"
+        )
+    try:
+        yield
+    finally:
+        sem.release()
 
 
 def safe_trim(s: Optional[str], max_len: int = 300) -> str:
@@ -327,40 +389,47 @@ class PlaywrightBrowserContext:
             pass
 
         if not raw_endpoint:
-            rsp = await self.fp_client.browser_open(
-                vendor=self.vendor,
-                base_url=self.base_url,
-                access_key=self.access_key,
-                space_id=self.space_id,
-                window_key=self.window_key,
-                args=args or [],
-                force_open=bool(force_open),
-                headless=bool(headless),
-            )
-            if (rsp or {}).get("code") != 0:
-                try:
-                    conn = await self.fp_client.get_open_window_connection_info(
-                        vendor=self.vendor,
-                        base_url=self.base_url,
-                        access_key=self.access_key,
-                        window_key=self.window_key,
-                    )
-                    if conn:
-                        raw_endpoint = str(conn.get("http") or conn.get("ws") or "").strip()
-                except Exception:
-                    pass
+            # 需要打开新浏览器窗口 —— 受并发信号量保护，防止同时启动过多浏览器进程导致 CPU 过载
+            async with acquire_browser_open_slot():
+                rsp = await self.fp_client.browser_open(
+                    vendor=self.vendor,
+                    base_url=self.base_url,
+                    access_key=self.access_key,
+                    space_id=self.space_id,
+                    window_key=self.window_key,
+                    args=args or [],
+                    force_open=bool(force_open),
+                    headless=bool(headless),
+                )
+                if (rsp or {}).get("code") != 0:
+                    try:
+                        conn = await self.fp_client.get_open_window_connection_info(
+                            vendor=self.vendor,
+                            base_url=self.base_url,
+                            access_key=self.access_key,
+                            window_key=self.window_key,
+                        )
+                        if conn:
+                            raw_endpoint = str(conn.get("http") or conn.get("ws") or "").strip()
+                    except Exception:
+                        pass
+                    if not raw_endpoint:
+                        raise RuntimeError(f"browser_open 失败：{rsp}")
+
                 if not raw_endpoint:
-                    raise RuntimeError(f"browser_open 失败：{rsp}")
+                    data = (rsp or {}).get("data") or {}
+                    raw_endpoint = str(data.get("http") or data.get("ws") or "").strip()
 
-            if not raw_endpoint:
-                data = (rsp or {}).get("data") or {}
-                raw_endpoint = str(data.get("http") or data.get("ws") or "").strip()
-
-        debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
-        if not debugger_address:
-            raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
-        self.cdp_endpoint = debugger_address
-        await asyncio.sleep(15)
+                debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
+                if not debugger_address:
+                    raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
+                self.cdp_endpoint = debugger_address
+                await asyncio.sleep(15)
+        else:
+            debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
+            if not debugger_address:
+                raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
+            self.cdp_endpoint = debugger_address
         if self.playwright is None:
             self.playwright = await async_playwright().start()
 

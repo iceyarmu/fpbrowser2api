@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
+    acquire_browser_open_slot,
     append_log,
     get_or_create_ctx as get_or_create_playwright_ctx,
     page_fetch_json,
@@ -1763,45 +1764,47 @@ class SoraSession:
         except Exception:
             pass
 
-        try:
-            rsp = await self.pw_ctx.fp_client.browser_open(
-                vendor=self.pw_ctx.vendor,
-                base_url=self.pw_ctx.base_url,
-                access_key=self.pw_ctx.access_key,
-                space_id=self.pw_ctx.space_id,
-                window_key=self.pw_ctx.window_key,
-                args=self.browser_open_args,
-                force_open=self.browser_force_open,
-                headless=self.browser_headless,
-            )
+        # browser_open + 稳定等待受并发信号量保护，防止 Cloudflare 自愈重启时同时启动过多浏览器
+        async with acquire_browser_open_slot():
             try:
-                code = int((rsp or {}).get("code", -1))
-            except Exception:
-                code = -1
+                rsp = await self.pw_ctx.fp_client.browser_open(
+                    vendor=self.pw_ctx.vendor,
+                    base_url=self.pw_ctx.base_url,
+                    access_key=self.pw_ctx.access_key,
+                    space_id=self.pw_ctx.space_id,
+                    window_key=self.pw_ctx.window_key,
+                    args=self.browser_open_args,
+                    force_open=self.browser_force_open,
+                    headless=self.browser_headless,
+                )
+                try:
+                    code = int((rsp or {}).get("code", -1))
+                except Exception:
+                    code = -1
+                try:
+                    append_log(log_file, f"[sora][drafts] browser_open result code={code}")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    append_log(log_file, f"[sora][drafts] browser_open failed: {e}")
+                except Exception:
+                    pass
+
+            # 清空旧句柄，避免 ensure_open 复用检查误判为"仍然连接"
             try:
-                append_log(log_file, f"[sora][drafts] browser_open result code={code}")
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                append_log(log_file, f"[sora][drafts] browser_open failed: {e}")
+                self.pw_ctx.browser = None
+                self.pw_ctx.context = None
+                self.pw_ctx.page = None
+                self.pw_ctx.cdp_endpoint = None
             except Exception:
                 pass
 
-        # 清空旧句柄，避免 ensure_open 复用检查误判为"仍然连接"
-        try:
-            self.pw_ctx.browser = None
-            self.pw_ctx.context = None
-            self.pw_ctx.page = None
-            self.pw_ctx.cdp_endpoint = None
-        except Exception:
-            pass
-
-        # 等待指纹浏览器完成 Cloudflare 验证并稳定
-        try:
-            await asyncio.sleep(20.0)
-        except Exception:
-            pass
+            # 等待指纹浏览器完成 Cloudflare 验证并稳定
+            try:
+                await asyncio.sleep(20.0)
+            except Exception:
+                pass
 
         # 重连 CDP：建立 browser+context，不操作 page
         try:
@@ -3395,7 +3398,7 @@ async def sora_gen_video(
         sess.idle_close_seconds = max(0.0, float(idle_close_seconds))
 
         # 依你的约束：最多轮询 360 秒，每 2 秒一次
-        character_max_wait_seconds = 360.0
+        character_max_wait_seconds = 600.0
         character_poll_interval_seconds = 2.0
 
         tmp_img: Optional[Path] = None

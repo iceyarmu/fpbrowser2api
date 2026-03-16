@@ -78,6 +78,21 @@
                   <div class="form-text">部署的服务器总数，用于均分并发。</div>
                 </div>
                 <div class="col-12">
+                  <label class="form-label" for="browserOpenConcurrency">浏览器打开并发上限</label>
+                  <input class="form-control mono" id="browserOpenConcurrency" type="number" min="1" max="50" step="1" placeholder="默认 3" />
+                  <div class="form-text">同一时间最多允许同时打开的指纹浏览器窗口数量。打开浏览器非常消耗 CPU，建议设为 3~5。</div>
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="browserOpenQueueTimeout">浏览器打开排队超时（秒）</label>
+                  <input class="form-control mono" id="browserOpenQueueTimeout" type="number" min="10" max="600" step="10" placeholder="默认 120" />
+                  <div class="form-text">任务等待打开浏览器的最大排队时间。超时后任务快速失败而非一直阻塞。建议 60~180 秒。</div>
+                </div>
+                <div class="col-12">
+                  <div class="alert alert-secondary py-2 mb-0">
+                    以上两项为运行时设置，重启后恢复默认值（并发=3，超时=120s）。
+                  </div>
+                </div>
+                <div class="col-12">
                   <div class="alert alert-info py-2 mb-0">
                     每台服务器并发量（窗口候选池）= <strong id="perServerPoolLimit">—</strong>
                     <span class="text-muted ms-2">（公式：并发上限 ÷ 服务器数量 ÷ 3）</span>
@@ -149,6 +164,8 @@
         document.getElementById("stopAcceptingTasks").checked = !!c.stop_accepting_tasks;
         document.getElementById("publicCreateTaskMaxInflight").value = Number(c.public_create_task_max_inflight || 180);
         document.getElementById("serverCount").value = Number(c.server_count || 1);
+        document.getElementById("browserOpenConcurrency").value = Number(c.browser_open_concurrency || 3);
+        document.getElementById("browserOpenQueueTimeout").value = Number(c.browser_open_queue_timeout || 120);
         document.getElementById("currentApiKey").value = c.api_key || "";
         document.getElementById("adminUsername").value = c.admin_username || "admin";
         recalcPoolLimit();
@@ -176,6 +193,14 @@
           if (!Number.isInteger(serverCount) || serverCount < 1) {
             throw new Error("服务器数量必须是大于等于 1 的整数");
           }
+          const browserOpenConcurrency = Number(document.getElementById("browserOpenConcurrency").value || 3);
+          if (!Number.isInteger(browserOpenConcurrency) || browserOpenConcurrency < 1 || browserOpenConcurrency > 50) {
+            throw new Error("浏览器打开并发上限必须是 1~50 之间的整数");
+          }
+          const browserOpenQueueTimeout = Number(document.getElementById("browserOpenQueueTimeout").value || 120);
+          if (browserOpenQueueTimeout < 10 || browserOpenQueueTimeout > 600) {
+            throw new Error("浏览器打开排队超时必须在 10~600 秒之间");
+          }
           const r = await adminFetch("/api/admin/system-config", {
             method: "POST",
             body: JSON.stringify({
@@ -186,6 +211,8 @@
               stop_accepting_tasks: document.getElementById("stopAcceptingTasks").checked,
               public_create_task_max_inflight: publicCreateTaskMaxInflight,
               server_count: serverCount,
+              browser_open_concurrency: browserOpenConcurrency,
+              browser_open_queue_timeout: browserOpenQueueTimeout,
             }),
           });
           if (!r) return;
