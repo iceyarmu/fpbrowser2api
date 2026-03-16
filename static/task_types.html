@@ -228,7 +228,14 @@
                   <span class="small text-muted" id="mappingFilterHint"></span>
                   <div class="d-flex flex-wrap gap-1 align-items-center ms-auto">
                     <div class="small text-muted">
-                      <span id="mappingQuickStats">打开/总数/冷却0/启用/占用: 0/0/0/0/0</span>
+                      <span id="mappingQuickStats" class="d-inline-flex flex-wrap gap-1">
+                        <span class="badge bg-secondary">总窗口 0</span>
+                        <span class="badge bg-info text-dark">已打开 0</span>
+                        <span class="badge bg-success">就绪 0</span>
+                        <span class="badge bg-dark bg-opacity-50">已冷却 0</span>
+                        <span class="badge bg-primary bg-opacity-75">已启用 0</span>
+                        <span class="badge bg-secondary">并发中 0</span>
+                      </span>
                     </div>
                     <button class="btn btn-outline-secondary btn-sm" id="btnRefreshMappingStats" title="仅刷新统计信息">⟳</button>
                   </div>
@@ -260,7 +267,7 @@
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>备注</th>
-                      <th>状态</th>
+                      <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
                       <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">空间 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>测IP</th>
@@ -2072,6 +2079,15 @@
           });
           return items;
         }
+        if (key === "window_status") {
+          items.sort((a, b) => {
+            const av = Number(a?.window_status || 0);
+            const bv = Number(b?.window_status || 0);
+            if (av !== bv) return (av - bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         if (key === "cooling") {
           items.sort((a, b) => {
             const av = coolingFlagForMapping(a);
@@ -2099,6 +2115,7 @@
         };
         mk(document.getElementById("balanceSortHint"), ui.mappingSortKey === "remaining_quota");
         mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
+        mk(document.getElementById("winStatusSortHint"), ui.mappingSortKey === "window_status");
         mk(document.getElementById("proxySortHint"), ui.mappingSortKey === "proxy");
         mk(document.getElementById("spaceSortHint"), ui.mappingSortKey === "subscription_end");
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
@@ -2118,6 +2135,7 @@
         let coolingZeroCountAll = 0;
         let enabledCountAll = 0;
         let inflightSlotsAll = 0;
+        let openedCooledCountAll = 0;
 
         items.forEach((m) => {
           success24hAll += Number(m?.success_count_24h ?? m?.success_24h_count ?? m?.success_24h ?? 0) || 0;
@@ -2126,10 +2144,13 @@
           fail24hAll += Number(m?.failed_count_24h ?? m?.fail_count_24h ?? m?.error_count_24h ?? 0) || 0;
           failTotalAll += Number(m?.total_errors ?? 0) || 0;
           remainingQuotaAll += Number(m?.remaining_quota ?? 0) || 0;
-          openedCountAll += (Number(m?.window_status || 0) === 1) ? 1 : 0;
-          coolingZeroCountAll += (coolingFlagForMapping(m) === 0) ? 1 : 0;
+          const isOpened = (Number(m?.window_status || 0) === 1);
+          const isCooled = (coolingFlagForMapping(m) === 0);
+          openedCountAll += isOpened ? 1 : 0;
+          coolingZeroCountAll += isCooled ? 1 : 0;
           enabledCountAll += m?.enabled ? 1 : 0;
           inflightSlotsAll += Number(m?.inflight_slots ?? 0) || 0;
+          if (isOpened && isCooled) openedCooledCountAll += 1;
         });
 
         const statusSummaryEl = document.getElementById("statusSummaryAll");
@@ -2142,7 +2163,13 @@
         }
         const quickStatsEl = document.getElementById("mappingQuickStats");
         if (quickStatsEl) {
-          quickStatsEl.textContent = `[总窗口${items.length}] [已打开${openedCountAll}] [已冷却${coolingZeroCountAll}] [已启用${enabledCountAll}] [并发中${inflightSlotsAll}] `;
+          quickStatsEl.innerHTML =
+            `<span class="badge bg-secondary">总窗口 ${items.length}</span> ` +
+            `<span class="badge bg-info text-dark">已打开 ${openedCountAll}</span> ` +
+            `<span class="badge bg-success">就绪 ${openedCooledCountAll}</span> ` +
+            `<span class="badge bg-dark bg-opacity-50">已冷却 ${coolingZeroCountAll}</span> ` +
+            `<span class="badge bg-primary bg-opacity-75">已启用 ${enabledCountAll}</span> ` +
+            `<span class="badge ${inflightSlotsAll > 0 ? 'bg-warning text-dark' : 'bg-secondary'}">并发中 ${inflightSlotsAll}</span>`;
         }
       }
 
@@ -4151,6 +4178,7 @@
       });
       document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
+      document.getElementById("thWinStatus")?.addEventListener("click", () => toggleSort("window_status", "desc"));
       document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));
       document.getElementById("thSpace")?.addEventListener("click", () => toggleSort("subscription_end", "asc"));
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));

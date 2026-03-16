@@ -48,6 +48,7 @@ async def sora_wm_remove(
     """Sora 视频去水印：复用同一指纹浏览器窗口，在页面上下文里调用 removesorawatermark.pro 的 API。"""
 
     payload = payload or {}
+    headless = bool(payload.get("headless", False))
     sora_url = _pick_sora_share_url(payload)
     if not sora_url:
         raise ValueError("payload 缺少 soraUrl（或 sora_url/share_url/url/link）")
@@ -69,7 +70,7 @@ async def sora_wm_remove(
         space_id=space_id,
         window_key=window_key,
     )
-    await ctx.ensure_open(args=[], force_open=False, headless=False)
+    await ctx.ensure_open(args=[], force_open=False, headless=headless)
 
     await progress_cb(1, {"stage": "open", "url": entry_url})
     started_at = time.time()

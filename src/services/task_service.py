@@ -172,7 +172,7 @@ class TaskService:
         if not picked:
             if mapping_id is not None or window_pk is not None:
                 raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型、未删除、已启用")
-            raise RuntimeError("账号池负载已满没有，请稍后重试")
+            raise RuntimeError("账号池负载已满，请稍后重试")
 
         task_id = uuid.uuid4().hex
         try:

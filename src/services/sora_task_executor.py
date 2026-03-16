@@ -3363,6 +3363,8 @@ async def sora_gen_video(
     sniff_timeout_seconds = float(payload.get("sora_pending_sniff_timeout_seconds") or 4.0)
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
 
+    headless = bool(payload.get("headless", False))
+
     sess = get_or_create_sora_session(
         vendor=browser_vendor,
         base_url=browser_base_url,
@@ -3370,6 +3372,7 @@ async def sora_gen_video(
         space_id=space_id,
         window_key=window_key,
     )
+    sess.browser_headless = headless
     # 由管理台预先转换并写入 DB 的 access_token：直接写入会话，避免抓包/ensure
     try:
         if access_token:
@@ -3728,7 +3731,7 @@ async def sora_gen_video(
         n_frames=int(n_frames),
         browser_open_args=[],
         browser_force_open=False,
-        browser_headless=False,
+        browser_headless=headless,
     )
     await sess._bring_sora_drafts_to_front(refresh_target=False);
     await progress_cb(10, {"stage": "created", "task_id": task_id})

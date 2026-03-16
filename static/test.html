@@ -71,6 +71,11 @@
                 <label class="form-label">时长 duration（可选）</label>
                 <input class="form-control mono" id="duration" placeholder="5" />
               </div>
+              <div class="mb-3 form-check">
+                <input class="form-check-input" type="checkbox" id="headlessMode" />
+                <label class="form-check-label" for="headlessMode">无头模式打开窗口</label>
+                <div class="text-muted small">勾选后将以无头模式（headless）打开指纹浏览器窗口，不显示界面。</div>
+              </div>
               <button class="btn btn-primary" id="btnSubmit">提交任务</button>
             </div>
           </div>
@@ -297,6 +302,8 @@
             payload.card_key = String(selected.card_key);
           }
           if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
+          const headlessChecked = document.getElementById("headlessMode")?.checked === true;
+          if (headlessChecked) payload.headless = true;
 
           let mappingId = null;
           if (mappingIdRaw) {
