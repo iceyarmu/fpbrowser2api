@@ -28,27 +28,37 @@ from .fp_browser_client import FPBrowserClient
 from .task_executor_types import NonPenalizedTaskError
 
 # ---------------------------------------------------------------------------
-# 浏览器打开并发控制：限制同一时间最多 N 个浏览器同时执行 browser_open（CPU 密集）
+# 浏览器打开并发控制：按 browser_base_url 区分服务器，每台服务器独立限制 N 个并发
 # ---------------------------------------------------------------------------
-_BROWSER_OPEN_SEM: Optional[asyncio.Semaphore] = None
+_BROWSER_OPEN_SEMS: Dict[str, asyncio.Semaphore] = {}
+_BROWSER_OPEN_SEM_LOCK = threading.Lock()
 _BROWSER_OPEN_SEM_LIMIT: int = 3
 _BROWSER_OPEN_QUEUE_TIMEOUT: float = 120.0
 
 
-def get_browser_open_semaphore() -> asyncio.Semaphore:
-    """获取浏览器打开并发信号量（延迟初始化，避免在模块导入时绑定事件循环）。"""
-    global _BROWSER_OPEN_SEM
-    if _BROWSER_OPEN_SEM is None:
-        _BROWSER_OPEN_SEM = asyncio.Semaphore(_BROWSER_OPEN_SEM_LIMIT)
-    return _BROWSER_OPEN_SEM
+def _normalize_base_url_for_key(base_url: str) -> str:
+    """规范化 base_url 用作并发池 key（同一台指纹浏览器服务器共享一个信号量）。"""
+    s = (base_url or "").strip().rstrip("/").lower()
+    return s or "__default__"
+
+
+def _get_or_create_semaphore_for_base_url(base_url: str) -> asyncio.Semaphore:
+    """按 base_url 获取或创建信号量（每台服务器独立 3 个并发）。"""
+    key = _normalize_base_url_for_key(base_url)
+    with _BROWSER_OPEN_SEM_LOCK:
+        sem = _BROWSER_OPEN_SEMS.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(_BROWSER_OPEN_SEM_LIMIT)
+            _BROWSER_OPEN_SEMS[key] = sem
+    return sem
 
 
 def set_browser_open_concurrency(limit: int) -> None:
-    """动态调整浏览器打开并发上限（热更新，会创建新的 Semaphore）。"""
-    global _BROWSER_OPEN_SEM, _BROWSER_OPEN_SEM_LIMIT
-    limit = max(1, int(limit))
-    _BROWSER_OPEN_SEM_LIMIT = limit
-    _BROWSER_OPEN_SEM = asyncio.Semaphore(limit)
+    """动态调整每台服务器的浏览器打开并发上限（热更新；新建的服务器池使用新值，已有池不变）。"""
+    global _BROWSER_OPEN_SEM_LIMIT
+    _BROWSER_OPEN_SEM_LIMIT = max(1, int(limit))
+    with _BROWSER_OPEN_SEM_LOCK:
+        _BROWSER_OPEN_SEMS.clear()
 
 
 def set_browser_open_queue_timeout(seconds: float) -> None:
@@ -58,7 +68,7 @@ def set_browser_open_queue_timeout(seconds: float) -> None:
 
 
 def get_browser_open_concurrency() -> int:
-    """返回当前浏览器打开并发上限。"""
+    """返回当前每台服务器的浏览器打开并发上限。"""
     return _BROWSER_OPEN_SEM_LIMIT
 
 
@@ -68,20 +78,20 @@ def get_browser_open_queue_timeout() -> float:
 
 
 @asynccontextmanager
-async def acquire_browser_open_slot():
+async def acquire_browser_open_slot(base_url: str):
     """带超时的浏览器打开信号量上下文管理器。
 
+    - 按 base_url 区分服务器，每台服务器独立限制并发
     - 排队等待最多 _BROWSER_OPEN_QUEUE_TIMEOUT 秒
-    - 超时后抛出 RuntimeError 让任务快速失败，而非一直阻塞
-    - 正常获取到信号量后，退出 with 块时自动释放
+    - 超时后抛出 NonPenalizedTaskError 让任务快速失败
     """
-    sem = get_browser_open_semaphore()
+    sem = _get_or_create_semaphore_for_base_url(base_url)
     try:
         await asyncio.wait_for(sem.acquire(), timeout=_BROWSER_OPEN_QUEUE_TIMEOUT)
     except asyncio.TimeoutError:
         raise NonPenalizedTaskError(
-            f"browser_open 打开排队超时（当前并发上限={_BROWSER_OPEN_SEM_LIMIT}，"
-            f"排队等待已超过 {_BROWSER_OPEN_QUEUE_TIMEOUT:.0f}s），请稍后重试"
+            f"browser_open 打开排队超时（该服务器 base_url={safe_trim(base_url, 80)!r}，"
+            f"每台并发上限={_BROWSER_OPEN_SEM_LIMIT}，排队已超过 {_BROWSER_OPEN_QUEUE_TIMEOUT:.0f}s），请稍后重试"
         )
     try:
         yield
@@ -390,8 +400,8 @@ class PlaywrightBrowserContext:
             pass
 
         if not raw_endpoint:
-            # 需要打开新浏览器窗口 —— 受并发信号量保护，防止同时启动过多浏览器进程导致 CPU 过载
-            async with acquire_browser_open_slot():
+            # 需要打开新浏览器窗口 —— 按 base_url 分服务器限流，每台独立 N 个并发
+            async with acquire_browser_open_slot(self.base_url):
                 rsp = await self.fp_client.browser_open(
                     vendor=self.vendor,
                     base_url=self.base_url,

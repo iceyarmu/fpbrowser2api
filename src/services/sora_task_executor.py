@@ -1751,8 +1751,8 @@ class SoraSession:
         except Exception:
             pass
 
-        # browser_open + 稳定等待受并发信号量保护，防止 Cloudflare 自愈重启时同时启动过多浏览器
-        async with acquire_browser_open_slot():
+        # browser_open + 稳定等待受并发信号量保护，按 base_url 分服务器限流
+        async with acquire_browser_open_slot(self.pw_ctx.base_url):
             try:
                 rsp = await self.pw_ctx.fp_client.browser_open(
                     vendor=self.pw_ctx.vendor,

@@ -638,8 +638,8 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True) 
         except Exception:
             pass
 
-        # browser_open + 稳定等待受并发信号量保护，防止同时启动过多浏览器
-        async with acquire_browser_open_slot():
+        # browser_open + 稳定等待受并发信号量保护，按 base_url 分服务器限流
+        async with acquire_browser_open_slot(ctx.base_url):
             try:
                 await ctx.fp_client.browser_open(
                     vendor=ctx.vendor,
