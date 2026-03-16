@@ -38,22 +38,9 @@ from .playwright_broswer_context import (
     page_fetch_tx,
     safe_trim,
 )
-from .task_executor_types import ProgressCB
+from .task_executor_types import NonPenalizedTaskError, ProgressCB
 from ..core.database import Database
 
-
-class NonPenalizedTaskError(RuntimeError):
-    """失败但不计入窗口连续错误（consecutive_errors）的异常。
-
-用途：Sora 创建阶段常见的 400/invalid_request 等错误，以及“未监控到 POST 请求”等，
-这类错误不应导致窗口被连续错误熔断。
-"""
-
-    no_penalty: bool = True
-
-    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
 
 def _mask_secret(s: Optional[str], *, head: int = 8, tail: int = 6) -> str:
     if not s:

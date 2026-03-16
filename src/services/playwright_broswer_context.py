@@ -25,6 +25,7 @@ from urllib.parse import urlparse, urlunparse
 
 from ..core.database import Database
 from .fp_browser_client import FPBrowserClient
+from .task_executor_types import NonPenalizedTaskError
 
 # ---------------------------------------------------------------------------
 # 浏览器打开并发控制：限制同一时间最多 N 个浏览器同时执行 browser_open（CPU 密集）
@@ -78,7 +79,7 @@ async def acquire_browser_open_slot():
     try:
         await asyncio.wait_for(sem.acquire(), timeout=_BROWSER_OPEN_QUEUE_TIMEOUT)
     except asyncio.TimeoutError:
-        raise RuntimeError(
+        raise NonPenalizedTaskError(
             f"browser_open 打开排队超时（当前并发上限={_BROWSER_OPEN_SEM_LIMIT}，"
             f"排队等待已超过 {_BROWSER_OPEN_QUEUE_TIMEOUT:.0f}s），请稍后重试"
         )

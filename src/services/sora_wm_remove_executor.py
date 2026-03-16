@@ -14,17 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .playwright_broswer_context import get_or_create_ctx, page_fetch_json, pick_working_page_from_context, safe_trim
-from .task_executor_types import ProgressCB
-
-
-class NonPenalizedTaskError(RuntimeError):
-    """失败但不计入窗口 consecutive_errors 的异常。"""
-
-    no_penalty: bool = True
-
-    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
+from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 
 def _pick_sora_share_url(payload: Dict[str, Any]) -> str:
