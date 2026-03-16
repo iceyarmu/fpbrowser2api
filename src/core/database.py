@@ -4521,6 +4521,7 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET consecutive_errors = 0,
+                            error_cooldown_until = datetime('now','localtime'),
                             updated_at = datetime('now','localtime')
                         WHERE id = ?
                         """,
