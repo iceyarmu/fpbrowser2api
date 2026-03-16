@@ -3495,19 +3495,26 @@ async def sora_gen_video(
             base_username = "mrr_" + _sanitize_username(username_hint)
             username = base_username
             is_available = False
+            last_exc: Optional[BaseException] = None
             for _i in range(8):
                 available = False
                 try:
                     check = await sess.api_username_check(target_url=target_url, username=username)
                     available = bool((check or {}).get("available", False))
-                except Exception:
+                except Exception as e:
                     available = False
+                    last_exc = e
                 if available:
                     is_available = True
                     break
                 username = f"{base_username}{random.randint(100, 999)}"
             if not is_available:
-                raise NonPenalizedTaskError(f"username 不可用：{username_hint!r}", status_code=400)
+                if last_exc is not None:
+                    raise NonPenalizedTaskError(
+                        f"username 检查多次失败，最后一次错误: {last_exc!r}",
+                        status_code=400,
+                    ) from last_exc
+                raise NonPenalizedTaskError(f"username 不可用：{username!r}", status_code=400)
 
             await progress_cb(75, {"stage": "character_username_checked", "cameo_id": cameo_id, "username_hint": username})
 
