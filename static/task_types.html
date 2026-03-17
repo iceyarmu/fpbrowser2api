@@ -1551,11 +1551,11 @@
 
       function getRowActionButtons(mappingId, fromEl) {
         const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
-        if (!tr) return { tr: null, openBtn: null, restartAllBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
+        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
         return {
           tr,
           openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
-          restartAllBtn: tr.querySelector(`button[data-act="restartAllInOne"][data-mid="${mappingId}"]`),
+
           startBtn: tr.querySelector(`button[data-act="manualStart"][data-mid="${mappingId}"]`),
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
           transferBtn: tr.querySelector(`button[data-act="transfer"][data-mid="${mappingId}"]`),
@@ -1564,6 +1564,11 @@
           refreshInviteBtn: tr.querySelector(`button[data-act="refreshInvite"][data-mid="${mappingId}"]`),
           refreshSubBtn: tr.querySelector(`button[data-act="refreshSubscription"][data-mid="${mappingId}"]`),
         };
+      }
+
+      function getMappingHeadless(mappingId) {
+        const m = (state.mappings || []).find(x => String(x?.id || "") === String(mappingId));
+        return !!(m && m.headless);
       }
 
       function patchMappingInState(mappingId, patch) {
@@ -2298,7 +2303,7 @@
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="打开窗口（禁止自动关闭）" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
-                  <button class="btn btn-outline-danger btn-sm btn-icon" title="一键重启：关闭→启动→获取Token→刷新会员→刷新额度" aria-label="一键重启" data-act="restartAllInOne" data-mid="${m.id}"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">一键重启</span></button>
+
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
@@ -2571,9 +2576,8 @@
         if (act === "manualOpen") {
           return manualOpenWindow(mappingId, el);
         }
-        if (act === "restartAllInOne") {
-          return restartAllInOne(mappingId, el);
-        }
+
+
         if (act === "manualStart") {
           return manualStartWindow(mappingId, el);
         }
@@ -2644,7 +2648,8 @@
         try {
           const { refreshSubBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshSubBtn, true, { loadingText: "刷新中", keepWidth: false });
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info`, { method: "POST" });
+          const hl = getMappingHeadless(mappingId);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, {
             sora_plan_title: d?.plan_title || "",
             sora_subscription_end: d?.subscription_end || "",
@@ -3176,7 +3181,8 @@
         if (!btn) return;
         try {
           setBtnBusy(btn, true, { loadingText: "⏳" });
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+          const hl = getMappingHeadless(mappingId);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token?headless=${hl}`, {
             method: "POST",
             body: { access_token: "", expires: "" },
           });
@@ -3253,7 +3259,8 @@
           setBtnBusy(btn, true, { loadingText: "更新中" });
           if (btnSave) btnSave.disabled = true;
 
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
+          const hl = getMappingHeadless(mappingId);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token?headless=${hl}`, {
             method: "POST",
             body: { access_token: "", expires: "" },
           });
@@ -3285,7 +3292,8 @@
           if (startBtn) startBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
 
-          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+          const hl = getMappingHeadless(mappingId);
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
           toast("已打开窗口，并禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
@@ -3307,7 +3315,8 @@
           if (openBtn) openBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
 
-          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
+          const hl = getMappingHeadless(mappingId);
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, { enabled: true, window_status: 1 }, { fromEl });
           toast("已启动：启用窗口 + 重启并进入 drafts", "success");
           flashBtnText(startBtn, "已启动");
@@ -3372,100 +3381,8 @@
         } catch {}
       }
 
-      async function restartAllInOne(mappingId, fromEl) {
-        const m = state.mappings.find(x => x.id === mappingId);
-        const { restartAllBtn, openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
-        const steps = ["关闭", "等待", "打开", "Token", "会员", "额度"];
-        let stepIdx = 0;
-        const setStep = (i) => { stepIdx = i; setBtnBusy(restartAllBtn, true, { loadingText: `${steps[i]}中`, keepWidth: false }); };
-        const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-        try {
-          cancelCloseHintCountdown({ hideModal: true });
-          setStep(0);
-          if (openBtn) openBtn.disabled = true;
-          if (startBtn) startBtn.disabled = true;
-          if (closeBtn) closeBtn.disabled = true;
 
-          // 1) 先关闭窗口（触发 idle_close 调度）
-          try {
-            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
-            updateMappingRowUI(mappingId, { window_status: 0 }, { fromEl });
-          } catch (_) {}
-
-          // 2) 等待窗口完全关闭，让指纹浏览器释放资源
-          setStep(1);
-          const waitSec = Math.max(5, ui.idleCloseSecondsDefault ?? 30);
-          for (let elapsed = 0; elapsed < waitSec; elapsed += 1) {
-            setBtnBusy(restartAllBtn, true, { loadingText: `等${waitSec - elapsed}s`, keepWidth: false });
-            await delay(1000);
-          }
-
-          // 3) 重新打开窗口（调用 manualStart：立即 close_and_drop + ensure_open）
-          //    此时窗口已关闭，close_and_drop 基本是空操作，ensure_open 可以干净地重新打开
-          setStep(2);
-          let openOk = false;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              if (attempt === 0) {
-                await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
-              } else {
-                await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
-              }
-              openOk = true;
-              break;
-            } catch (openErr) {
-              if (attempt < 2) {
-                setBtnBusy(restartAllBtn, true, { loadingText: `重试打开${attempt + 1}`, keepWidth: false });
-                await delay(5000);
-              } else {
-                throw openErr;
-              }
-            }
-          }
-          updateMappingRowUI(mappingId, { enabled: true, window_status: 1 }, { fromEl });
-
-          // 4) 获取 access_token（convert-access-token 内部会 ensure_open + 获取 session）
-          setStep(3);
-          const tokenData = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token`, {
-            method: "POST",
-            body: { access_token: "", expires: "" },
-          });
-          const tok = String(tokenData?.access_token || "").trim();
-          const exp = String(tokenData?.expires || "").trim();
-          if (m) { m.sora_access_token = tok || null; m.sora_access_expires = exp || null; }
-          updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
-
-          // 5) 刷新会员信息
-          setStep(4);
-          const subData = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info`, { method: "POST" });
-          updateMappingRowUI(mappingId, {
-            sora_plan_title: subData?.plan_title || "",
-            sora_subscription_end: subData?.subscription_end || "",
-          });
-
-          // 6) 刷新剩余额度
-          setStep(5);
-          const quotaData = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
-          const v = (quotaData?.remaining_quota ?? 0);
-          updateMappingRowUI(mappingId, { remaining_quota: v });
-
-          toast("一键重启全部完成", "success");
-          flashBtnText(restartAllBtn, "完成");
-          await saveRemarkDirect(mappingId, "一键重启:成功");
-        } catch (e) {
-          const failStep = steps[stepIdx] || "未知";
-          const msg = `${failStep}失败:${(e.message || "").slice(0, 30)}`;
-          toast(`一键重启在[${failStep}]步骤失败: ${e.message}`, "error");
-          await saveRemarkDirect(mappingId, msg);
-        } finally {
-          const btns = getRowActionButtons(mappingId, fromEl);
-          setBtnBusy(btns.restartAllBtn, false);
-          if (btns.openBtn) btns.openBtn.disabled = false;
-          if (btns.startBtn) btns.startBtn.disabled = false;
-          if (btns.closeBtn) btns.closeBtn.disabled = false;
-        }
-      }
 
       function openMappingEditModal(m) {
         document.getElementById("mapEditId").value = String(m.id);
@@ -3920,7 +3837,8 @@
         try {
           const { refreshQuotaBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota`, { method: "POST" });
+          const hl = getMappingHeadless(mappingId);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota?headless=${hl}`, { method: "POST" });
           const v = (d?.remaining_quota ?? 0);
           updateMappingRowUI(mappingId, { remaining_quota: v });
           toast(`已刷新：remaining_quota=${v}`, "success");
@@ -3989,7 +3907,8 @@
           label: "批量打开",
           ids,
           runner: async (mappingId) => {
-            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+            const hl = getMappingHeadless(mappingId);
+            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}`, { method: "POST" });
           },
         });
       }
@@ -4015,8 +3934,11 @@
           const { refreshQuotaBtn } = getRowActionButtons(ids[i]);
           setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
           try {
-            const qs = source ? `?source=${encodeURIComponent(String(source))}` : "";
-            const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota${qs}`, { method: "POST" });
+            const hl = getMappingHeadless(ids[i]);
+            const params = new URLSearchParams();
+            if (source) params.set("source", String(source));
+            params.set("headless", String(hl));
+            const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota?${params}`, { method: "POST" });
             const v = (d?.remaining_quota ?? 0);
             updateMappingRowUI(ids[i], { remaining_quota: v });
             ok += 1;

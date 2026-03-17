@@ -2052,6 +2052,7 @@ async def list_task_type_handler_options(token: str = Depends(verify_admin_token
 async def refresh_mapping_remaining_quota(
     mapping_id: int,
     source: Optional[str] = None,  # auto/manual
+    headless: bool = False,
     token: str = Depends(verify_admin_token),
 ):
     if not db:
@@ -2077,6 +2078,7 @@ async def refresh_mapping_remaining_quota(
     except KeyError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    ctx_row["_headless"] = headless
     try:
         new_remaining = await fn(RefreshQuotaContext(task_type=task_type, mapping_row=ctx_row, db=db))
         new_remaining = max(0, int(new_remaining))
@@ -2143,7 +2145,7 @@ async def refresh_mapping_remaining_quota(
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-subscription-info")
-async def refresh_mapping_subscription_info(mapping_id: int, token: str = Depends(verify_admin_token)):
+async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
     """通过指纹浏览器读取订阅信息并写回 mapping。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2163,6 +2165,7 @@ async def refresh_mapping_subscription_info(mapping_id: int, token: str = Depend
     from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
     sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx.browser_headless = headless
     try:
         sora_ctx.set_access_token(ctx_row.get("sora_access_token"), ctx_row.get("sora_access_expires"))
     except Exception:
@@ -2248,6 +2251,7 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
 async def convert_sora_session_token_to_access_token(
     mapping_id: int,
     req: UpsertSoraAccessTokenRequest,
+    headless: bool = False,
     token: str = Depends(verify_admin_token),
 ):
     """写入/自动获取并写入 access_token + expires 到 mapping。
@@ -2282,6 +2286,7 @@ async def convert_sora_session_token_to_access_token(
         from ..services.sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window  # type: ignore
 
         sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        sora_ctx.browser_headless = headless
         info = await sora_fetch_access_token_in_window(sess=sora_ctx, target_url="https://sora.chatgpt.com/drafts")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
@@ -2300,7 +2305,7 @@ async def convert_sora_session_token_to_access_token(
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
-async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+async def manual_open_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
     """手动打开窗口并禁止 _schedule_idle_close 自动关闭（保持窗口常驻）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2320,14 +2325,14 @@ async def manual_open_mapping_window(mapping_id: int, token: str = Depends(verif
     from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
     sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
-    # 先禁止自动关闭，再确保已打开（避免 ensure_open / 其它调用尾部 schedule 进来）
+    sora_ctx.browser_headless = headless
     sora_ctx.idle_close_disabled = True
     try:
         sora_ctx._cancel_idle_close()
     except Exception:
         pass
     try:
-        await sora_ctx.ensure_open(args=[], force_open=False, headless=False)
+        await sora_ctx.ensure_open(args=[], force_open=False, headless=headless)
         await sora_ctx._bring_sora_drafts_to_front(refresh_target=False)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
@@ -2365,7 +2370,7 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-start")
-async def manual_start_mapping_window(mapping_id: int, token: str = Depends(verify_admin_token)):
+async def manual_start_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
     """启用窗口 + 立刻关闭指纹浏览器窗口，然后重新打开并进入 Sora drafts。
 
     说明：用于管理台“启动”按钮，效果等价于“强制重启窗口并确保 drafts tab 置前”。
@@ -2390,21 +2395,20 @@ async def manual_start_mapping_window(mapping_id: int, token: str = Depends(veri
     from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
     sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
-    # 禁止自动关闭：避免 ensure_open / bring_to_front 后被 schedule 关掉
+    sora_ctx.browser_headless = headless
     sora_ctx.idle_close_disabled = True
     try:
         sora_ctx._cancel_idle_close()
     except Exception:
         pass
 
-    # 立刻关窗（不走 idle_close 倒计时）
     try:
         await sora_ctx.close_and_drop()
     except Exception:
         pass
 
     try:
-        await sora_ctx.ensure_open(args=[], force_open=True, headless=False)
+        await sora_ctx.ensure_open(args=[], force_open=True, headless=headless)
         await sora_ctx._bring_sora_drafts_to_front(refresh_target=False)
         # 先启用：避免刚启动又被调度层跳过
         try:

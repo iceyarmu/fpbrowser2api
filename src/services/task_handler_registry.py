@@ -134,11 +134,12 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
     from .sora_task_executor import get_or_create_sora_session  # type: ignore
 
     sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    if "_headless" in row:
+        sora_ctx.browser_headless = bool(row["_headless"])
     try:
         sora_ctx.set_access_token(row.get("sora_access_token"), row.get("sora_access_expires"))
     except Exception:
         pass
-    # 选一个稳定入口页；只用于触发带 Authorization 的请求头捕获
     target_url = "https://sora.chatgpt.com/drafts"
     info = await sora_ctx.api_nf_check(target_url=target_url)
 
