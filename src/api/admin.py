@@ -240,6 +240,7 @@ class AddTaskTypeWindowsRequest(BaseModel):
 class UpdateTaskTypeWindowRequest(BaseModel):
     enabled: Optional[bool] = None
     headless: Optional[bool] = None
+    pure_mode: Optional[bool] = None
     deleted: Optional[bool] = None
     task_type_id: Optional[int] = Field(default=None, ge=1)
     daily_quota: Optional[int] = Field(default=None, ge=0, le=100000)
@@ -271,6 +272,7 @@ class SetPureModeRequest(BaseModel):
     """切换纯净模式：修改窗口的 platformUrl 和 openWorkbench。"""
 
     pure_mode: bool = Field(description="True=纯净模式（platformUrl 清空），False=恢复（platformUrl 设为 Google 登录页）")
+    mapping_id: Optional[int] = Field(default=None, description="task_type_windows 映射 ID，用于持久化 pure_mode 状态")
 
 
 class DeleteWindowRequest(BaseModel):
@@ -1476,18 +1478,22 @@ async def set_window_pure_mode(
     # 构造 windowPlatformList
     local_account_id = int(getattr(target_win, "platform_account_id", 0) or 0) if target_win else 0
     wpl: list = []
-    platform_url = "" if req.pure_mode else "https://accounts.google.com/"
+    acct = None
     if local_account_id > 0:
         acct = await db.get_platform_account(space_pk=space_pk, account_id=local_account_id)
-        if acct:
-            wpl = [{
-                "id": int(acct.account_id),
-                "platformUrl": platform_url,
-                "platformUserName": str(acct.platform_username or "").strip(),
-                "platformPassword": str(acct.platform_password or "").strip(),
-                "platformEfa": str(acct.platform_efa or "").strip(),
-                "platformRemarks": str(acct.platform_remarks or "").strip(),
-            }]
+    elif target_win:
+        pa = str(getattr(target_win, "platform_account", "") or "").strip()
+        if pa:
+            acct = await db.get_platform_account_by_username(space_pk=space_pk, username=pa)
+    if acct and not req.pure_mode:
+        wpl = [{
+            "id": int(acct.account_id),
+            "platformUrl": "https://accounts.google.com/",
+            "platformUserName": str(acct.platform_username or "").strip(),
+            "platformPassword": str(acct.platform_password or "").strip(),
+            "platformEfa": str(acct.platform_efa or "").strip(),
+            "platformRemarks": str(acct.platform_remarks or "").strip(),
+        }]
     openWorkbench = 0 if req.pure_mode else 1
     mdf_payload: Dict[str, Any] = {
         "proxyInfo": proxy_info,
@@ -1509,6 +1515,12 @@ async def set_window_pure_mode(
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    if req.mapping_id and req.mapping_id > 0:
+        try:
+            await db.update_task_type_window(mapping_id=req.mapping_id, pure_mode=req.pure_mode)
+        except Exception:
+            pass
 
     return {"success": True, "message": f"已{'开启' if req.pure_mode else '关闭'}纯净模式", "roxy_response": rsp}
 
@@ -2484,6 +2496,7 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
             mapping_id=mapping_id,
             enabled=req.enabled,
             headless=req.headless,
+            pure_mode=req.pure_mode,
             deleted=req.deleted,
             task_type_id=req.task_type_id,
             daily_quota=req.daily_quota,

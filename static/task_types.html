@@ -1609,6 +1609,13 @@
             el.disabled = false;
           }
         }
+        if (has("pure_mode")) {
+          const el = tr.querySelector(`[data-role="pureModeSwitch"][data-mid="${mappingId}"]`);
+          if (el) {
+            el.checked = !!m.pure_mode;
+            el.disabled = false;
+          }
+        }
         if (has("consecutive_errors") || has("total_errors")) {
           const ceEl = tr.querySelector(`[data-field="consecutiveErrors"][data-mid="${mappingId}"]`);
           const teEl = tr.querySelector(`[data-field="totalErrors"][data-mid="${mappingId}"]`);
@@ -2405,7 +2412,7 @@
             </td>
             <td class="text-center">
               <div class="form-check form-switch d-inline-block mb-0">
-                <input class="form-check-input" type="checkbox" role="switch" data-role="pureModeSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" title="切换纯净模式">
+                <input class="form-check-input" type="checkbox" role="switch" data-role="pureModeSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.pure_mode ? 'checked' : ''} title="切换纯净模式">
               </div>
             </td>
             <td>
@@ -3876,11 +3883,12 @@
           try {
             const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
               method: "POST",
-              body: JSON.stringify({ pure_mode: newPureMode }),
+              body: JSON.stringify({ pure_mode: newPureMode, mapping_id: mid }),
             });
             if (!r) { el.checked = !newPureMode; return; }
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "切换纯净模式失败");
+            updateMappingRowUI(mid, { pure_mode: newPureMode });
             toast(newPureMode ? "已开启纯净模式" : "已关闭纯净模式", "success");
           } catch (e) {
             el.checked = !newPureMode;

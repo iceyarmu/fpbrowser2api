@@ -346,6 +346,7 @@ class Database:
                     error_cooldown_until TIMESTAMP,
                     enabled BOOLEAN DEFAULT 1,
                     headless BOOLEAN DEFAULT 0,
+                    pure_mode BOOLEAN DEFAULT 0,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
@@ -752,6 +753,7 @@ class Database:
                     ("sora_subscription_end", "TEXT"),
                     ("error_cooldown_until", "TIMESTAMP"),
                     ("headless", "BOOLEAN DEFAULT 0"),
+                    ("pure_mode", "BOOLEAN DEFAULT 0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_type_windows", col_name):
@@ -2373,6 +2375,34 @@ class Database:
             d.pop("raw_json", None)
             return PlatformAccount(**d)
 
+    async def get_platform_account_by_username(self, *, space_pk: int, username: str) -> Optional[PlatformAccount]:
+        username = str(username or "").strip()
+        if not username:
+            return None
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT * FROM platform_accounts
+                WHERE deleted = 0 AND space_pk = ? AND TRIM(LOWER(platform_username)) = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (int(space_pk), username.lower()),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("raw_json"):
+                try:
+                    raw_obj = json.loads(d["raw_json"])
+                    d["raw"] = raw_obj if isinstance(raw_obj, dict) else None
+                except Exception:
+                    d["raw"] = None
+            d.pop("raw_json", None)
+            return PlatformAccount(**d)
+
     async def delete_platform_account(self, *, space_pk: int, account_id: int) -> int:
         async with self._write_conn() as db:
             cur = await db.execute(
@@ -3217,6 +3247,7 @@ class Database:
         total_errors: Optional[int] = None,
         consecutive_errors: Optional[int] = None,
         headless: Optional[bool] = None,
+        pure_mode: Optional[bool] = None,
     ) -> None:
         updates: List[str] = []
         params: List[Any] = []
@@ -3229,6 +3260,8 @@ class Database:
             _set("enabled", 1 if enabled else 0)
         if headless is not None:
             _set("headless", 1 if headless else 0)
+        if pure_mode is not None:
+            _set("pure_mode", 1 if pure_mode else 0)
         if deleted is not None:
             _set("deleted", 1 if deleted else 0)
         if task_type_id is not None:
