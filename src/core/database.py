@@ -552,6 +552,8 @@ class Database:
                     ("stop_accepting_tasks", "BOOLEAN DEFAULT 0"),
                     ("public_create_task_max_inflight", "INTEGER DEFAULT 180"),
                     ("server_count", "INTEGER DEFAULT 1"),
+                    ("browser_open_concurrency", "INTEGER DEFAULT 3"),
+                    ("browser_open_queue_timeout", "REAL DEFAULT 120.0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "system_config", col_name):
@@ -834,6 +836,8 @@ class Database:
         stop_accepting_tasks: Optional[bool] = None,
         public_create_task_max_inflight: Optional[int] = None,
         server_count: Optional[int] = None,
+        browser_open_concurrency: Optional[int] = None,
+        browser_open_queue_timeout: Optional[float] = None,
     ) -> None:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -861,14 +865,27 @@ class Database:
                 if server_count is not None
                 else current_server_count
             )
+            current_concurrency = int(current.get("browser_open_concurrency", 3) or 3)
+            new_browser_open_concurrency = (
+                max(1, min(50, int(browser_open_concurrency)))
+                if browser_open_concurrency is not None
+                else current_concurrency
+            )
+            current_queue_timeout = float(current.get("browser_open_queue_timeout", 120.0) or 120.0)
+            new_browser_open_queue_timeout = (
+                max(10.0, min(600.0, float(browser_open_queue_timeout)))
+                if browser_open_queue_timeout is not None
+                else current_queue_timeout
+            )
 
             await db.execute(
                 """
                 INSERT INTO system_config (
                   id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file,
-                  stop_accepting_tasks, public_create_task_max_inflight, server_count, updated_at
+                  stop_accepting_tasks, public_create_task_max_inflight, server_count,
+                  browser_open_concurrency, browser_open_queue_timeout, updated_at
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(id) DO UPDATE SET
                   proxy_enabled=excluded.proxy_enabled,
                   proxy_url=excluded.proxy_url,
@@ -878,6 +895,8 @@ class Database:
                   stop_accepting_tasks=excluded.stop_accepting_tasks,
                   public_create_task_max_inflight=excluded.public_create_task_max_inflight,
                   server_count=excluded.server_count,
+                  browser_open_concurrency=excluded.browser_open_concurrency,
+                  browser_open_queue_timeout=excluded.browser_open_queue_timeout,
                   updated_at=datetime('now','localtime')
                 """,
                 (
@@ -889,6 +908,8 @@ class Database:
                     new_stop_accepting,
                     new_public_create_task_max_inflight,
                     new_server_count,
+                    new_browser_open_concurrency,
+                    new_browser_open_queue_timeout,
                 ),
             )
             await db.commit()
@@ -906,8 +927,15 @@ class Database:
         try:
             mem.set_stop_accepting_tasks_from_db(syscfg.stop_accepting_tasks)
         except Exception:
-            # 兼容旧版 Config（极少数情况下）
             pass
+
+        from ..services.playwright_broswer_context import (
+            set_browser_open_concurrency,
+            set_browser_open_queue_timeout,
+        )
+        set_browser_open_concurrency(syscfg.browser_open_concurrency)
+        set_browser_open_queue_timeout(syscfg.browser_open_queue_timeout)
+
         return syscfg
 
     # ---------- admin user ----------

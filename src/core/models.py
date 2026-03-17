@@ -35,6 +35,10 @@ class SystemConfig(BaseModel):
     public_create_task_max_inflight: int = 180
     # 服务器数量（用于计算每台服务器的并发量）
     server_count: int = 1
+    # 每台服务器浏览器打开并发上限（按 browser_base_url 区分）
+    browser_open_concurrency: int = 3
+    # 浏览器打开排队超时（秒）
+    browser_open_queue_timeout: float = 120.0
     updated_at: Optional[datetime] = None
 
 

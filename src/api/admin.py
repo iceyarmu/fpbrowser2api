@@ -16,13 +16,6 @@ from ..core.database import Database
 from ..core.logger import setup_logging
 from ..core.public_api_limits import normalize_public_create_task_max_inflight
 from ..services.fp_browser_client import FPBrowserClient
-from ..services.playwright_broswer_context import (
-    get_browser_open_concurrency,
-    get_browser_open_queue_timeout,
-    set_browser_open_concurrency,
-    set_browser_open_queue_timeout,
-)
-
 
 router = APIRouter()
 
@@ -652,8 +645,8 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
                 getattr(syscfg, "public_create_task_max_inflight", None)
             ),
             "server_count": max(1, int(getattr(syscfg, "server_count", 1) or 1)),
-            "browser_open_concurrency": get_browser_open_concurrency(),
-            "browser_open_queue_timeout": get_browser_open_queue_timeout(),
+            "browser_open_concurrency": int(getattr(syscfg, "browser_open_concurrency", 3) or 3),
+            "browser_open_queue_timeout": float(getattr(syscfg, "browser_open_queue_timeout", 120.0) or 120.0),
             "admin_username": admin_user.username if admin_user else "admin",
         },
     }
@@ -696,14 +689,11 @@ async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depe
         stop_accepting_tasks=req.stop_accepting_tasks,
         public_create_task_max_inflight=req.public_create_task_max_inflight,
         server_count=req.server_count,
+        browser_open_concurrency=req.browser_open_concurrency,
+        browser_open_queue_timeout=req.browser_open_queue_timeout,
     )
     await db.reload_config_to_memory()
-    setup_logging()  # 让日志配置立刻生效
-
-    if req.browser_open_concurrency is not None:
-        set_browser_open_concurrency(req.browser_open_concurrency)
-    if req.browser_open_queue_timeout is not None:
-        set_browser_open_queue_timeout(req.browser_open_queue_timeout)
+    setup_logging()
 
     return {"success": True, "message": "系统配置已更新"}
 
