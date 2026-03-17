@@ -3497,28 +3497,7 @@ async def sora_gen_video(
                 return out or "character"
 
             base_username = "mrr_" + _sanitize_username(username_hint)
-            username = base_username
-            is_available = False
-            last_exc: Optional[BaseException] = None
-            for _i in range(8):
-                available = False
-                try:
-                    check = await sess.api_username_check(target_url=target_url, username=username)
-                    available = bool((check or {}).get("available", False))
-                except Exception as e:
-                    available = False
-                    last_exc = e
-                if available:
-                    is_available = True
-                    break
-                username = f"{base_username}{random.randint(100, 999)}"
-            if not is_available:
-                if last_exc is not None:
-                    raise NonPenalizedTaskError(
-                        f"username 检查多次失败，最后一次错误: {last_exc!r}",
-                        status_code=400,
-                    ) from last_exc
-                raise NonPenalizedTaskError(f"username 不可用：{username!r}", status_code=400)
+            username = f"{base_username}{random.randint(1000, 99999)}"
 
             await progress_cb(75, {"stage": "character_username_checked", "cameo_id": cameo_id, "username_hint": username})
 
@@ -3664,7 +3643,7 @@ async def sora_gen_video(
             safe_base = "".join([ch for ch in base_username.lower() if (ch.isalnum() or ch == "_")])
             if not safe_base:
                 safe_base = "character"
-            username = f"mrr_{safe_base}{random.randint(100, 999)}"
+            username = f"mrr_{safe_base}{random.randint(1000, 99999)}"
             await progress_cb(70, {"stage": "character_identified", "cameo_id": cameo_id, "display_name": display_name, "username": username})
 
             profile_asset_url = str(cameo_status.get("profile_asset_url") or "").strip() or None
