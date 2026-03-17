@@ -36,7 +36,8 @@ class PickedWindow:
     space_id: str
     sora_access_token: Optional[str] = None
     sora_access_expires: Optional[str] = None
-    window_ip: Optional[str] = None  # 窗口绑定的 IP/代理地址，落库到任务
+    window_ip: Optional[str] = None
+    headless: bool = False
 
 
 class TaskService:
@@ -234,6 +235,7 @@ class TaskService:
             space_id=str(r.get("space_id") or ""),
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+            headless=bool(r.get("headless")),
         )
         if not picked.window_key:
             try:
@@ -268,6 +270,7 @@ class TaskService:
             space_id=str(r.get("space_id") or ""),
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+            headless=bool(r.get("headless")),
         )
         if not picked.window_key:
             try:
@@ -301,6 +304,7 @@ class TaskService:
             space_id=str(r.get("space_id") or ""),
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+            headless=bool(r.get("headless")),
         )
         if not picked.window_key:
             try:
@@ -352,6 +356,7 @@ class TaskService:
                         space_id=picked.space_id,
                         window_key=picked.window_key,
                     )
+                    sess.browser_headless = picked.headless
                 except Exception:
                     return None
 
@@ -465,6 +470,7 @@ class TaskService:
                             timeout_seconds=float(picked.timeout_seconds),
                             access_token=picked.sora_access_token,
                             access_expires=picked.sora_access_expires,
+                            headless=picked.headless,
                         ),
                         timeout=float(picked.timeout_seconds),
                     )

@@ -279,6 +279,7 @@
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
                       <th>占用</th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
+                      <th class="sort-head" id="thHeadless" title="点击按无头排序">无头 <span class="text-muted" id="headlessSortHint">↕</span></th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -423,6 +424,12 @@
                 <div class="form-check form-switch">
                   <input class="form-check-input" type="checkbox" id="mapEditEnabled" />
                   <label class="form-check-label" for="mapEditEnabled">启用</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="mapEditHeadless" />
+                  <label class="form-check-label" for="mapEditHeadless">无头模式</label>
                 </div>
               </div>
             </div>
@@ -1592,6 +1599,13 @@
             el.disabled = false;
           }
         }
+        if (has("headless")) {
+          const el = tr.querySelector(`[data-role="headlessSwitch"][data-mid="${mappingId}"]`);
+          if (el) {
+            el.checked = !!m.headless;
+            el.disabled = false;
+          }
+        }
         if (has("consecutive_errors") || has("total_errors")) {
           const ceEl = tr.querySelector(`[data-field="consecutiveErrors"][data-mid="${mappingId}"]`);
           const teEl = tr.querySelector(`[data-field="totalErrors"][data-mid="${mappingId}"]`);
@@ -1957,7 +1971,7 @@
           ui.mappingList.page = 1;
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="15" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="16" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -2015,6 +2029,15 @@
           items.sort((a, b) => {
             const av = a?.enabled ? 1 : 0;
             const bv = b?.enabled ? 1 : 0;
+            if (av !== bv) return (av - bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        if (key === "headless") {
+          items.sort((a, b) => {
+            const av = a?.headless ? 1 : 0;
+            const bv = b?.headless ? 1 : 0;
             if (av !== bv) return (av - bv) * sign;
             return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
           });
@@ -2130,6 +2153,7 @@
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
         mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
+        mk(document.getElementById("headlessSortHint"), ui.mappingSortKey === "headless");
       }
 
       function updateMappingsHeaderSummaryUI(itemsOverride = null) {
@@ -2227,14 +2251,14 @@
         updateQuotaSortHint();
         if (!state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="15" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="16" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
         const sortedItems = getFilteredMappings(getSortedMappings());
         if (!sortedItems.length && state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="15" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
+          body.innerHTML = `<tr><td colspan="16" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -2369,6 +2393,11 @@
             <td class="text-center">
               <div class="form-check form-switch d-inline-block mb-0">
                 <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
+              </div>
+            </td>
+            <td class="text-center">
+              <div class="form-check form-switch d-inline-block mb-0">
+                <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="headlessSwitch" data-mid="${m.id}" ${m.headless ? 'checked' : ''} title="切换无头模式">
               </div>
             </td>
             <td>
@@ -3433,6 +3462,7 @@
         document.getElementById("mapEditCooldown").value = m.cooldown_until || "";
         document.getElementById("mapEditErrorCooldown").value = m.error_cooldown_until || "";
         document.getElementById("mapEditEnabled").checked = !!m.enabled;
+        document.getElementById("mapEditHeadless").checked = !!m.headless;
         mappingEditModal.show();
       }
 
@@ -3446,6 +3476,7 @@
             cooldown_until: (document.getElementById("mapEditCooldown").value || "").trim(),
             error_cooldown_until: (document.getElementById("mapEditErrorCooldown").value || "").trim(),
             enabled: document.getElementById("mapEditEnabled").checked,
+            headless: document.getElementById("mapEditHeadless").checked,
           };
           const r = await adminFetch(`/api/admin/task-type-windows/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
           if (!r) return;
@@ -3641,7 +3672,7 @@
         document.getElementById("typeSelect").value = "";
         updateMappingsHeaderSummaryUI();
         updateMappingPaginationUI(0);
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="15" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="16" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -3677,7 +3708,7 @@
           fillTypeForm(null);
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="15" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="16" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
@@ -3776,26 +3807,54 @@
 
       document.getElementById("mappingBody")?.addEventListener("change", async (ev) => {
         const el = ev.target;
-        if (!el || el.dataset.role !== "enabledSwitch") return;
-        const mid = parseInt(el.dataset.mid || "", 10);
-        if (Number.isNaN(mid)) return;
-        const newEnabled = el.checked;
-        el.disabled = true;
-        try {
-          const r = await adminFetch(`/api/admin/task-type-windows/${mid}`, {
-            method: "PATCH",
-            body: JSON.stringify({ enabled: newEnabled }),
-          });
-          if (!r) { el.checked = !newEnabled; return; }
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || "切换失败");
-          updateMappingRowUI(mid, { enabled: newEnabled });
-          toast(newEnabled ? "已启用" : "已禁用", "success");
-        } catch (e) {
-          el.checked = !newEnabled;
-          toast(e.message || "切换启用状态失败", "error");
-        } finally {
-          el.disabled = false;
+        if (!el) return;
+
+        if (el.dataset.role === "enabledSwitch") {
+          const mid = parseInt(el.dataset.mid || "", 10);
+          if (Number.isNaN(mid)) return;
+          const newEnabled = el.checked;
+          el.disabled = true;
+          try {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mid}`, {
+              method: "PATCH",
+              body: JSON.stringify({ enabled: newEnabled }),
+            });
+            if (!r) { el.checked = !newEnabled; return; }
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "切换失败");
+            updateMappingRowUI(mid, { enabled: newEnabled });
+            toast(newEnabled ? "已启用" : "已禁用", "success");
+          } catch (e) {
+            el.checked = !newEnabled;
+            toast(e.message || "切换启用状态失败", "error");
+          } finally {
+            el.disabled = false;
+          }
+          return;
+        }
+
+        if (el.dataset.role === "headlessSwitch") {
+          const mid = parseInt(el.dataset.mid || "", 10);
+          if (Number.isNaN(mid)) return;
+          const newHeadless = el.checked;
+          el.disabled = true;
+          try {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mid}`, {
+              method: "PATCH",
+              body: JSON.stringify({ headless: newHeadless }),
+            });
+            if (!r) { el.checked = !newHeadless; return; }
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "切换失败");
+            updateMappingRowUI(mid, { headless: newHeadless });
+            toast(newHeadless ? "已开启无头" : "已关闭无头", "success");
+          } catch (e) {
+            el.checked = !newHeadless;
+            toast(e.message || "切换无头状态失败", "error");
+          } finally {
+            el.disabled = false;
+          }
+          return;
         }
       });
 
@@ -4119,12 +4178,12 @@
       document.getElementById("chkMapAll")?.addEventListener("change", (e) => {
         const checked = !!e.target.checked;
         const boxes = Array.from(document.querySelectorAll("#mappingBody .chkMap"));
-        boxes.forEach(chk => { chk.checked = checked; });
-        if (checked) {
-          (state.mappings || []).forEach(m => state.mapSelected.add(m.id));
-        } else {
-          state.mapSelected = new Set();
-        }
+        boxes.forEach(chk => {
+          chk.checked = checked;
+          const mid = parseInt(chk.value, 10);
+          if (checked) state.mapSelected.add(mid);
+          else state.mapSelected.delete(mid);
+        });
         updateMapSelectedCountUI();
       });
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
@@ -4224,6 +4283,7 @@
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));
       document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));
       document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));
+      document.getElementById("thHeadless")?.addEventListener("click", () => toggleSort("headless", "desc"));
 
       // 任务类型配置：收起/展开按钮文案 + 记忆
       document.getElementById("typeConfigCollapse")?.addEventListener("shown.bs.collapse", () => {

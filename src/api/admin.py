@@ -239,6 +239,7 @@ class AddTaskTypeWindowsRequest(BaseModel):
 
 class UpdateTaskTypeWindowRequest(BaseModel):
     enabled: Optional[bool] = None
+    headless: Optional[bool] = None
     deleted: Optional[bool] = None
     task_type_id: Optional[int] = Field(default=None, ge=1)
     daily_quota: Optional[int] = Field(default=None, ge=0, le=100000)
@@ -2393,6 +2394,7 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
         await db.update_task_type_window(
             mapping_id=mapping_id,
             enabled=req.enabled,
+            headless=req.headless,
             deleted=req.deleted,
             task_type_id=req.task_type_id,
             daily_quota=req.daily_quota,

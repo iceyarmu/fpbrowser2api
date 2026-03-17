@@ -345,6 +345,7 @@ class Database:
                     -- 连续错误熔断冷却时间（与 cooldown_until 区分）
                     error_cooldown_until TIMESTAMP,
                     enabled BOOLEAN DEFAULT 1,
+                    headless BOOLEAN DEFAULT 0,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
@@ -750,6 +751,7 @@ class Database:
                     ("sora_plan_title", "TEXT"),
                     ("sora_subscription_end", "TEXT"),
                     ("error_cooldown_until", "TIMESTAMP"),
+                    ("headless", "BOOLEAN DEFAULT 0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_type_windows", col_name):
@@ -3210,6 +3212,7 @@ class Database:
         error_cooldown_until: Optional[str] = None,  # ISO string or None
         total_errors: Optional[int] = None,
         consecutive_errors: Optional[int] = None,
+        headless: Optional[bool] = None,
     ) -> None:
         updates: List[str] = []
         params: List[Any] = []
@@ -3220,6 +3223,8 @@ class Database:
 
         if enabled is not None:
             _set("enabled", 1 if enabled else 0)
+        if headless is not None:
+            _set("headless", 1 if headless else 0)
         if deleted is not None:
             _set("deleted", 1 if deleted else 0)
         if task_type_id is not None:

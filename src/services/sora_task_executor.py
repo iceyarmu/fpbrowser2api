@@ -3339,6 +3339,7 @@ async def sora_gen_video(
     timeout_seconds: float,
     access_token: Optional[str] = None,
     access_expires: Optional[str] = None,
+    headless: bool = False,
 ) -> Dict[str, Any]:
     """Sora 生视频：复用同一指纹浏览器窗口 + Playwright(CDP) 轻量连接，拆分“创建任务”和“进度轮询”。"""
     payload = payload or {}
@@ -3362,8 +3363,6 @@ async def sora_gen_video(
     poll_interval_seconds = float(payload.get("sora_pending_poll_interval_seconds") or 5.0)
     sniff_timeout_seconds = float(payload.get("sora_pending_sniff_timeout_seconds") or 4.0)
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
-
-    headless = bool(payload.get("headless", False))
 
     sess = get_or_create_sora_session(
         vendor=browser_vendor,
