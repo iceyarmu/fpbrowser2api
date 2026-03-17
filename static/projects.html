@@ -3229,9 +3229,16 @@
           fillProxySelects(spacePk);
           fillAccountSelects(spacePk);
 
-          toast(d.message || "同步完成", "success");
-          setSpaceProgress(spacePk, { current: 3, total: 3, text: `完成：${(d2.windows || []).length} 条窗口` });
-          window.setTimeout(() => setSpaceProgress(spacePk, { text: "" }), 1500);
+          const skipped = d.skipped || 0;
+          const skippedKeys = d.skipped_keys || [];
+          if (skipped > 0) {
+            toast(`${d.message || "同步完成"}（跳过的窗口: ${skippedKeys.join(", ")}）`, "warn");
+          } else {
+            toast(d.message || "同步完成", "success");
+          }
+          const progressSuffix = skipped > 0 ? `，跳过 ${skipped} 个跨空间窗口` : "";
+          setSpaceProgress(spacePk, { current: 3, total: 3, text: `完成：${(d2.windows || []).length} 条窗口${progressSuffix}` });
+          window.setTimeout(() => setSpaceProgress(spacePk, { text: "" }), skipped > 0 ? 4000 : 1500);
         } catch (e) {
           setSpaceProgress(spacePk, { current: 0, total: 3, text: `同步失败：${e.message || "未知错误"}` });
           toast(e.message, "error");

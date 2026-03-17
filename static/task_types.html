@@ -282,6 +282,7 @@
                       <th>占用</th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th class="sort-head" id="thHeadless" title="点击按无头排序">无头 <span class="text-muted" id="headlessSortHint">↕</span></th>
+                      <th>纯净</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -1973,7 +1974,7 @@
           ui.mappingList.page = 1;
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="16" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="17" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -2253,14 +2254,14 @@
         updateQuotaSortHint();
         if (!state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="16" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="17" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
         const sortedItems = getFilteredMappings(getSortedMappings());
         if (!sortedItems.length && state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="16" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
+          body.innerHTML = `<tr><td colspan="17" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -2400,6 +2401,11 @@
             <td class="text-center">
               <div class="form-check form-switch d-inline-block mb-0">
                 <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="headlessSwitch" data-mid="${m.id}" ${m.headless ? 'checked' : ''} title="切换无头模式">
+              </div>
+            </td>
+            <td class="text-center">
+              <div class="form-check form-switch d-inline-block mb-0">
+                <input class="form-check-input" type="checkbox" role="switch" data-role="pureModeSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" title="切换纯净模式">
               </div>
             </td>
             <td>
@@ -3674,7 +3680,7 @@
         document.getElementById("typeSelect").value = "";
         updateMappingsHeaderSummaryUI();
         updateMappingPaginationUI(0);
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="16" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="17" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -3710,7 +3716,7 @@
           fillTypeForm(null);
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="16" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="17" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
@@ -3853,6 +3859,32 @@
           } catch (e) {
             el.checked = !newHeadless;
             toast(e.message || "切换无头状态失败", "error");
+          } finally {
+            el.disabled = false;
+          }
+          return;
+        }
+
+        if (el.dataset.role === "pureModeSwitch") {
+          const mid = parseInt(el.dataset.mid || "", 10);
+          if (Number.isNaN(mid)) return;
+          const spacePk = parseInt(el.dataset.space_pk || "", 10);
+          const wk = String(el.dataset.window_key || "").trim();
+          if (!spacePk || !wk) { toast("缺少 space_pk/window_key，无法切换纯净模式", "error"); el.checked = !el.checked; return; }
+          const newPureMode = el.checked;
+          el.disabled = true;
+          try {
+            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
+              method: "POST",
+              body: JSON.stringify({ pure_mode: newPureMode }),
+            });
+            if (!r) { el.checked = !newPureMode; return; }
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "切换纯净模式失败");
+            toast(newPureMode ? "已开启纯净模式" : "已关闭纯净模式", "success");
+          } catch (e) {
+            el.checked = !newPureMode;
+            toast(e.message || "切换纯净模式失败", "error");
           } finally {
             el.disabled = false;
           }

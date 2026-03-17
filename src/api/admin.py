@@ -267,6 +267,12 @@ class UpdateWindowAccountRequest(BaseModel):
     account_id: int = Field(ge=0, description="本地账号列表中的 account_id；0 表示清空窗口账号")
 
 
+class SetPureModeRequest(BaseModel):
+    """切换纯净模式：修改窗口的 platformUrl 和 openWorkbench。"""
+
+    pure_mode: bool = Field(description="True=纯净模式（platformUrl 清空），False=恢复（platformUrl 设为 Google 登录页）")
+
+
 class DeleteWindowRequest(BaseModel):
     """删除窗口请求。"""
 
@@ -1436,6 +1442,77 @@ async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProx
     return {"success": True, "message": "已提交修改窗口代理请求", "roxy_response": rsp}
 
 
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-pure-mode")
+async def set_window_pure_mode(
+    space_pk: int,
+    window_key: str,
+    req: SetPureModeRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """切换纯净模式：设置窗口的 platformUrl 和 openWorkbench（实际调用 /browser/mdf）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    target_win = await db.get_window_by_key(space_pk=space_pk, window_key=wk)
+
+    # 构造 proxyInfo
+    local_proxy_id = int(getattr(target_win, "proxy_id", 0) or 0) if target_win else 0
+    if local_proxy_id > 0:
+        proxy_info: Dict[str, Any] = {"moduleId": local_proxy_id, "proxyMethod": "choose"}
+    else:
+        proxy_info = {"moduleId": 0, "proxyMethod": "custom", "proxyCategory": "noproxy"}
+
+    # 构造 windowPlatformList
+    local_account_id = int(getattr(target_win, "platform_account_id", 0) or 0) if target_win else 0
+    wpl: list = []
+    platform_url = "" if req.pure_mode else "https://accounts.google.com/"
+    if local_account_id > 0:
+        acct = await db.get_platform_account(space_pk=space_pk, account_id=local_account_id)
+        if acct:
+            wpl = [{
+                "id": int(acct.account_id),
+                "platformUrl": platform_url,
+                "platformUserName": str(acct.platform_username or "").strip(),
+                "platformPassword": str(acct.platform_password or "").strip(),
+                "platformEfa": str(acct.platform_efa or "").strip(),
+                "platformRemarks": str(acct.platform_remarks or "").strip(),
+            }]
+    openWorkbench = 0 if req.pure_mode else 1
+    mdf_payload: Dict[str, Any] = {
+        "proxyInfo": proxy_info,
+        "fingerInfo": {"openWorkbench": openWorkbench},
+    }
+    if wpl:
+        mdf_payload["windowPlatformList"] = wpl
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        rsp = await client.browser_mdf(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            window_key=wk,
+            data=mdf_payload,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"success": True, "message": f"已{'开启' if req.pure_mode else '关闭'}纯净模式", "roxy_response": rsp}
+
+
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/sync-proxy-addr")
 async def sync_window_proxy_addr_local(space_pk: int, window_key: str, token: str = Depends(verify_admin_token)):
     """按窗口当前绑定的 proxy_id 回填本地 proxy_addr/proxy_country。"""
@@ -1502,8 +1579,20 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    affected = await db.upsert_windows(space_pk=space_pk, windows=windows)
-    return {"success": True, "message": f"同步完成，写入/更新 {affected} 条窗口记录", "affected": affected}
+    result = await db.upsert_windows(space_pk=space_pk, windows=windows)
+    affected = result["affected"]
+    skipped = result["skipped"]
+    skipped_keys = result["skipped_keys"]
+    msg = f"同步完成，写入/更新 {affected} 条窗口记录"
+    if skipped > 0:
+        msg += f"，跳过 {skipped} 个跨项目空间窗口"
+    return {
+        "success": True,
+        "message": msg,
+        "affected": affected,
+        "skipped": skipped,
+        "skipped_keys": skipped_keys,
+    }
 
 
 @router.post("/api/admin/spaces/{space_pk}/sync-window-status")

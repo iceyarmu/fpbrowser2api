@@ -1499,10 +1499,10 @@ class Database:
                     continue
             return out
 
-    async def upsert_windows(self, space_pk: int, windows: List[Dict[str, Any]]) -> int:
+    async def upsert_windows(self, space_pk: int, windows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """把同步到的窗口信息保存到 DB（按 space_pk+window_key 唯一 upsert）。
 
-        返回：本次写入/更新的行数（粗略统计）。
+        返回：dict，包含 affected（写入/更新行数）、skipped（跳过数）、skipped_keys（跳过的 window_key 列表）。
         使用 _write_conn 避免与任务创建/进度查询等并发写导致死锁。
 
         注意：若某个 window_key 已存在于其他 space_pk 下（窗口已被转移到别的空间），
@@ -1511,6 +1511,8 @@ class Database:
         async with self._write_conn() as db:
             await db.execute("PRAGMA foreign_keys=ON")
             affected = 0
+            skipped = 0
+            skipped_keys: List[str] = []
             for w in windows:
                 raw_obj = w.get("raw")
                 if not isinstance(raw_obj, dict):
@@ -1520,10 +1522,12 @@ class Database:
                     continue
                 # 若该 window_key 已存在于其他 space_pk 下，跳过（窗口可能已被转移到别的项目空间）
                 cur_chk = await db.execute(
-                    "SELECT 1 FROM windows WHERE window_key = ? AND space_pk != ? AND deleted = 0 LIMIT 1",
+                    "SELECT 1 FROM windows WHERE window_key = ? AND deleted = 0 LIMIT 1",
                     (window_key, space_pk),
                 )
                 if await cur_chk.fetchone():
+                    skipped += 1
+                    skipped_keys.append(window_key)
                     continue
                 # window_sort_num: 优先取标准 snake_case，其次取 Roxy 的 camelCase，最后从 raw 里兜底
                 window_sort_num_raw = (
@@ -1654,7 +1658,7 @@ class Database:
                 )
                 affected += 1
             await db.commit()
-            return affected
+            return {"affected": affected, "skipped": skipped, "skipped_keys": skipped_keys}
 
     async def update_window_remark(self, *, space_pk: int, window_key: str, remark: str) -> int:
         wk = str(window_key or "").strip()
