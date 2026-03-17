@@ -456,9 +456,11 @@ def _prepare_first_frame_image_for_upload(
 ) -> Tuple[bytes, str, str]:
     """将首帧图规范化为 JPEG/PNG，并尽量在清晰度优先前提下压到目标大小。"""
     try:
-        from PIL import Image, ImageOps  # type: ignore[import-not-found]
+        from PIL import Image, ImageFile, ImageOps  # type: ignore[import-not-found]
     except Exception as e:
         raise NonPenalizedTaskError(f"图片处理依赖缺失：请安装 Pillow。err={e}") from e
+
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     if not image_bytes:
         raise NonPenalizedTaskError("首帧图片下载失败：下载内容为空")
