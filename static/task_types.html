@@ -66,7 +66,8 @@
       .quota-click:hover { text-decoration: underline; }
       .invite-click { cursor: pointer; user-select: none; }
       .invite-click:hover { text-decoration: underline; }
-      .enabled-click { cursor: pointer; user-select: none; }
+      .enabled-switch { transform: scale(0.85); margin: 0; cursor: pointer; }
+      .enabled-switch:disabled { opacity: 0.5; cursor: wait; }
       .token-click { cursor: pointer; user-select: none; }
       .token-click:hover { text-decoration: underline; }
       .modal-dialog.modal-xl { max-width: min(1600px, 96vw); }
@@ -1585,11 +1586,10 @@
           if (el) el.textContent = String(m.error_cooldown_until || "-");
         }
         if (has("enabled")) {
-          const el = tr.querySelector(`[data-role="enabledBadge"][data-mid="${mappingId}"]`);
+          const el = tr.querySelector(`[data-role="enabledSwitch"][data-mid="${mappingId}"]`);
           if (el) {
-            const on = !!m.enabled;
-            el.textContent = on ? "是" : "否";
-            el.className = `badge ${on ? "text-bg-success" : "text-bg-secondary"} enabled-click`;
+            el.checked = !!m.enabled;
+            el.disabled = false;
           }
         }
         if (has("consecutive_errors") || has("total_errors")) {
@@ -1621,6 +1621,15 @@
         if (has("sora_subscription_end")) {
           const endEl = tr.querySelector(`[data-role="subscriptionEnd"][data-mid="${mappingId}"]`);
           if (endEl) endEl.textContent = String(formatDateTimeShanghai(m.sora_subscription_end) || "-");
+        }
+
+        if (has("window_status")) {
+          const el = tr.querySelector(`[data-role="windowStatusBadge"][data-mid="${mappingId}"]`);
+          if (el) {
+            const opened = Number(m.window_status || 0) === 1;
+            el.textContent = opened ? "打开" : "未打开";
+            el.className = `badge ${opened ? "text-bg-success" : "text-bg-secondary"}`;
+          }
         }
 
         // 派生字段：冷却中（对齐 pick_and_reserve_window_for_task）
@@ -2276,7 +2285,7 @@
               >${escapeHtml(m.window_remark || "-")}</span>
             </td>
             <td>
-              ${Number(m.window_status || 0) === 1 ? `<span class="badge text-bg-success">打开</span>` : `<span class="badge text-bg-secondary">未打开</span>`}
+              <span data-role="windowStatusBadge" data-mid="${m.id}" class="badge ${Number(m.window_status || 0) === 1 ? 'text-bg-success' : 'text-bg-secondary'}">${Number(m.window_status || 0) === 1 ? '打开' : '未打开'}</span>
             </td>
             <td style="width: 220px; min-width: 220px;">
               <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")}
@@ -2357,7 +2366,11 @@
             <td class="mono">
               <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
             </td>
-            <td>${m.enabled ? `<span class="badge text-bg-success enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">是</span>` : `<span class="badge text-bg-secondary enabled-click" title="点击查看该窗口的定时刷新失败记录" data-role="enabledBadge" data-mid="${m.id}">否</span>`}</td>
+            <td class="text-center">
+              <div class="form-check form-switch d-inline-block mb-0">
+                <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
+              </div>
+            </td>
             <td>
               ${canEditMapping ? `<button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>` : `<span class="text-muted">-</span>`}
             </td>
@@ -2427,8 +2440,6 @@
             toggleSort("subscription_end", "asc");
           } else if (role === "taskStats") {
             if (!Number.isNaN(mid)) openSuccessModalByMappingId(mid);
-          } else if (role === "enabledBadge") {
-            if (!Number.isNaN(mid)) openAutoRefreshErrorModal({ mappingId: mid });
           } else if (role === "inviteCode") {
             if (Number.isNaN(mid)) return;
             const m = (state.mappings || []).find(x => String(x.id || "") === String(mid));
@@ -3231,6 +3242,7 @@
           if (closeBtn) closeBtn.disabled = true;
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open`, { method: "POST" });
+          updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
           toast("已打开窗口，并禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
         } catch (e) {
@@ -3252,7 +3264,7 @@
           if (closeBtn) closeBtn.disabled = true;
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start`, { method: "POST" });
-          updateMappingRowUI(mappingId, { enabled: true }, { fromEl });
+          updateMappingRowUI(mappingId, { enabled: true, window_status: 1 }, { fromEl });
           toast("已启动：启用窗口 + 重启并进入 drafts", "success");
           flashBtnText(startBtn, "已启动");
         } catch (e) {
@@ -3276,6 +3288,7 @@
           if (startBtn) startBtn.disabled = true;
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
+          updateMappingRowUI(mappingId, { window_status: 0 });
 
           toast("已发起关闭（后台倒计时）", "success");
           flashBtnText(closeBtn, "已发起");
@@ -3333,6 +3346,7 @@
           // 1) 先关闭窗口（触发 idle_close 调度）
           try {
             await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
+            updateMappingRowUI(mappingId, { window_status: 0 }, { fromEl });
           } catch (_) {}
 
           // 2) 等待窗口完全关闭，让指纹浏览器释放资源
@@ -3365,7 +3379,7 @@
               }
             }
           }
-          updateMappingRowUI(mappingId, { enabled: true }, { fromEl });
+          updateMappingRowUI(mappingId, { enabled: true, window_status: 1 }, { fromEl });
 
           // 4) 获取 access_token（convert-access-token 内部会 ensure_open + 获取 session）
           setStep(3);
@@ -3759,6 +3773,32 @@
           syncAnalyzeProxyButtons();
         }
       });
+
+      document.getElementById("mappingBody")?.addEventListener("change", async (ev) => {
+        const el = ev.target;
+        if (!el || el.dataset.role !== "enabledSwitch") return;
+        const mid = parseInt(el.dataset.mid || "", 10);
+        if (Number.isNaN(mid)) return;
+        const newEnabled = el.checked;
+        el.disabled = true;
+        try {
+          const r = await adminFetch(`/api/admin/task-type-windows/${mid}`, {
+            method: "PATCH",
+            body: JSON.stringify({ enabled: newEnabled }),
+          });
+          if (!r) { el.checked = !newEnabled; return; }
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "切换失败");
+          updateMappingRowUI(mid, { enabled: newEnabled });
+          toast(newEnabled ? "已启用" : "已禁用", "success");
+        } catch (e) {
+          el.checked = !newEnabled;
+          toast(e.message || "切换启用状态失败", "error");
+        } finally {
+          el.disabled = false;
+        }
+      });
+
       document.getElementById("winFilter").addEventListener("input", () => {
         ui.winPicker.page = 1;
         renderWinList();
