@@ -434,6 +434,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_ip ON tasks(window_ip)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_spaces_browser_id ON spaces(browser_id)")
@@ -802,6 +803,7 @@ class Database:
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_ip ON tasks(window_ip)")
 
             if await self._table_exists(db, "browsers"):
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
