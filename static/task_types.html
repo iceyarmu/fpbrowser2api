@@ -2191,7 +2191,7 @@
           failConsecutiveAll += Number(m?.consecutive_errors ?? 0) || 0;
           fail24hAll += Number(m?.failed_count_24h ?? m?.fail_count_24h ?? m?.error_count_24h ?? 0) || 0;
           failTotalAll += Number(m?.total_errors ?? 0) || 0;
-          remainingQuotaAll += Number(m?.remaining_quota ?? 0) || 0;
+          if (m?.enabled) remainingQuotaAll += Number(m?.remaining_quota ?? 0) || 0;
           const isOpened = (Number(m?.window_status || 0) === 1);
           const isCooled = (coolingFlagForMapping(m) === 0);
           openedCountAll += isOpened ? 1 : 0;
