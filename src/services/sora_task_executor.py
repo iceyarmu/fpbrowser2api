@@ -3491,7 +3491,15 @@ async def sora_gen_video(
 
             await progress_cb(10, {"stage": "character_from_generation_submit", "generation_id": generation_id})
 
-            cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
+            cameo_obj = None
+            for _from_gen_attempt in range(3):
+                try:
+                    cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
+                    break
+                except Exception as e:
+                    await sess._bring_sora_drafts_to_front()
+                    if _from_gen_attempt == 2:
+                        raise
             cameo_id = str((cameo_obj or {}).get("id") or "").strip()
             if not cameo_id:
                 raise RuntimeError(f"from-generation 响应缺少 id：body={safe_trim(json.dumps(cameo_obj, ensure_ascii=False), 600)}")
@@ -3564,13 +3572,21 @@ async def sora_gen_video(
             asset_pointer = await sess.api_character_upload_image(target_url=target_url, image_path=tmp_img)
 
             await progress_cb(85, {"stage": "character_finalize"})
-            character_id = await sess.api_character_finalize(
-                target_url=target_url,
-                cameo_id=cameo_id,
-                username=username,
-                display_name=display_name,
-                profile_asset_pointer=asset_pointer,
-            )
+            character_id = None
+            for _finalize_attempt in range(3):
+                try:
+                    character_id = await sess.api_character_finalize(
+                        target_url=target_url,
+                        cameo_id=cameo_id,
+                        username=username,
+                        display_name=display_name,
+                        profile_asset_pointer=asset_pointer,
+                    )
+                    break
+                except Exception as e:
+                    await sess._bring_sora_drafts_to_front()
+                    if _finalize_attempt == 2:
+                        raise
 
             await progress_cb(90, {"stage": "character_set_public"})
             update_payload: Dict[str, Any] = {"visibility": "public"}
@@ -3720,13 +3736,21 @@ async def sora_gen_video(
             asset_pointer = await sess.api_character_upload_image(target_url=target_url, image_path=tmp_img)
 
             await progress_cb(85, {"stage": "character_finalize"})
-            character_id = await sess.api_character_finalize(
-                target_url=target_url,
-                cameo_id=cameo_id,
-                username=username,
-                display_name=display_name,
-                profile_asset_pointer=asset_pointer,
-            )
+            character_id = None
+            for _finalize_attempt in range(3):
+                try:
+                    character_id = await sess.api_character_finalize(
+                        target_url=target_url,
+                        cameo_id=cameo_id,
+                        username=username,
+                        display_name=display_name,
+                        profile_asset_pointer=asset_pointer,
+                    )
+                    break
+                except Exception as e:
+                    await sess._bring_sora_drafts_to_front()
+                    if _finalize_attempt == 2:
+                        raise
 
             await progress_cb(90, {"stage": "character_set_public"})
             await sess.api_character_set_public(target_url=target_url, cameo_id=cameo_id)
