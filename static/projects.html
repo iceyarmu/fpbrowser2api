@@ -2902,6 +2902,7 @@
           const spacePk = parseInt(el.dataset.space_pk || "", 10);
           const wk = String(el.dataset.window_key || "").trim();
           const accountId = parseInt(String(el.value || "0"), 10) || 0;
+          const oldAccountId = parseInt(String(el.dataset.current_account_id || "0"), 10) || 0;
           if (!spacePk || !wk) return;
 
           el.dataset.current_account_id = String(accountId);
@@ -2936,7 +2937,18 @@
               toast(e.message || "修改账号失败", "error");
             }
             try {
-              await loadLocalAccounts(spacePk, { force: true });
+              const cached = accountsCache.get(spacePk) || [];
+              if (cached.length) {
+                for (const a of cached) {
+                  const aid = parseInt(String(a.account_id || 0), 10) || 0;
+                  if (aid === oldAccountId && aid > 0) {
+                    a.binding_count = Math.max(0, (parseInt(String(a.binding_count || 0), 10) || 0) - 1);
+                  }
+                  if (aid === accountId && aid > 0) {
+                    a.binding_count = (parseInt(String(a.binding_count || 0), 10) || 0) + 1;
+                  }
+                }
+              }
               fillAccountSelects(spacePk);
               if (accountsState.spacePk === spacePk) {
                 accountsState.accounts = accountsCache.get(spacePk) || [];
@@ -3007,8 +3019,11 @@
             toast(e.message || "修改代理失败", "error");
           }
           try {
-            await recomputeProxyBindingsFromUi(spacePk);
             fillProxySelects(spacePk);
+            if (proxiesState?.spacePk === spacePk) {
+              proxiesState.proxies = proxiesCache.get(spacePk) || [];
+              renderProxies();
+            }
           } catch (_e) { /* ignore */ }
         })();
       });
