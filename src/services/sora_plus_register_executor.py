@@ -665,9 +665,15 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True, 
 
             # 给 Cloudflare 验证窗口留出处理时间
             try:
-                await asyncio.sleep(20.0)
+                await asyncio.sleep(2.0)
             except Exception:
                 pass
+
+        # 给 Cloudflare 验证窗口留出处理时间
+        try:
+            await asyncio.sleep(18.0)
+        except Exception:
+            pass
 
         # 仅重连 browser/context，不强制探测/创建 page
         try:

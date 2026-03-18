@@ -435,7 +435,8 @@ class PlaywrightBrowserContext:
                 if not debugger_address:
                     raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
                 self.cdp_endpoint = debugger_address
-                await asyncio.sleep(15)
+                await asyncio.sleep(3)
+            await asyncio.sleep(15)
         else:
             debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
             if not debugger_address:
