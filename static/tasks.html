@@ -96,7 +96,7 @@
             <table class="table table-sm align-middle" style="min-width: 1240px;">
               <thead>
                 <tr class="small2">
-                  <th style="min-width: 120px;">task_id</th>
+                  <th style="min-width: 80px;">task_id</th>
                   <th style="min-width: 120px;">任务类型</th>
                   <th style="min-width: 100px;">状态</th>
                   <th style="min-width: 100px;">进度</th>
@@ -233,7 +233,7 @@
               <table class="table table-sm align-middle mb-0">
                 <thead>
                   <tr class="small2">
-                    <th style="min-width: 130px;">task_id</th>
+                    <th style="min-width: 60px;">task_id</th>
                     <th style="min-width: 150px;">任务类型</th>
                     <th style="min-width: 100px;">状态</th>
                     <th style="min-width: 90px;">进度</th>
@@ -360,7 +360,9 @@
         const acc = accRaw || "-";
         const sortNum = (item && (item.windowSortNum ?? item.window_sort_num ?? item.window_sortNum)) ?? "";
         const sortNumText = String(sortNum ?? "").trim();
-        return sortNumText ? (accRaw ? `${sortNumText}-${accRaw}` : sortNumText) : acc;
+        const spaceName = String(item?.space_name ?? "").trim();
+        const base = sortNumText ? (accRaw ? `${sortNumText}-${accRaw}` : sortNumText) : acc;
+        return spaceName ? `[${spaceName}] ${base}` : base;
       }
 
       function currentWindowScopeParams() {
@@ -558,7 +560,7 @@
           const createdAtText = formatCreatedAtLocal(item?.created_at);
           return `
             <tr class="small2">
-              <td class="mono">${escapeHtml(String(item?.task_id || "-"))}</td>
+              <td class="mono width-60">${escapeHtml(String(item?.task_id || "-"))}</td>
               <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
               <td>${badgeForStatus(item?.status)}</td>
               <td class="mono">${escapeHtml(progress)}</td>
@@ -695,7 +697,7 @@
             : `<span class="text-muted">-</span>`;
           return `
             <tr class="small2">
-              <td class="mono">${escapeHtml(x.task_id || "")}</td>
+              <td class="mono" style="max-width: 120px;">${escapeHtml(x.task_id || "")}</td>
               <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
               <td>${badgeForStatus(x.status)}</td>
               <td>

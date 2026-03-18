@@ -4163,6 +4163,7 @@ class Database:
                   t.window_ip,
                   w.platform_account AS window_account,
                   w.window_sort_num AS window_sort_num,
+                  s.name AS space_name,
                   t.error_message,
                   t.content_violation,
                   t.result_json,
@@ -4170,6 +4171,7 @@ class Database:
                   t.updated_at
                 FROM tasks t
                 LEFT JOIN windows w ON w.id = t.window_pk
+                LEFT JOIN spaces s ON s.id = w.space_pk
                 WHERE {' AND '.join(where)}
                 ORDER BY t.id DESC
                 LIMIT ? OFFSET ?
@@ -4444,11 +4446,13 @@ class Database:
                   t.window_ip,
                   w.platform_account AS window_account,
                   w.window_sort_num AS window_sort_num,
+                  s.name AS space_name,
                   t.error_message,
                   t.result_json,
                   t.created_at
                 FROM tasks t
                 LEFT JOIN windows w ON w.id = t.window_pk
+                LEFT JOIN spaces s ON s.id = w.space_pk
                 WHERE {where_clause}
                 ORDER BY t.created_at DESC, t.id DESC
                 LIMIT ? OFFSET ?

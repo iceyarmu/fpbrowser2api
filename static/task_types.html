@@ -2352,7 +2352,7 @@
               <div class="text-muted">重置:<span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
             <td style="width: 220px; min-width: 220px;">
-              <div class="mono truncate-1" title="${escapeHtml(String(m.space_id || "-") + " · " + String(m.space_name || "-"))}">${escapeHtml(m.space_id || "-")}
+              <div class="mono truncate-1" title="${escapeHtml(String(m.space_name || "-") + " · " + String(m.space_id || "-"))}">${escapeHtml(m.space_name || "-")}
                 <span>[<span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span>]</span>
               </div>
               <div class="small2 text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
