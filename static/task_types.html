@@ -2195,7 +2195,7 @@
           const isOpened = (Number(m?.window_status || 0) === 1);
           const isCooled = (coolingFlagForMapping(m) === 0);
           openedCountAll += isOpened ? 1 : 0;
-          coolingZeroCountAll += isCooled ? 1 : 0;
+          coolingZeroCountAll += (isCooled && m?.enabled) ? 1 : 0;
           enabledCountAll += m?.enabled ? 1 : 0;
           inflightSlotsAll += Number(m?.inflight_slots ?? 0) || 0;
           if (isOpened && isCooled) openedCooledCountAll += 1;
