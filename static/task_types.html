@@ -463,9 +463,9 @@
               <div class="form-text">转移后，该窗口会从当前任务类型列表移除，并出现在目标任务类型中。</div>
             </div>
             <div class="mb-3" id="mapTransferSpaceGroup" style="display:none;">
-              <label class="form-label">目标项目空间 <span class="badge bg-warning text-dark">跨项目</span></label>
+              <label class="form-label">目标项目空间 <span class="badge" id="mapTransferSpaceBadge"></span></label>
               <select class="form-select" id="mapTransferSpaceId"></select>
-              <div class="form-text">目标任务类型属于不同项目，需选择窗口迁移到的目标空间（指纹浏览器）。</div>
+              <div class="form-text" id="mapTransferSpaceHint"></div>
             </div>
           </div>
           <div class="modal-footer">
@@ -2808,6 +2808,8 @@
       async function updateTransferSpaceSelect(targetTypeId) {
         const group = document.getElementById("mapTransferSpaceGroup");
         const sel = document.getElementById("mapTransferSpaceId");
+        const badge = document.getElementById("mapTransferSpaceBadge");
+        const hintEl = document.getElementById("mapTransferSpaceHint");
         if (!group || !sel) return;
 
         const typePool = (state.transferAllTypes && state.transferAllTypes.length) ? state.transferAllTypes : (state.types || []);
@@ -2815,30 +2817,19 @@
         const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
         const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
 
-        if (!sourceProjectId || !targetProjectId || sourceProjectId === targetProjectId) {
+        if (!sourceProjectId || !targetProjectId) {
           group.style.display = "none";
           sel.innerHTML = "";
           return;
         }
 
+        const isCrossProject = sourceProjectId !== targetProjectId;
+        const isSameType = String(targetTypeId || "") === String(state.current?.id || "");
+        const projectIdForSpaces = isCrossProject ? targetProjectId : sourceProjectId;
+
         try {
           const allSpaces = _transferAllSpaces.length ? _transferAllSpaces : await loadAllSpacesFromTree();
-          const targetSpaces = allSpaces.filter(x => Number(x.project_id) === Number(targetProjectId));
-          if (!targetSpaces.length) {
-            group.style.display = "block";
-            sel.innerHTML = `<option value="">目标项目下没有可用空间</option>`;
-            sel.disabled = true;
-            return;
-          }
-
-          group.style.display = "block";
-          sel.disabled = false;
-          sel.innerHTML = targetSpaces
-            .map(s => `<option value="${s.space_pk}">${escapeHtml(s.browser_name)} / ${escapeHtml(s.space_name || s.space_id)}</option>`)
-            .join("");
-
-          const cachedSpacePk = parseInt(lsGet(LS_KEYS.transferTargetSpacePk) || "", 10);
-          const hit = targetSpaces.find(s => Number(s.space_pk) === cachedSpacePk);
+          const projectSpaces = allSpaces.filter(x => Number(x.project_id) === Number(projectIdForSpaces));
 
           const firstMapping = (state.mappings || []).find(x => {
             const transferIdEl = document.getElementById("mapTransferId");
@@ -2847,12 +2838,73 @@
             const ids = bulkIds.length ? bulkIds : [mid];
             return ids.includes(Number(x.id));
           });
+          const currentSpacePk = parseInt(String(firstMapping?.space_pk || "0"), 10) || 0;
+
+          if (!isCrossProject && !isSameType && projectSpaces.length <= 1) {
+            group.style.display = "none";
+            sel.innerHTML = "";
+            return;
+          }
+
+          if (!projectSpaces.length) {
+            group.style.display = "block";
+            sel.innerHTML = `<option value="">目标项目下没有可用空间</option>`;
+            sel.disabled = true;
+            if (badge) { badge.textContent = ""; badge.className = "badge"; }
+            if (hintEl) hintEl.textContent = "目标项目下没有可用空间";
+            return;
+          }
+
+          group.style.display = "block";
+          sel.disabled = false;
+
+          if (badge) {
+            if (isCrossProject) {
+              badge.textContent = "跨项目";
+              badge.className = "badge bg-warning text-dark";
+            } else {
+              badge.textContent = "同项目";
+              badge.className = "badge bg-info text-dark";
+            }
+          }
+          if (hintEl) {
+            if (isSameType) {
+              hintEl.textContent = "相同任务类型下，选择不同空间可将窗口迁移到该空间（指纹浏览器）。";
+            } else if (isCrossProject) {
+              hintEl.textContent = "目标任务类型属于不同项目，需选择窗口迁移到的目标空间（指纹浏览器）。";
+            } else {
+              hintEl.textContent = "可选择将窗口迁移到同项目的其他空间（指纹浏览器），不选则保持原空间。";
+            }
+          }
+
+          let options = "";
+          if (!isCrossProject && !isSameType) {
+            options += `<option value="0">保持当前空间（不迁移）</option>`;
+          }
+          options += projectSpaces
+            .map(s => {
+              const isCurrent = Number(s.space_pk) === currentSpacePk;
+              const label = `${escapeHtml(s.browser_name)} / ${escapeHtml(s.space_name || s.space_id)}${isCurrent ? " [当前]" : ""}`;
+              return `<option value="${s.space_pk}">${label}</option>`;
+            })
+            .join("");
+          sel.innerHTML = options;
+
+          const cachedSpacePk = parseInt(lsGet(LS_KEYS.transferTargetSpacePk) || "", 10);
+          const hit = projectSpaces.find(s => Number(s.space_pk) === cachedSpacePk);
           const preferredBrowserName = String(firstMapping?.browser_name || "").trim();
           const byBrowser = preferredBrowserName
-            ? targetSpaces.find(s => String(s.browser_name || "").trim() === preferredBrowserName)
+            ? projectSpaces.find(s => String(s.browser_name || "").trim() === preferredBrowserName)
             : null;
 
-          sel.value = String(hit?.space_pk || byBrowser?.space_pk || targetSpaces[0].space_pk);
+          if (isSameType) {
+            const otherSpace = projectSpaces.find(s => Number(s.space_pk) !== currentSpacePk);
+            sel.value = String(hit?.space_pk || otherSpace?.space_pk || byBrowser?.space_pk || projectSpaces[0].space_pk);
+          } else if (!isCrossProject) {
+            sel.value = "0";
+          } else {
+            sel.value = String(hit?.space_pk || byBrowser?.space_pk || projectSpaces[0].space_pk);
+          }
         } catch (e) {
           group.style.display = "block";
           sel.innerHTML = `<option value="">加载失败: ${escapeHtml(e.message || "未知错误")}</option>`;
@@ -2930,7 +2982,12 @@
           allTypes = state.types || [];
           toast(e.message || "加载目标任务类型失败，已回退当前可见列表", "warning");
         }
-        const targetTypes = (allTypes || []).filter(t => String(t.id || "") !== String(currentTypeId));
+        const targetTypes = (allTypes || []).slice().sort((a, b) => {
+          const aIsCurrent = String(a.id || "") === String(currentTypeId);
+          const bIsCurrent = String(b.id || "") === String(currentTypeId);
+          if (aIsCurrent !== bIsCurrent) return aIsCurrent ? 1 : -1;
+          return 0;
+        });
 
         const transferIdEl = document.getElementById("mapTransferId");
         transferIdEl.value = String(isBulk ? 0 : firstId);
@@ -2958,15 +3015,27 @@
 
         sel.disabled = false;
         sel.innerHTML = targetTypes
-          .map(t => `<option value="${t.id}">${escapeHtml(t.name)} (${escapeHtml(t.code)})</option>`)
+          .map(t => {
+            const isCurrent = String(t.id || "") === String(currentTypeId);
+            const label = isCurrent
+              ? `${escapeHtml(t.name)} (${escapeHtml(t.code)}) [当前·仅迁移空间]`
+              : `${escapeHtml(t.name)} (${escapeHtml(t.code)})`;
+            return `<option value="${t.id}">${label}</option>`;
+          })
           .join("");
         const cachedTargetTypeId = parseInt(lsGet(LS_KEYS.transferTargetTypeId) || "", 10);
         const hit = targetTypes.find(t => Number(t.id) === cachedTargetTypeId);
-        sel.value = String(hit?.id || targetTypes[0].id);
+        const firstOther = targetTypes.find(t => String(t.id || "") !== String(currentTypeId));
+        sel.value = String(hit?.id || firstOther?.id || targetTypes[0].id);
         const btn = document.getElementById("btnTransferMapping");
+        const selectedIsCurrent = String(sel.value) === String(currentTypeId);
         if (btn) {
           btn.disabled = false;
-          btn.textContent = isBulk ? `确认批量转移（${ids.length}个）` : "确认转移";
+          if (selectedIsCurrent) {
+            btn.textContent = isBulk ? `确认批量迁移空间（${ids.length}个）` : "确认迁移空间";
+          } else {
+            btn.textContent = isBulk ? `确认批量转移（${ids.length}个）` : "确认转移";
+          }
         }
 
         try { await loadAllSpacesFromTree(); } catch {}
@@ -3005,17 +3074,21 @@
             }
             try {
               const currentTypeId = parseInt(String(state.current?.id || m.task_type_id || "0"), 10) || 0;
-              if (currentTypeId && currentTypeId === targetTypeId) throw new Error("目标任务类型不能与当前类型相同");
+              const isSameType = currentTypeId > 0 && currentTypeId === targetTypeId;
               const sourceProjectId = parseInt(String(state.current?.project_id || "0"), 10) || 0;
               const targetProjectId = parseInt(String(targetType?.project_id || "0"), 10) || 0;
               const sourceSpacePk = parseInt(String(m.space_pk || "0"), 10) || 0;
               const windowKey = String(m.window_key || "").trim();
+              const userPickedSpacePk = parseInt(document.getElementById("mapTransferSpaceId")?.value || "0", 10) || 0;
+              const wantMoveSpace = userPickedSpacePk > 0 && userPickedSpacePk !== sourceSpacePk;
               let movedSpacePk = 0;
 
-              if (sourceProjectId > 0 && targetProjectId > 0 && sourceProjectId !== targetProjectId) {
+              if (isSameType && !wantMoveSpace) {
+                throw new Error("相同任务类型下请选择不同的目标项目空间");
+              }
+
+              if (wantMoveSpace) {
                 if (!sourceSpacePk || !windowKey) throw new Error("当前窗口缺少空间信息（space_pk/window_key），无法迁移到目标项目空间");
-                const userPickedSpacePk = parseInt(document.getElementById("mapTransferSpaceId")?.value || "0", 10) || 0;
-                if (!userPickedSpacePk) throw new Error("请选择目标项目空间");
                 movedSpacePk = userPickedSpacePk;
                 lsSet(LS_KEYS.transferTargetSpacePk, String(movedSpacePk));
                 await postJson(`/api/admin/spaces/${sourceSpacePk}/windows/${encodeURIComponent(windowKey)}/move`, {
@@ -3024,10 +3097,12 @@
                 });
               }
 
-              await postJson(`/api/admin/task-type-windows/${ids[i]}`, {
-                method: "PATCH",
-                body: { task_type_id: targetTypeId },
-              });
+              if (!isSameType) {
+                await postJson(`/api/admin/task-type-windows/${ids[i]}`, {
+                  method: "PATCH",
+                  body: { task_type_id: targetTypeId },
+                });
+              }
               ok += 1;
               if (movedSpacePk > 0) movedCount += 1;
             } catch (oneErr) {
@@ -3036,13 +3111,16 @@
             }
           }
 
+          const isSameTypeResult = (parseInt(String(state.current?.id || "0"), 10) || 0) === targetTypeId;
           if (fail === 0 && ok > 0) {
             if (ids.length === 1) {
-              if (movedCount > 0) toast(`已转移到：${targetType?.name || targetTypeId}（窗口已迁移到目标项目空间）`, "success");
+              if (isSameTypeResult && movedCount > 0) toast(`窗口已迁移到目标项目空间`, "success");
+              else if (movedCount > 0) toast(`已转移到：${targetType?.name || targetTypeId}（窗口已迁移到目标项目空间）`, "success");
               else toast(`已转移到：${targetType?.name || targetTypeId}`, "success");
             } else {
               const movedHint = movedCount > 0 ? `，其中 ${movedCount} 个窗口已迁移空间` : "";
-              toast(`批量转移完成：成功 ${ok}，失败 0${movedHint}`, "success");
+              if (isSameTypeResult) toast(`批量迁移空间完成：成功 ${ok}，失败 0`, "success");
+              else toast(`批量转移完成：成功 ${ok}，失败 0${movedHint}`, "success");
             }
             mappingTransferModal.hide();
             await loadMappings({ preserveSelection: true });
@@ -3618,6 +3696,18 @@
         const id = parseInt(String(e.target?.value || ""), 10);
         if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.transferTargetTypeId, String(id));
         updateTransferSpaceSelect(id);
+        const btn = document.getElementById("btnTransferMapping");
+        if (btn && !btn.disabled) {
+          const currentTypeId = parseInt(String(state.current?.id || "0"), 10) || 0;
+          const transferIdEl = document.getElementById("mapTransferId");
+          const bulkIds = String(transferIdEl?.dataset.bulkIds || "").split(",").map(Number).filter(n => n > 0);
+          const isBulk = bulkIds.length > 1;
+          if (currentTypeId > 0 && id === currentTypeId) {
+            btn.textContent = isBulk ? `确认批量迁移空间（${bulkIds.length}个）` : "确认迁移空间";
+          } else {
+            btn.textContent = isBulk ? `确认批量转移（${bulkIds.length}个）` : "确认转移";
+          }
+        }
       });
       document.getElementById("mapTransferSpaceId")?.addEventListener("change", (e) => {
         const pk = parseInt(String(e.target?.value || ""), 10);
