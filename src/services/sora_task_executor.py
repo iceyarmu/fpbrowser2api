@@ -2332,7 +2332,7 @@ class SoraSession:
             token = self._get_bearer_token_required()
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
 
-            list_url = _sora_backend_url_from_target(target_url, "/backend/project_y/profile/drafts/v2?limit=15")
+            list_url = _sora_backend_url_from_target(target_url, "/backend/project_y/profile/drafts/v2?limit=45")
             tx = await page_fetch_json(self.pw_ctx.page, url=list_url, method="GET", headers=headers, json_data=None, log_file=log_file)
             obj = tx.get("_json")
             items = (obj or {}).get("items", []) if isinstance(obj, dict) else []
