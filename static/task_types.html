@@ -241,11 +241,15 @@
                       </span>
                     </div>
                     <button class="btn btn-outline-secondary btn-sm" id="btnRefreshMappingStats" title="仅刷新统计信息">⟳</button>
+                    <button class="btn btn-outline-info btn-sm" id="btnTogglePerSpaceStats" title="按空间分组统计">按空间 ▼</button>
                   </div>
                   <div class="vr d-none d-md-block"></div>
                   
                 </div>
                 <div class="small2 text-muted mt-1" id="bulkProgressHint" style="display:none;"></div>
+                <div id="perSpaceStatsWrap" style="display:none;" class="mt-1">
+                  <div id="perSpaceStatsBody" class="d-flex flex-wrap gap-1 align-items-start" style="font-size:11px;"></div>
+                </div>
               </div>
               <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-1">
                 <div class="small text-muted" data-role="mapping-page-info">总计 0 条 · 第 0/0 页</div>
@@ -2229,6 +2233,39 @@
             `<span class="badge bg-dark bg-opacity-50">已冷却 ${coolingZeroCountAll}</span> ` +
             `<span class="badge bg-primary bg-opacity-75">已启用 ${enabledCountAll}</span> ` +
             `<span class="badge ${inflightSlotsAll > 0 ? 'bg-warning text-dark' : 'bg-secondary'}">并发中 ${inflightSlotsAll}</span>`;
+        }
+
+        const perSpaceBody = document.getElementById("perSpaceStatsBody");
+        if (perSpaceBody) {
+          const grouped = {};
+          items.forEach(m => {
+            const key = m.space_name || "(未知空间)";
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(m);
+          });
+          const keys = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+          perSpaceBody.innerHTML = keys.map(spaceName => {
+            const list = grouped[spaceName];
+            let opened = 0, cooled = 0, enabled = 0, inflight = 0, ready = 0;
+            list.forEach(m => {
+              const isOpened = Number(m?.window_status || 0) === 1;
+              const isCooled = coolingFlagForMapping(m) === 0;
+              opened += isOpened ? 1 : 0;
+              cooled += (isCooled && m?.enabled) ? 1 : 0;
+              enabled += m?.enabled ? 1 : 0;
+              inflight += Number(m?.inflight_slots ?? 0) || 0;
+              ready += (isOpened && isCooled) ? 1 : 0;
+            });
+            return `<div class="border rounded px-2 py-1 bg-white">` +
+              `<span class="fw-semibold me-1">${escapeHtml(spaceName)}</span>` +
+              `<span class="badge bg-secondary">总 ${list.length}</span> ` +
+              `<span class="badge bg-info text-dark">开 ${opened}</span> ` +
+              `<span class="badge bg-success">绪 ${ready}</span> ` +
+              `<span class="badge bg-dark bg-opacity-50">冷 ${cooled}</span> ` +
+              `<span class="badge bg-primary bg-opacity-75">启 ${enabled}</span> ` +
+              `<span class="badge ${inflight > 0 ? 'bg-warning text-dark' : 'bg-secondary'}">并 ${inflight}</span>` +
+              `</div>`;
+          }).join("");
         }
       }
 
@@ -4269,6 +4306,14 @@
         }
       });
       document.getElementById("btnRefreshMappingStats")?.addEventListener("click", (e) => refreshMappingStatsOnly(e.currentTarget));
+      document.getElementById("btnTogglePerSpaceStats")?.addEventListener("click", () => {
+        const wrap = document.getElementById("perSpaceStatsWrap");
+        const btn = document.getElementById("btnTogglePerSpaceStats");
+        if (!wrap) return;
+        const visible = wrap.style.display !== "none";
+        wrap.style.display = visible ? "none" : "block";
+        if (btn) btn.textContent = visible ? "按空间 ▼" : "按空间 ▲";
+      });
       // 窗口列表搜索过滤（防抖）
       {
         let _mappingFilterTimer = null;
