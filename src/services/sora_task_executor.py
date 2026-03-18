@@ -1109,7 +1109,7 @@ async def _sora_api_upload_character_image_pw(
 
 async def _sora_api_get_video_drafts_pw(page, *, target_url: str, bearer_token: str, limit: int, log_file: Path) -> Dict[str, Any]:
     """GET /backend/project_y/profile/drafts?limit=..."""
-    url = _sora_backend_url_from_target(target_url, f"/backend/project_y/profile/drafts?limit={int(limit)}")
+    url = _sora_backend_url_from_target(target_url, f"/backend/project_y/profile/drafts/v2?limit={int(limit)}")
     headers = {"Authorization": f"Bearer {bearer_token}", "OAI-Language": "en-US"}
     tx = await page_fetch_json(page, url=url, method="GET", headers=headers, json_data=None, log_file=log_file)
     obj = tx.get("_json")
@@ -2321,6 +2321,50 @@ class SoraSession:
                 "raw": obj,
             }
 
+    async def api_clear_all_drafts(self, *, target_url: str) -> Dict[str, Any]:
+        """获取 drafts/v2 列表并逐个 DELETE 删除所有草稿。"""
+        self.last_used_at = time.time()
+        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
+        await self._bring_sora_drafts_to_front(refresh_target=False)
+        self._cancel_idle_close()
+        async with self._bring_drafts_lock:
+            log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            token = self._get_bearer_token_required()
+            headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
+
+            list_url = _sora_backend_url_from_target(target_url, "/backend/project_y/profile/drafts/v2?limit=15")
+            tx = await page_fetch_json(self.pw_ctx.page, url=list_url, method="GET", headers=headers, json_data=None, log_file=log_file)
+            obj = tx.get("_json")
+            items = (obj or {}).get("items", []) if isinstance(obj, dict) else []
+
+            deleted_ids: list[str] = []
+            failed_ids: list[str] = []
+            for it in (items if isinstance(items, list) else []):
+                draft_id = str(it.get("id") or "").strip() if isinstance(it, dict) else ""
+                if not draft_id:
+                    continue
+                del_url = _sora_backend_url_from_target(target_url, f"/backend/project_y/profile/drafts/{draft_id}")
+                try:
+                    del_tx = await page_fetch_json(self.pw_ctx.page, url=del_url, method="DELETE", headers=headers, json_data=None, log_file=log_file)
+                    status = int(del_tx.get("status") or 0) if del_tx.get("status") is not None else 0
+                    if 200 <= status < 300 or status == 404:
+                        deleted_ids.append(draft_id)
+                    else:
+                        failed_ids.append(draft_id)
+                    append_log(log_file, f"[sora][clear_drafts] DELETE {draft_id} status={status}")
+                except Exception as e:
+                    failed_ids.append(draft_id)
+                    try:
+                        append_log(log_file, f"[sora][clear_drafts] DELETE {draft_id} failed: {e}")
+                    except Exception:
+                        pass
+
+            return {
+                "total": len(items) if isinstance(items, list) else 0,
+                "deleted": deleted_ids,
+                "failed": failed_ids,
+            }
+
     async def api_invite_mine(self, *, target_url: str) -> Dict[str, Any]:
         """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
         self.last_used_at = time.time()
@@ -3235,6 +3279,17 @@ class SoraSession:
                     f"retry={bool(should_retry)} err={safe_trim(err_msg, 300)!r}",
                 )
                 if not should_retry:
+                    try:
+                        del_url = _sora_backend_url_from_target(target_url, f"/backend/project_y/profile/drafts/{generation_id}")
+                        del_headers = {"Authorization": f"Bearer {self.bearer_token}", "OAI-Language": "en-US"}
+                        del_tx = await page_fetch_json(self.pw_ctx.page, url=del_url, method="DELETE", headers=del_headers, json_data=None, log_file=log_file)
+                        del_status = int(del_tx.get("status") or 0) if del_tx.get("status") is not None else 0
+                        append_log(log_file, f"[sora][publish] cleanup DELETE draft {generation_id} status={del_status}")
+                    except Exception as del_e:
+                        try:
+                            append_log(log_file, f"[sora][publish] cleanup DELETE draft {generation_id} failed: {del_e}")
+                        except Exception:
+                            pass
                     raise NonPenalizedTaskError(f"发布草稿失败: {err_msg}", status_code=429)
                 await self._bring_sora_drafts_to_front()
         

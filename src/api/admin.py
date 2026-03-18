@@ -2191,6 +2191,47 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
     }
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/clear-drafts")
+async def clear_mapping_drafts(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
+    """通过指纹浏览器获取 drafts/v2 列表并逐个 DELETE 清除所有草稿。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
+
+    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    sora_ctx.browser_headless = headless
+    try:
+        sora_ctx.set_access_token(ctx_row.get("sora_access_token"), ctx_row.get("sora_access_expires"))
+    except Exception:
+        pass
+
+    try:
+        result = await sora_ctx.api_clear_all_drafts(target_url="https://sora.chatgpt.com/drafts")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"清除草稿失败：{e}")
+
+    return {
+        "success": True,
+        "mapping_id": mapping_id,
+        "total": result.get("total", 0),
+        "deleted": result.get("deleted", []),
+        "failed": result.get("failed", []),
+    }
+
+
 @router.get("/api/admin/auto-refresh-errors")
 async def list_auto_refresh_errors(
     limit: int = 200,

@@ -2698,7 +2698,12 @@
           const { refreshSubBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshSubBtn, true, { loadingText: "刷新中", keepWidth: false });
           const hl = getMappingHeadless(mappingId);
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" });
+          const [d] = await Promise.all([
+            postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" }),
+            postJson(`/api/admin/task-type-windows/${mappingId}/clear-drafts?headless=${hl}`, { method: "POST" })
+              .then(r => { toast(`已清除 ${(r?.deleted||[]).length} 个草稿`, "success"); })
+              .catch(e => { toast(`清除草稿失败: ${e.message}`, "warning"); }),
+          ]);
           updateMappingRowUI(mappingId, {
             sora_plan_title: d?.plan_title || "",
             sora_subscription_end: d?.subscription_end || "",
