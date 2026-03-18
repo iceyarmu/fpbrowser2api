@@ -277,6 +277,7 @@
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
+                      <th>草稿数</th>
                       <th class="sort-head" id="thSpaceName" title="点击按空间名称排序">空间名称 <span class="text-muted" id="spaceNameSortHint">↕</span></th>
                       <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
@@ -1601,6 +1602,10 @@
           const el = tr.querySelector(`[data-role="cooldownUntil"][data-mid="${mappingId}"]`);
           if (el) el.textContent = String(m.cooldown_until || "-");
         }
+        if (has("sora_drafts_count")) {
+          const el = tr.querySelector(`[data-role="draftsCount"][data-mid="${mappingId}"]`);
+          if (el) el.textContent = String(m.sora_drafts_count ?? 0);
+        }
         if (has("error_cooldown_until")) {
           const el = tr.querySelector(`[data-field="errorCooldownUntil"][data-mid="${mappingId}"]`);
           if (el) el.textContent = String(m.error_cooldown_until || "-");
@@ -2399,6 +2404,9 @@
               </div>
               <div class="text-muted">重置:<span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
+            <td class="text-center">
+              <span class="fw-semibold mono" style="cursor:pointer;" title="点击清除草稿箱（数量>1时可用）" data-role="draftsCount" data-mid="${m.id}">${m.sora_drafts_count ?? 0}</span>
+            </td>
             <td>
               <div class="mono truncate-1" title="${escapeHtml(String(m.space_name || "-") + " · " + String(m.space_id || "-"))}">${escapeHtml(m.space_name || "-")}</div>
             </td>
@@ -2538,6 +2546,8 @@
             toggleSort("subscription_end", "asc");
           } else if (role === "taskStats") {
             if (!Number.isNaN(mid)) openSuccessModalByMappingId(mid);
+          } else if (role === "draftsCount") {
+            if (!Number.isNaN(mid)) clearDrafts(mid);
           } else if (role === "inviteCode") {
             if (Number.isNaN(mid)) return;
             const m = (state.mappings || []).find(x => String(x.id || "") === String(mid));
@@ -2698,12 +2708,7 @@
           const { refreshSubBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshSubBtn, true, { loadingText: "刷新中", keepWidth: false });
           const hl = getMappingHeadless(mappingId);
-          const [d] = await Promise.all([
-            postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" }),
-            postJson(`/api/admin/task-type-windows/${mappingId}/clear-drafts?headless=${hl}`, { method: "POST" })
-              .then(r => { toast(`已清除 ${(r?.deleted||[]).length} 个草稿`, "success"); })
-              .catch(e => { toast(`清除草稿失败: ${e.message}`, "warning"); }),
-          ]);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, {
             sora_plan_title: d?.plan_title || "",
             sora_subscription_end: d?.subscription_end || "",
@@ -2714,6 +2719,28 @@
         } finally {
           const { refreshSubBtn } = getRowActionButtons(mappingId);
           setBtnBusy(refreshSubBtn, false);
+        }
+      }
+
+      async function clearDrafts(mappingId) {
+        const m = (state.mappings || []).find(x => String(x?.id || "") === String(mappingId));
+        const count = parseInt(m?.sora_drafts_count ?? 0, 10) || 0;
+        if (count <= 1) {
+          toast("草稿数量不大于1，无需清除", "info");
+          return;
+        }
+        const el = document.querySelector(`[data-role="draftsCount"][data-mid="${mappingId}"]`);
+        const origText = el?.textContent || "";
+        try {
+          if (el) el.textContent = "...";
+          const hl = getMappingHeadless(mappingId);
+          const r = await postJson(`/api/admin/task-type-windows/${mappingId}/clear-drafts?headless=${hl}`, { method: "POST" });
+          toast(`已清除 ${(r?.deleted||[]).length} 个草稿`, "success");
+          if (m) m.sora_drafts_count = 0;
+          updateMappingRowUI(mappingId, { sora_drafts_count: 0 });
+        } catch (e) {
+          toast(`清除草稿失败: ${e.message}`, "warning");
+          if (el) el.textContent = origText;
         }
       }
 

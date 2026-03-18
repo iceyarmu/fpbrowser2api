@@ -2223,6 +2223,11 @@ async def clear_mapping_drafts(mapping_id: int, headless: bool = False, token: s
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"清除草稿失败：{e}")
 
+    try:
+        await db.update_task_type_window(mapping_id=mapping_id, sora_drafts_count=0)
+    except Exception:
+        pass
+
     return {
         "success": True,
         "mapping_id": mapping_id,

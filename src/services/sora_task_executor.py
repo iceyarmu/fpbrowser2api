@@ -3188,6 +3188,7 @@ class SoraSession:
         deadline = time.time() + drafts_wait_seconds
         draft_item: Optional[Dict[str, Any]] = None
         last_items_sample: list[str] = []
+        last_drafts_count: int = 0
         attempt = 0
         while time.time() < deadline and draft_item is None:
             attempt += 1
@@ -3204,6 +3205,7 @@ class SoraSession:
                     items = drafts.get("items", []) if isinstance(drafts, dict) else []
                     if not isinstance(items, list):
                         items = []
+                    last_drafts_count = len(items)
                 except Exception as e:
                     items = []
                     try:
@@ -3345,6 +3347,7 @@ class SoraSession:
             "watermark_free_url": watermark_free_url,
             "draft": draft_item,
             "thumb_url": thumb_url,
+            "drafts_count": last_drafts_count,
         }
 
 
@@ -3803,5 +3806,6 @@ async def sora_gen_video(
         "share_url": publish_result.get("share_url"),
         "watermark_free_url": publish_result.get("watermark_free_url"),
         "thumb_url": publish_result.get("thumb_url"),
+        "drafts_count": publish_result.get("drafts_count", 0),
     }
 

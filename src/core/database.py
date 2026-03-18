@@ -340,6 +340,7 @@ class Database:
                     sora_access_expires TEXT,
                     sora_plan_title TEXT,
                     sora_subscription_end TEXT,
+                    sora_drafts_count INTEGER DEFAULT 0,
                     -- 额度重置时间点（来自 nf/check：now + access_resets_in_seconds）
                     cooldown_until TIMESTAMP,
                     -- 连续错误熔断冷却时间（与 cooldown_until 区分）
@@ -755,6 +756,7 @@ class Database:
                     ("error_cooldown_until", "TIMESTAMP"),
                     ("headless", "BOOLEAN DEFAULT 0"),
                     ("pure_mode", "BOOLEAN DEFAULT 0"),
+                    ("sora_drafts_count", "INTEGER DEFAULT 1"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_type_windows", col_name):
@@ -3244,6 +3246,7 @@ class Database:
         sora_access_expires: Optional[str] = None,
         sora_plan_title: Optional[str] = None,
         sora_subscription_end: Optional[str] = None,
+        sora_drafts_count: Optional[int] = None,
         cooldown_until: Optional[str] = None,  # ISO string or None
         error_cooldown_until: Optional[str] = None,  # ISO string or None
         total_errors: Optional[int] = None,
@@ -3290,6 +3293,8 @@ class Database:
             _set("sora_plan_title", (sora_plan_title or "").strip() or None)
         if sora_subscription_end is not None:
             _set("sora_subscription_end", (sora_subscription_end or "").strip() or None)
+        if sora_drafts_count is not None:
+            _set("sora_drafts_count", int(sora_drafts_count))
         if cooldown_until is not None:
             _set("cooldown_until", cooldown_until if cooldown_until else None)
         if error_cooldown_until is not None:

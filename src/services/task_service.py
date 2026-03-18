@@ -520,6 +520,14 @@ class TaskService:
                     pass
 
                 await _refresh_sora_balance_best_effort()
+                try:
+                    if isinstance(result, dict) and result.get("drafts_count") is not None:
+                        await self.db.update_task_type_window(
+                            mapping_id=picked.mapping_id,
+                            sora_drafts_count=int(result.get("drafts_count") or 0),
+                        )
+                except Exception:
+                    pass
                 # 清空一下result中的nf_check，避免敏感信息泄露
                 if isinstance(result, dict):
                     result["nf_check"] = None
