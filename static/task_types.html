@@ -273,7 +273,8 @@
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
-                      <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">空间 <span class="text-muted" id="spaceSortHint">↕</span></th>
+                      <th class="sort-head" id="thSpaceName" title="点击按空间名称排序">空间名称 <span class="text-muted" id="spaceNameSortHint">↕</span></th>
+                      <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>测IP</th>
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
@@ -2115,6 +2116,15 @@
           });
           return items;
         }
+        if (key === "space_name") {
+          items.sort((a, b) => {
+            const av = String(a?.space_name || "").toLowerCase();
+            const bv = String(b?.space_name || "").toLowerCase();
+            if (av !== bv) return av.localeCompare(bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         if (key === "subscription_end") {
           items.sort((a, b) => {
             const av = parseTimeMs(a?.sora_subscription_end);
@@ -2164,6 +2174,7 @@
         mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
         mk(document.getElementById("winStatusSortHint"), ui.mappingSortKey === "window_status");
         mk(document.getElementById("proxySortHint"), ui.mappingSortKey === "proxy");
+        mk(document.getElementById("spaceNameSortHint"), ui.mappingSortKey === "space_name");
         mk(document.getElementById("spaceSortHint"), ui.mappingSortKey === "subscription_end");
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
         mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
@@ -2351,10 +2362,11 @@
               </div>
               <div class="text-muted">重置:<span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
-            <td style="width: 220px; min-width: 220px;">
-              <div class="mono truncate-1" title="${escapeHtml(String(m.space_name || "-") + " · " + String(m.space_id || "-"))}">${escapeHtml(m.space_name || "-")}
-                <span>[<span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span>]</span>
-              </div>
+            <td>
+              <div class="mono truncate-1" title="${escapeHtml(String(m.space_name || "-") + " · " + String(m.space_id || "-"))}">${escapeHtml(m.space_name || "-")}</div>
+            </td>
+            <td>
+              <div class="mono truncate-1"><span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span></div>
               <div class="small2 text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
                 <span><span class="fw-semibold mono quota-click" title="点击按会员过期时间排序" data-role="subscriptionEnd" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_subscription_end))}</span></span>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="刷新会员信息" data-act="refreshSubscription" data-mid="${m.id}">⟳</button>
@@ -4333,6 +4345,7 @@
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
       document.getElementById("thWinStatus")?.addEventListener("click", () => toggleSort("window_status", "desc"));
       document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));
+      document.getElementById("thSpaceName")?.addEventListener("click", () => toggleSort("space_name", "asc"));
       document.getElementById("thSpace")?.addEventListener("click", () => toggleSort("subscription_end", "asc"));
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));
       document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));
