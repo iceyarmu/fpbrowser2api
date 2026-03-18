@@ -2725,7 +2725,7 @@
       async function clearDrafts(mappingId) {
         const m = (state.mappings || []).find(x => String(x?.id || "") === String(mappingId));
         const count = parseInt(m?.sora_drafts_count ?? 0, 10) || 0;
-        if (count <= 1) {
+        if (count <= 0) {
           toast("草稿数量不大于1，无需清除", "info");
           return;
         }
