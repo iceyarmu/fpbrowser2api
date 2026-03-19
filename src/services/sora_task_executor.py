@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -568,6 +568,12 @@ def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent
     u = str(url or "").strip()
     if not u:
         raise ValueError("url 不能为空")
+    # 对 URL 中的非 ASCII 字符（如中文文件名）进行百分号编码，避免 ascii codec 报错
+    parts = urlsplit(u)
+    u = urlunsplit(parts._replace(
+        path=quote(parts.path, safe="/:@!$&'()*+,;=-._~"),
+        query=quote(parts.query, safe="/:@!$&'()*+,;=-._~?"),
+    ))
     headers = {"Accept": "*/*"}
     if user_agent:
         headers["User-Agent"] = str(user_agent)
