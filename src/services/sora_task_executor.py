@@ -3247,6 +3247,10 @@ class SoraSession:
         generation_id = str(draft_item.get("id") or "").strip()
         if not generation_id:
             raise RuntimeError("草稿箱记录缺少 generation_id（draft_item.id）")
+
+        err_kind = str(draft_item.get("kind") or "").strip()
+        reason_str = str(draft_item.get("reason_str") or "").strip()
+        markdown_reason_str = str(draft_item.get("markdown_reason_str") or "").strip()
             
         max_publish_attempts = 5
         post_resp: Dict[str, Any] = {}
@@ -3292,7 +3296,7 @@ class SoraSession:
                             append_log(log_file, f"[sora][publish] cleanup DELETE draft {generation_id} failed: {del_e}")
                         except Exception:
                             pass
-                    raise NonPenalizedTaskError(f"发布草稿失败: {err_msg}", status_code=429)
+                    raise NonPenalizedTaskError(f"发布草稿失败: {err_kind}-{reason_str}-{markdown_reason_str}-{err_msg}", status_code=400)
                 await self._bring_sora_drafts_to_front()
         
         post_id = ""
