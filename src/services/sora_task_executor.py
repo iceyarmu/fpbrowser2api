@@ -470,19 +470,29 @@ def _prepare_first_frame_image_for_upload(
     # 给上传留少量缓冲，避免边界抖动。
     limit_bytes = min(int(max_bytes), int(target_bytes) if int(target_bytes) > 0 else int(max_bytes))
 
+    _NATIVE_FORMATS = {"JPEG", "JPG", "PNG"}
+    _CONVERTIBLE_FORMATS = {"WEBP", "BMP", "TIFF", "GIF"}
+    _ALL_SUPPORTED = _NATIVE_FORMATS | _CONVERTIBLE_FORMATS
+
     try:
         with Image.open(io.BytesIO(image_bytes)) as src:
             src.load()
             source_format = str(src.format or "").upper()
-            if source_format not in ("JPEG", "JPG", "PNG"):
-                raise NonPenalizedTaskError("不支持的首帧图片格式：仅支持 jpeg/jpg/png")
+            if source_format not in _ALL_SUPPORTED:
+                raise NonPenalizedTaskError(
+                    f"不支持的首帧图片格式：检测到 {source_format!r}，"
+                    f"仅支持 {'/'.join(sorted(_ALL_SUPPORTED))}（注意：格式由文件内容决定，而非 URL 扩展名）"
+                )
             base_img = ImageOps.exif_transpose(src)
     except NonPenalizedTaskError:
         raise
     except Exception as e:
         raise NonPenalizedTaskError(f"首帧图片解析失败（请检查图片地址/图片内容）：err={e}") from e
 
-    preferred_format = "JPEG" if source_format in ("JPEG", "JPG") else "PNG"
+    if source_format in ("PNG",):
+        preferred_format = "PNG"
+    else:
+        preferred_format = "JPEG"
 
     def _save_bytes(img: Any, fmt: str, *, quality: Optional[int] = None) -> bytes:
         buf = io.BytesIO()
