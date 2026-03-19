@@ -3305,11 +3305,24 @@ class SoraSession:
         except Exception:
             post_id = ""
         if not post_id:
+            try:
+                del_url = _sora_backend_url_from_target(target_url, f"/backend/project_y/profile/drafts/{generation_id}")
+                del_headers = {"Authorization": f"Bearer {self.bearer_token}", "OAI-Language": "en-US"}
+                del_tx = await page_fetch_json(self.pw_ctx.page, url=del_url, method="DELETE", headers=del_headers, json_data=None, log_file=log_file)
+                del_status = int(del_tx.get("status") or 0) if del_tx.get("status") is not None else 0
+                append_log(log_file, f"[sora][publish] cleanup DELETE draft {generation_id} status={del_status}")
+            except Exception as del_e:
+                try:
+                    append_log(log_file, f"[sora][publish] cleanup DELETE draft {generation_id} failed: {del_e}")
+                except Exception:
+                    pass
             _resp_str = safe_trim(json.dumps(post_resp, ensure_ascii=False), 600)
             _resp_lower = _resp_str.lower()
             if "cameo_not_found" in _resp_lower or "does not have a cameo" in _resp_lower:
                 raise NonPenalizedTaskError(f"发布草稿失败（cameo_not_found）：{_resp_str}", status_code=400)
-            raise RuntimeError(f"发布草稿失败：未返回 post_id resp={_resp_str}")
+            if "sora_content_violation" in err_kind:
+                raise NonPenalizedTaskError(f"发布草稿失败，生成视频包含违规内容: {err_kind}-{reason_str}-{markdown_reason_str}", status_code=400)
+            raise RuntimeError(f"发布草稿失败：未返回 post_id resp={_resp_str}-{err_kind}-{reason_str}-{markdown_reason_str}")
 
         # 优先回传可下载的视频直链（downloadable_url）；取不到再回退到帖子链接
         downloadable_url = ""
