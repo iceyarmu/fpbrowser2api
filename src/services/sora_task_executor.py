@@ -3343,6 +3343,10 @@ class SoraSession:
                 raise NonPenalizedTaskError(f"发布草稿失败（cameo_not_found）：{_resp_str}", status_code=400)
             if "sora_content_violation" in err_kind:
                 raise NonPenalizedTaskError(f"发布草稿失败，生成视频包含违规内容: {err_kind}-{reason_str}-{markdown_reason_str}", status_code=400)
+            if "may violate our feed policies" in _resp_lower:
+                raise NonPenalizedTaskError(f"发布草稿失败，内容包含违规内容（feed_policies_violation）：{_resp_str}", status_code=400)
+            if "authentication service is temporarily unavailable" in _resp_lower:
+                raise NonPenalizedTaskError(f"发布草稿失败（auth_service_unavailable）：{_resp_str}", status_code=400)
             raise RuntimeError(f"发布草稿失败：未返回 post_id resp={_resp_str}-{err_kind}-{reason_str}-{markdown_reason_str}")
 
         # 优先回传可下载的视频直链（downloadable_url）；取不到再回退到帖子链接
