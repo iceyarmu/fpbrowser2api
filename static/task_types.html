@@ -277,7 +277,7 @@
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
-                      <th>草稿数</th>
+                      <th class="sort-head" id="thDrafts" title="点击按草稿数排序">草稿数 <span class="text-muted" id="draftsSortHint">↕</span></th>
                       <th class="sort-head" id="thSpaceName" title="点击按空间名称排序">空间名称 <span class="text-muted" id="spaceNameSortHint">↕</span></th>
                       <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
@@ -285,10 +285,10 @@
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
                       <th>邀请码</th>
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
-                      <th>占用</th>
+                      <th class="sort-head" id="thInflight" title="点击按占用排序">占用 <span class="text-muted" id="inflightSortHint">↕</span></th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th class="sort-head" id="thHeadless" title="点击按无头排序">无头 <span class="text-muted" id="headlessSortHint">↕</span></th>
-                      <th>纯净</th>
+                      <th class="sort-head" id="thPureMode" title="点击按纯净模式排序">纯净 <span class="text-muted" id="pureModeSortHint">↕</span></th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -2163,6 +2163,37 @@
           });
           return items;
         }
+        if (key === "sora_drafts_count") {
+          items.sort((a, b) => {
+            const av = parseInt(a?.sora_drafts_count, 10);
+            const bv = parseInt(b?.sora_drafts_count, 10);
+            const a1 = Number.isNaN(av) ? 0 : av;
+            const b1 = Number.isNaN(bv) ? 0 : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        if (key === "inflight_slots") {
+          items.sort((a, b) => {
+            const av = parseInt(a?.inflight_slots, 10);
+            const bv = parseInt(b?.inflight_slots, 10);
+            const a1 = Number.isNaN(av) ? 0 : av;
+            const b1 = Number.isNaN(bv) ? 0 : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        if (key === "pure_mode") {
+          items.sort((a, b) => {
+            const av = a?.pure_mode ? 1 : 0;
+            const bv = b?.pure_mode ? 1 : 0;
+            if (av !== bv) return (av - bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         // 默认 id 倒序（保持稳定）
         items.sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
         return items;
@@ -2189,6 +2220,9 @@
         mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
         mk(document.getElementById("headlessSortHint"), ui.mappingSortKey === "headless");
+        mk(document.getElementById("draftsSortHint"), ui.mappingSortKey === "sora_drafts_count");
+        mk(document.getElementById("inflightSortHint"), ui.mappingSortKey === "inflight_slots");
+        mk(document.getElementById("pureModeSortHint"), ui.mappingSortKey === "pure_mode");
       }
 
       function updateMappingsHeaderSummaryUI(itemsOverride = null) {
@@ -4428,6 +4462,9 @@
       document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));
       document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));
       document.getElementById("thHeadless")?.addEventListener("click", () => toggleSort("headless", "desc"));
+      document.getElementById("thDrafts")?.addEventListener("click", () => toggleSort("sora_drafts_count", "desc"));
+      document.getElementById("thInflight")?.addEventListener("click", () => toggleSort("inflight_slots", "desc"));
+      document.getElementById("thPureMode")?.addEventListener("click", () => toggleSort("pure_mode", "desc"));
 
       // 任务类型配置：收起/展开按钮文案 + 记忆
       document.getElementById("typeConfigCollapse")?.addEventListener("shown.bs.collapse", () => {
