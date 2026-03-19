@@ -33,6 +33,7 @@ task_service: TaskService | None = None
 # ---- High-concurrency controls (public endpoints) ----
 # 创建任务接口并发闸门，避免峰值时打爆 DB/线程资源。
 _CREATE_TASK_MAX_INFLIGHT = DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
+_SERVER_COUNT = DEFAULT_SERVER_COUNT
 _CREATE_TASK_ACQUIRE_TIMEOUT_SEC = max(0.1, float(os.getenv("PUBLIC_CREATE_TASK_ACQUIRE_TIMEOUT_SEC", "1.5")))
 _create_task_semaphore: asyncio.Semaphore | None = None
 _create_task_gate_lock = asyncio.Lock()
@@ -88,11 +89,12 @@ async def _ensure_create_task_gate_by_db_config() -> tuple[asyncio.Semaphore, bo
         raise RuntimeError("task_service not initialized")
     stop_accepting, inflight, server_count = await _get_public_runtime_limits_cached()
     async with _create_task_gate_lock:
-        global _CREATE_TASK_MAX_INFLIGHT, _create_task_semaphore
-        if _create_task_semaphore is None or inflight != _CREATE_TASK_MAX_INFLIGHT:
+        global _CREATE_TASK_MAX_INFLIGHT, _SERVER_COUNT, _create_task_semaphore
+        if _create_task_semaphore is None or inflight != _CREATE_TASK_MAX_INFLIGHT or server_count != _SERVER_COUNT:
             _CREATE_TASK_MAX_INFLIGHT = inflight
+            _SERVER_COUNT = server_count
             _create_task_semaphore = asyncio.Semaphore(_CREATE_TASK_MAX_INFLIGHT)
-            task_service.set_browser_pool_limit(calc_public_browser_pool_limit(_CREATE_TASK_MAX_INFLIGHT, server_count))
+            task_service.set_browser_pool_limit(calc_public_browser_pool_limit(_CREATE_TASK_MAX_INFLIGHT, _SERVER_COUNT))
     if _create_task_semaphore is None:
         raise RuntimeError("create task gate not initialized")
     return _create_task_semaphore, stop_accepting
