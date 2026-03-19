@@ -1365,6 +1365,11 @@ async def _sora_create_task_pw(
                     f"create 失败（{err_kind}）：{safe_trim(str(err_msg or body_text), 400)}",
                     status_code=status_i,
                 )
+            if "too many users mentioned" in bt_lower or "too many users mentioned" in msg_lower:
+                raise NonPenalizedTaskError(
+                    f"create 失败，内容违规（too_many_users_mentioned）：{safe_trim(str(err_msg or body_text), 400)}",
+                    status_code=status_i,
+                )
 
         # token 过期：交给上层做“重新获取 access_token 并重试”的流程；
         # 且该类错误不应计入窗口连续错误。
