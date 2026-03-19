@@ -96,14 +96,14 @@
             <table class="table table-sm align-middle" style="min-width: 1240px;">
               <thead>
                 <tr class="small2">
-                  <th style="min-width: 80px;">task_id</th>
-                  <th style="min-width: 120px;">任务类型</th>
-                  <th style="min-width: 100px;">状态</th>
-                  <th style="min-width: 100px;">进度</th>
                   <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 150px;">IP</th>
-                  <th style="min-width: 200px;">错误信息</th>
+                  <th style="min-width: 120px;">任务类型</th>
+                  <th style="min-width: 80px;">task_id</th>
+                  <th style="min-width: 100px;">状态</th>
+                  <th style="min-width: 100px;">进度</th>
                   <th style="min-width: 60px;">违规</th>
+                  <th style="min-width: 200px;">错误信息</th>
                   <th style="min-width: 80px;">prompt</th>
                   <th style="min-width: 80px;">result</th>
                   <th style="min-width: 145px;">创建时间</th>
@@ -674,7 +674,7 @@
         document.getElementById("btnNextBottom").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="11" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="12" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
@@ -697,23 +697,6 @@
             : `<span class="text-muted">-</span>`;
           return `
             <tr class="small2">
-              <td class="mono" style="max-width: 120px;">${escapeHtml(x.task_id || "")}</td>
-              <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
-              <td>${badgeForStatus(x.status)}</td>
-              <td>
-                ${
-                  progress === null
-                    ? `<span class="text-muted">-</span>`
-                    : `
-                      <div class="d-flex align-items-center gap-1" style="min-width: 90px;">
-                        <div class="progress flex-grow-1" style="height: 8px; min-width: 50px;">
-                          <div class="progress-bar" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
-                        </div>
-                        <span class="mono text-muted" style="min-width: 44px; text-align: right;">${progress}%</span>
-                      </div>
-                    `
-                }
-              </td>
               <td class="mono">
                 <div class="d-flex align-items-center gap-2">
                   <div
@@ -729,8 +712,25 @@
                 </div>
               </td>
               <td class="mono truncate-1" title="${escapeHtml(windowIp)}">${escapeHtml(windowIp)}</td>
-              <td class="mono truncate-1 truncate-err" title="${escapeHtml(err)}">${errCell}</td>
+              <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
+              <td class="mono" style="max-width: 120px;">${escapeHtml(x.task_id || "")}</td>
+              <td>${badgeForStatus(x.status)}</td>
+              <td>
+                ${
+                  progress === null
+                    ? `<span class="text-muted">-</span>`
+                    : `
+                      <div class="d-flex align-items-center gap-1" style="min-width: 90px;">
+                        <div class="progress flex-grow-1" style="height: 8px; min-width: 50px;">
+                          <div class="progress-bar" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <span class="mono text-muted" style="min-width: 44px; text-align: right;">${progress}%</span>
+                      </div>
+                    `
+                }
+              </td>
               <td class="text-center">${Number(x.content_violation) === 1 ? '<span class="badge bg-danger">违规</span>' : '<span class="text-muted">-</span>'}</td>
+              <td class="mono truncate-1 truncate-err" title="${escapeHtml(err)}">${errCell}</td>
               <td class="mono">
                 <button class="btn btn-outline-secondary btn-sm btn-compact" data-action="view-prompt" data-task-id="${escapeHtml(x.task_id || "")}">查看</button>
               </td>
