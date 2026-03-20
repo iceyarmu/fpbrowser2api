@@ -2705,7 +2705,6 @@ class SoraSession:
 
             urls = [
                 _sora_backend_url_from_target(target_url, "/backend/characters/finalize"),
-                _sora_backend_url_from_target(target_url, "/characters/finalize"),
             ]
             last_err: Optional[str] = None
             for url in urls:
@@ -3610,8 +3609,11 @@ async def sora_gen_video(
                 out = out.strip(".")
                 return out or "character"
 
-            base_username = "mrr_" + _sanitize_username(username_hint)
-            username = f"{base_username}{random.randint(1000, 99999)}"
+            sanitized = _sanitize_username(username_hint)
+            if len(sanitized) >= 7:
+                username = "mrr_" + sanitized[4:-3] + f"{random.randint(0, 999):03d}"
+            else:
+                username = "mrr_" + sanitized + f"{random.randint(0, 999):03d}"
 
             await progress_cb(75, {"stage": "character_username_checked", "cameo_id": cameo_id, "username_hint": username})
 
@@ -3634,7 +3636,7 @@ async def sora_gen_video(
                 except Exception as e:
                     await sess._bring_sora_drafts_to_front()
                     if _finalize_attempt == 2:
-                        raise
+                        raise NonPenalizedTaskError(f"角色 finalize 失败：{e}", status_code=400)
 
             await progress_cb(90, {"stage": "character_set_public"})
             update_payload: Dict[str, Any] = {"visibility": "public"}
@@ -3765,7 +3767,10 @@ async def sora_gen_video(
             safe_base = "".join([ch for ch in base_username.lower() if (ch.isalnum() or ch == "_")])
             if not safe_base:
                 safe_base = "character"
-            username = f"mrr_{safe_base}{random.randint(1000, 99999)}"
+            if len(safe_base) >= 7:
+                username = "mrr_" + safe_base[4:-3] + f"{random.randint(0, 999):03d}"
+            else:
+                username = f"mrr_{safe_base}{random.randint(0, 999):03d}"
             await progress_cb(70, {"stage": "character_identified", "cameo_id": cameo_id, "display_name": display_name, "username": username})
 
             profile_asset_url = str(cameo_status.get("profile_asset_url") or "").strip() or None
@@ -3798,7 +3803,7 @@ async def sora_gen_video(
                 except Exception as e:
                     await sess._bring_sora_drafts_to_front()
                     if _finalize_attempt == 2:
-                        raise
+                        raise NonPenalizedTaskError(f"角色 finalize 失败：{e}", status_code=400)
 
             await progress_cb(90, {"stage": "character_set_public"})
             await sess.api_character_set_public(target_url=target_url, cameo_id=cameo_id)
