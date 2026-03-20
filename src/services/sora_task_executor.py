@@ -3561,6 +3561,7 @@ async def sora_gen_video(
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
+                    await sess._bring_sora_drafts_to_front();
                     if consecutive_errors >= 3:
                         raise RuntimeError(f"轮询 cameo owned 状态失败次数过多：{e}")
                     continue
@@ -3731,6 +3732,7 @@ async def sora_gen_video(
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
+                    await sess._bring_sora_drafts_to_front()
                     if consecutive_errors >= 3:
                         raise RuntimeError(f"轮询 cameo 状态失败次数过多：{e}")
                     continue
