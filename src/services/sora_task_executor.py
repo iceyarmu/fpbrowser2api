@@ -976,7 +976,6 @@ async def _sora_api_upload_image_bytes_pw(
     """上传首帧图片获取 media_id。"""
     candidates = [
         _sora_backend_url_from_target(target_url, "/backend/uploads"),
-        _sora_backend_url_from_target(target_url, "/uploads"),
     ]
     try:
         b64 = base64.b64encode(image_bytes or b"").decode("ascii")
@@ -1044,7 +1043,6 @@ async def _sora_api_upload_character_video_pw(
     # sora2api 配置 base_url 默认为 /backend，因此这里优先尝试 /backend/characters/upload
     candidates = [
         _sora_backend_url_from_target(target_url, "/backend/characters/upload"),
-        _sora_backend_url_from_target(target_url, "/characters/upload"),
     ]
 
     last_err: Optional[str] = None
@@ -1089,7 +1087,6 @@ async def _sora_api_upload_character_image_pw(
     """POST /project_y/file/upload：上传头像，返回 asset_pointer。"""
     candidates = [
         _sora_backend_url_from_target(target_url, "/backend/project_y/file/upload"),
-        _sora_backend_url_from_target(target_url, "/project_y/file/upload"),
     ]
 
     last_err: Optional[str] = None
@@ -2488,7 +2485,6 @@ class SoraSession:
             payload = {"generation_id": str(generation_id), "character_id": None, "timestamps": [0, 4]}
             urls = [
                 _sora_backend_url_from_target(target_url, "/backend/characters/from-generation"),
-                _sora_backend_url_from_target(target_url, "/characters/from-generation"),
             ]
             last_err: Optional[str] = None
             for url in urls:
@@ -2529,7 +2525,6 @@ class SoraSession:
 
             urls = [
                 _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/in_progress/{str(cameo_id)}"),
-                _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}"),
             ]
             last_err: Optional[str] = None
             for url in urls:
@@ -2562,7 +2557,6 @@ class SoraSession:
             payload = {"username": str(username)}
             urls = [
                 _sora_backend_url_from_target(target_url, "/backend/project_y/profile/username/check"),
-                _sora_backend_url_from_target(target_url, "/project_y/profile/username/check"),
             ]
             last_err: Optional[str] = None
             for url in urls:
@@ -2594,7 +2588,6 @@ class SoraSession:
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US", "Content-Type": "application/json"}
             urls = [
                 _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
-                _sora_backend_url_from_target(target_url, f"/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
             ]
             last_err: Optional[str] = None
             for url in urls:
@@ -2635,7 +2628,6 @@ class SoraSession:
             # 优先 /backend 前缀（与 sora2api base_url 一致），失败再降级
             urls = [
                 _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/in_progress/{str(cameo_id)}"),
-                _sora_backend_url_from_target(target_url, f"/project_y/cameos/in_progress/{str(cameo_id)}"),
             ]
             last_err: Optional[str] = None
             for url in urls:
@@ -2746,7 +2738,6 @@ class SoraSession:
 
             urls = [
                 _sora_backend_url_from_target(target_url, f"/backend/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
-                _sora_backend_url_from_target(target_url, f"/project_y/cameos/by_id/{str(cameo_id)}/update_v2"),
             ]
             last_err: Optional[str] = None
             for url in urls:
