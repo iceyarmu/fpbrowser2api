@@ -366,10 +366,10 @@
                 <thead>
                   <tr class="small2">
                     <th><input type="checkbox" id="chkAll" /></th>
-                    <th>窗口</th>
-                    <th>窗口状态</th>
-                    <th>网址</th>
-                    <th>账号 / 代理</th>
+                    <th style="cursor:pointer;user-select:none" id="wpThWinName">窗口 <span id="wpWinNameSortHint" class="text-primary">↑</span></th>
+                    <th style="cursor:pointer;user-select:none" id="wpThWinStatus">窗口状态 <span id="wpWinStatusSortHint" class="text-muted">↕</span></th>
+                    <th style="cursor:pointer;user-select:none" id="wpThUrl">网址 <span id="wpUrlSortHint" class="text-muted">↕</span></th>
+                    <th style="cursor:pointer;user-select:none" id="wpThAccount">账号 / 代理 <span id="wpAccountSortHint" class="text-muted">↕</span></th>
                   </tr>
                 </thead>
                 <tbody id="winBody"></tbody>
@@ -743,6 +743,8 @@
           pageSize: 50,
           total: 0,
           totalPages: 1,
+          sortKey: "window_sort_num",
+          sortDir: "asc",
         },
         windowTaskList: {
           windowPk: 0,
@@ -3685,16 +3687,102 @@
         winModal.show();
       }
 
+      function toggleWinPickerSort(key, defaultDir = "asc") {
+        if (ui.winPicker.sortKey !== key) {
+          ui.winPicker.sortKey = key;
+          ui.winPicker.sortDir = defaultDir;
+        } else {
+          ui.winPicker.sortDir = ui.winPicker.sortDir === "desc" ? "asc" : "desc";
+        }
+        ui.winPicker.page = 1;
+        renderWinList();
+      }
+
+      function updateWinPickerSortHints() {
+        const mk = (hintEl, active) => {
+          if (!hintEl) return;
+          if (!active) {
+            hintEl.textContent = "↕";
+            hintEl.className = "text-muted";
+            return;
+          }
+          hintEl.textContent = ui.winPicker.sortDir === "asc" ? "↑" : "↓";
+          hintEl.className = "text-primary";
+        };
+        mk(document.getElementById("wpWinNameSortHint"), ui.winPicker.sortKey === "window_sort_num");
+        mk(document.getElementById("wpWinStatusSortHint"), ui.winPicker.sortKey === "window_status");
+        mk(document.getElementById("wpUrlSortHint"), ui.winPicker.sortKey === "platform_url");
+        mk(document.getElementById("wpAccountSortHint"), ui.winPicker.sortKey === "platform_account");
+      }
+
+      function sortWinPickerItems(items) {
+        const key = ui.winPicker.sortKey || "window_sort_num";
+        const dir = (ui.winPicker.sortDir || "asc").toLowerCase() === "asc" ? "asc" : "desc";
+        const sign = dir === "asc" ? 1 : -1;
+        const sorted = items.slice();
+
+        if (key === "window_sort_num") {
+          sorted.sort((a, b) => {
+            const getNum = (w) => {
+              const v = w?.window_sort_num ?? w?.window_pk;
+              let n = parseInt(String(v ?? ""), 10);
+              if (Number.isNaN(n)) {
+                const mm = String(w?.window_name || "").match(/#\s*(\d+)/);
+                if (mm) n = parseInt(mm[1], 10);
+              }
+              return Number.isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
+            };
+            const an = getNum(a);
+            const bn = getNum(b);
+            if (an !== bn) return (an - bn) * sign;
+            return (a?.window_pk || 0) - (b?.window_pk || 0);
+          });
+          return sorted;
+        }
+        if (key === "window_status") {
+          sorted.sort((a, b) => {
+            const av = Number(a?.window_status || 0);
+            const bv = Number(b?.window_status || 0);
+            if (av !== bv) return (av - bv) * sign;
+            return (a?.window_pk || 0) - (b?.window_pk || 0);
+          });
+          return sorted;
+        }
+        if (key === "platform_url") {
+          sorted.sort((a, b) => {
+            const av = String(a?.platform_url || "").toLowerCase();
+            const bv = String(b?.platform_url || "").toLowerCase();
+            const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+            if (cmp !== 0) return cmp * sign;
+            return (a?.window_pk || 0) - (b?.window_pk || 0);
+          });
+          return sorted;
+        }
+        if (key === "platform_account") {
+          sorted.sort((a, b) => {
+            const av = String(a?.platform_account || "").toLowerCase();
+            const bv = String(b?.platform_account || "").toLowerCase();
+            const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+            if (cmp !== 0) return cmp * sign;
+            return (a?.window_pk || 0) - (b?.window_pk || 0);
+          });
+          return sorted;
+        }
+        return sorted;
+      }
+
       function renderWinList() {
         const body = document.getElementById("winBody");
         const q = (document.getElementById("winFilter")?.value || "").trim().toLowerCase();
-        const filtered = !q ? state.windows : state.windows.filter(w => {
+        const filteredRaw = !q ? state.windows : state.windows.filter(w => {
           const hay = [
             w.project_name, w.browser_name, w.space_id, w.space_name, w.window_name,
             w.platform_account, w.platform_url, w.proxy_addr,
           ].filter(Boolean).join(" ").toLowerCase();
           return hay.includes(q);
         });
+        const filtered = sortWinPickerItems(filteredRaw);
+        updateWinPickerSortHints();
         const pageSize = normalizePageSize(ui.winPicker.pageSize);
         const totalItems = filtered.length;
         const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
@@ -4026,6 +4114,10 @@
         ui.winPicker.page = 1;
         renderWinList();
       });
+      document.getElementById("wpThWinName")?.addEventListener("click", () => toggleWinPickerSort("window_sort_num", "asc"));
+      document.getElementById("wpThWinStatus")?.addEventListener("click", () => toggleWinPickerSort("window_status", "desc"));
+      document.getElementById("wpThUrl")?.addEventListener("click", () => toggleWinPickerSort("platform_url", "asc"));
+      document.getElementById("wpThAccount")?.addEventListener("click", () => toggleWinPickerSort("platform_account", "asc"));
       document.getElementById("chkAll").addEventListener("change", (e) => {
         const checked = e.target.checked;
         document.querySelectorAll("#winBody .chkWin").forEach(chk => {
