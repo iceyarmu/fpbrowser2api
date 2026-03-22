@@ -188,9 +188,10 @@ class FPBrowserClient:
         if headless:
             
             args = args or []
-            args.append("--disable-gpu")
+            ##args.append("--headless=old") 容易触发机器人
+            ##args.append("--disable-gpu") 容易触发机器人
             args.append("--disable-software-rasterizer")
-            args.append("--headless=old")
+            
 
             args.append("--disable-animations")
             args.append("--disable-threaded-animation")
