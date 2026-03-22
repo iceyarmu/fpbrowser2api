@@ -779,6 +779,7 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
+                  <th>#</th>
                   <th>${renderWindowIdHeader(spacePk)}</th>
                   <th>窗口名称</th>
                   <th>操作</th>
@@ -790,8 +791,9 @@
                 </tr>
               </thead>
               <tbody data-role="windowsTbody" data-space-pk="${escapeHtml(String(spacePk ?? ""))}">
-                ${windows.map(w => `
+                ${windows.map((w, _i) => `
                   <tr class="small2">
+                    <td class="mono text-muted">${_i + 1}</td>
                     ${renderWindowIdCell(w, spacePk)}
                     <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
                     <td class="small2">
@@ -1500,6 +1502,7 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
+                  <th>#</th>
                   <th>${renderWindowIdHeader(spacePk)}</th>
                   <th>窗口名称</th>
                   <th>备注</th>
@@ -1519,9 +1522,10 @@
         return document.querySelector(`[data-role="windowsTbody"][data-space-pk="${spacePk}"]`);
       }
 
-      function rowHtmlForWindow(w, spacePk) {
+      function rowHtmlForWindow(w, spacePk, rowNum) {
         return `
           <tr class="small2">
+            <td class="mono text-muted">${rowNum != null ? rowNum : ""}</td>
             ${renderWindowIdCell(w, spacePk)}
             <td class="fw-semibold">${escapeHtml(w.window_name)}</td>
             <td class="small2 text-muted">${escapeHtml(String(w.window_remark || "-"))}</td>
@@ -1600,7 +1604,7 @@
           const pump = () => {
             const end = Math.min(total, idx + chunkSize);
             let html = "";
-            for (; idx < end; idx += 1) html += rowHtmlForWindow(windowsToRender[idx], spacePk);
+            for (; idx < end; idx += 1) html += rowHtmlForWindow(windowsToRender[idx], spacePk, idx + 1);
             if (html) tb.insertAdjacentHTML("beforeend", html);
             setSpaceProgress(spacePk, { current: end, total, text: `加载窗口：${end}/${total}` });
             if (end >= total) return resolve();
