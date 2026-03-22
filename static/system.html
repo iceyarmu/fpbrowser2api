@@ -88,6 +88,16 @@
                   <div class="form-text">任务等待打开浏览器的最大排队时间。超时后任务快速失败而非一直阻塞。建议 60~180 秒。</div>
                 </div>
                 <div class="col-12">
+                  <label class="form-label" for="taskQueueMaxSize">任务排队队列上限</label>
+                  <input class="form-control mono" id="taskQueueMaxSize" type="number" min="1" max="100000" step="100" placeholder="默认 1000" />
+                  <div class="form-text">当所有窗口满载时，任务进入排队队列等待。此值限制队列最大长度，超出则拒绝新任务。</div>
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="taskQueueTimeoutSeconds">任务排队超时（秒）</label>
+                  <input class="form-control mono" id="taskQueueTimeoutSeconds" type="number" min="10" max="3600" step="10" placeholder="默认 300" />
+                  <div class="form-text">任务在排队队列中等待的最大时间。超时自动标记失败。建议 120~600 秒。</div>
+                </div>
+                <div class="col-12">
                   <div class="alert alert-info py-2 mb-0">
                     每台服务器并发量（窗口候选池）= <strong id="perServerPoolLimit">—</strong>
                     <span class="text-muted ms-2">（公式：并发上限 ÷ 服务器数量 ÷ 3）</span>
@@ -161,6 +171,8 @@
         document.getElementById("serverCount").value = Number(c.server_count || 1);
         document.getElementById("browserOpenConcurrency").value = Number(c.browser_open_concurrency || 3);
         document.getElementById("browserOpenQueueTimeout").value = Number(c.browser_open_queue_timeout || 120);
+        document.getElementById("taskQueueMaxSize").value = Number(c.task_queue_max_size || 1000);
+        document.getElementById("taskQueueTimeoutSeconds").value = Number(c.task_queue_timeout_seconds || 300);
         document.getElementById("currentApiKey").value = c.api_key || "";
         document.getElementById("adminUsername").value = c.admin_username || "admin";
         recalcPoolLimit();
@@ -196,6 +208,14 @@
           if (browserOpenQueueTimeout < 10 || browserOpenQueueTimeout > 600) {
             throw new Error("浏览器打开排队超时必须在 10~600 秒之间");
           }
+          const taskQueueMaxSize = Number(document.getElementById("taskQueueMaxSize").value || 1000);
+          if (!Number.isInteger(taskQueueMaxSize) || taskQueueMaxSize < 1 || taskQueueMaxSize > 100000) {
+            throw new Error("任务排队队列上限必须是 1~100000 之间的整数");
+          }
+          const taskQueueTimeoutSeconds = Number(document.getElementById("taskQueueTimeoutSeconds").value || 300);
+          if (taskQueueTimeoutSeconds < 10 || taskQueueTimeoutSeconds > 3600) {
+            throw new Error("任务排队超时必须在 10~3600 秒之间");
+          }
           const r = await adminFetch("/api/admin/system-config", {
             method: "POST",
             body: JSON.stringify({
@@ -208,6 +228,8 @@
               server_count: serverCount,
               browser_open_concurrency: browserOpenConcurrency,
               browser_open_queue_timeout: browserOpenQueueTimeout,
+              task_queue_max_size: taskQueueMaxSize,
+              task_queue_timeout_seconds: taskQueueTimeoutSeconds,
             }),
           });
           if (!r) return;

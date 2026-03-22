@@ -186,17 +186,18 @@ class FPBrowserClient:
         except Exception:
             raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
         if headless:
-            """
-            args = args or []
-            args.append("--disable-animations")
-            args.append("--disable-threaded-animation")
-            args.append("--disable-threaded-scrolling")
-            """
+            
             args = args or []
             args.append("--disable-gpu")
             args.append("--disable-software-rasterizer")
             args.append("--headless=old")
-            
+
+            args.append("--disable-animations")
+            args.append("--disable-threaded-animation")
+            args.append("--disable-threaded-scrolling")
+            args.append("--mute-audio")
+            args.append("--disable-extensions")
+            args.append("--blink-settings=imagesEnabled=false")
             pass
 
         return await self._roxy_open_browser(

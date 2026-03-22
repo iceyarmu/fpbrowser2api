@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -40,6 +42,14 @@ class PickedWindow:
     headless: bool = False
 
 
+@dataclass
+class QueuedTask:
+    task_id: str
+    task_type_code: str
+    payload: Dict[str, Any]
+    enqueued_at: float
+
+
 class TaskService:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -50,6 +60,18 @@ class TaskService:
         self._payload_prompt_max_chars: int = 1000
         # 2) 最终落库到 tasks.prompt 的总长度上限（兼容某些历史/自定义 schema 的较短字段）
         self._prompt_max_chars: int = 2000
+
+        # ---- 排队机制：窗口满载时入队等待，窗口释放时自动派发 ----
+        self._pending_queue: deque[QueuedTask] = deque()
+        self._queue_lock = asyncio.Lock()
+        self._dispatch_event = asyncio.Event()
+        self._dispatcher_task: Optional[asyncio.Task] = None
+        self._queue_max_size: int = 1000
+        self._queue_timeout_seconds: float = 300.0
+        self._dispatch_poll_interval: float = 5.0
+        # 从 DB 缓存读取排队配置（避免频繁读库）
+        self._queue_config_cache: tuple[float, int, float] = (0.0, 1000, 300.0)
+        self._queue_config_ttl: float = 30.0
 
     def set_browser_pool_limit(self, limit: int) -> None:
         """Hot-update scheduling candidate pool size."""
@@ -173,7 +195,7 @@ class TaskService:
         if not picked:
             if mapping_id is not None or window_pk is not None:
                 raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型、未删除、已启用")
-            raise RuntimeError("账号池负载已满，请稍后重试")
+            return await self._enqueue_task(task_type_code, payload)
 
         task_id = uuid.uuid4().hex
         try:
@@ -313,6 +335,149 @@ class TaskService:
                 pass
             return None
         return picked
+
+    # ---- 排队与调度 ----
+
+    def _ensure_dispatcher(self) -> None:
+        if self._dispatcher_task is None or self._dispatcher_task.done():
+            self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+
+    async def _refresh_queue_config(self) -> None:
+        now = time.monotonic()
+        expire_at, _, _ = self._queue_config_cache
+        if now < expire_at:
+            return
+        try:
+            syscfg = await self.db.get_system_config()
+            max_size = max(1, int(getattr(syscfg, "task_queue_max_size", 0) or 1000))
+            timeout = max(10.0, float(getattr(syscfg, "task_queue_timeout_seconds", 0) or 300.0))
+        except Exception:
+            max_size, timeout = self._queue_max_size, self._queue_timeout_seconds
+        self._queue_config_cache = (now + self._queue_config_ttl, max_size, timeout)
+        self._queue_max_size = max_size
+        self._queue_timeout_seconds = timeout
+
+    async def _enqueue_task(self, task_type_code: str, payload: Dict[str, Any]) -> str:
+        self._ensure_dispatcher()
+        await self._refresh_queue_config()
+
+        if len(self._pending_queue) >= self._queue_max_size:
+            raise RuntimeError("任务队列已满，请稍后重试")
+
+        task_id = uuid.uuid4().hex
+        prompt_text = self._payload_to_prompt_text(payload)
+        await self.db.create_task(
+            Task(
+                task_id=task_id,
+                task_type_code=task_type_code,
+                generation_id=None,
+                status="queued",
+                progress=0,
+                prompt=prompt_text,
+                image_path=None,
+                window_pk=None,
+                window_ip=None,
+            )
+        )
+        self._task_payloads[task_id] = payload
+
+        async with self._queue_lock:
+            self._pending_queue.append(
+                QueuedTask(
+                    task_id=task_id,
+                    task_type_code=task_type_code,
+                    payload=payload,
+                    enqueued_at=time.monotonic(),
+                )
+            )
+        self._dispatch_event.set()
+        logger.info(
+            "task queued: %s type=%s queue_size=%d",
+            task_id,
+            task_type_code,
+            len(self._pending_queue),
+        )
+        return task_id
+
+    async def _dispatcher_loop(self) -> None:
+        while True:
+            try:
+                try:
+                    await asyncio.wait_for(
+                        self._dispatch_event.wait(),
+                        timeout=self._dispatch_poll_interval,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                self._dispatch_event.clear()
+
+                if not self._pending_queue:
+                    continue
+
+                await self._refresh_queue_config()
+                await self._try_dispatch_all()
+            except Exception as e:
+                logger.exception("dispatcher_loop error: %s", e)
+                await asyncio.sleep(1.0)
+
+    async def _try_dispatch_all(self) -> None:
+        async with self._queue_lock:
+            still_pending: deque[QueuedTask] = deque()
+            exhausted_types: set[str] = set()
+            now = time.monotonic()
+
+            while self._pending_queue:
+                item = self._pending_queue.popleft()
+
+                if now - item.enqueued_at > self._queue_timeout_seconds:
+                    try:
+                        await self.db.update_task(
+                            item.task_id,
+                            status="failed",
+                            error_message="排队超时，请稍后重试",
+                            set_completed=True,
+                        )
+                    except Exception:
+                        pass
+                    self._task_payloads.pop(item.task_id, None)
+                    logger.warning("task queue timeout: %s", item.task_id)
+                    continue
+
+                if item.task_type_code in exhausted_types:
+                    still_pending.append(item)
+                    continue
+
+                picked = await self._pick_window(item.task_type_code)
+                if picked:
+                    try:
+                        await self.db.update_task(
+                            item.task_id,
+                            window_pk=picked.window_pk,
+                            window_ip=picked.window_ip,
+                        )
+                    except Exception:
+                        pass
+                    asyncio.create_task(self._run_task(item.task_id, picked))
+                    logger.info(
+                        "task dispatched from queue: %s type=%s window=%s (waited %.1fs)",
+                        item.task_id,
+                        item.task_type_code,
+                        picked.window_pk,
+                        now - item.enqueued_at,
+                    )
+                else:
+                    exhausted_types.add(item.task_type_code)
+                    still_pending.append(item)
+
+            self._pending_queue = still_pending
+
+    def get_queue_info(self) -> Dict[str, Any]:
+        return {
+            "queue_size": len(self._pending_queue),
+            "queue_max_size": self._queue_max_size,
+            "queue_timeout_seconds": self._queue_timeout_seconds,
+            "dispatcher_running": self._dispatcher_task is not None and not self._dispatcher_task.done(),
+        }
 
     async def _run_task(self, task_id: str, picked: PickedWindow) -> None:
         try:
@@ -604,4 +769,5 @@ class TaskService:
                 await self.db.release_mapping_slot(picked.mapping_id)
             except Exception:
                 pass
+            self._dispatch_event.set()
 

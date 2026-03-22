@@ -558,6 +558,8 @@ class Database:
                     ("server_count", "INTEGER DEFAULT 1"),
                     ("browser_open_concurrency", "INTEGER DEFAULT 3"),
                     ("browser_open_queue_timeout", "REAL DEFAULT 120.0"),
+                    ("task_queue_max_size", "INTEGER DEFAULT 1000"),
+                    ("task_queue_timeout_seconds", "REAL DEFAULT 300.0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "system_config", col_name):
@@ -846,6 +848,8 @@ class Database:
         server_count: Optional[int] = None,
         browser_open_concurrency: Optional[int] = None,
         browser_open_queue_timeout: Optional[float] = None,
+        task_queue_max_size: Optional[int] = None,
+        task_queue_timeout_seconds: Optional[float] = None,
     ) -> None:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -885,15 +889,28 @@ class Database:
                 if browser_open_queue_timeout is not None
                 else current_queue_timeout
             )
+            current_task_queue_max_size = int(current.get("task_queue_max_size", 1000) or 1000)
+            new_task_queue_max_size = (
+                max(1, min(100000, int(task_queue_max_size)))
+                if task_queue_max_size is not None
+                else current_task_queue_max_size
+            )
+            current_task_queue_timeout = float(current.get("task_queue_timeout_seconds", 300.0) or 300.0)
+            new_task_queue_timeout_seconds = (
+                max(10.0, min(3600.0, float(task_queue_timeout_seconds)))
+                if task_queue_timeout_seconds is not None
+                else current_task_queue_timeout
+            )
 
             await db.execute(
                 """
                 INSERT INTO system_config (
                   id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file,
                   stop_accepting_tasks, public_create_task_max_inflight, server_count,
-                  browser_open_concurrency, browser_open_queue_timeout, updated_at
+                  browser_open_concurrency, browser_open_queue_timeout,
+                  task_queue_max_size, task_queue_timeout_seconds, updated_at
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(id) DO UPDATE SET
                   proxy_enabled=excluded.proxy_enabled,
                   proxy_url=excluded.proxy_url,
@@ -905,6 +922,8 @@ class Database:
                   server_count=excluded.server_count,
                   browser_open_concurrency=excluded.browser_open_concurrency,
                   browser_open_queue_timeout=excluded.browser_open_queue_timeout,
+                  task_queue_max_size=excluded.task_queue_max_size,
+                  task_queue_timeout_seconds=excluded.task_queue_timeout_seconds,
                   updated_at=datetime('now','localtime')
                 """,
                 (
@@ -918,6 +937,8 @@ class Database:
                     new_server_count,
                     new_browser_open_concurrency,
                     new_browser_open_queue_timeout,
+                    new_task_queue_max_size,
+                    new_task_queue_timeout_seconds,
                 ),
             )
             await db.commit()
@@ -2822,8 +2843,8 @@ class Database:
             return [CardKey(**dict(r)) for r in rows]
 
     async def batch_import_card_keys(self, content: str) -> Dict[str, int]:
-        lines = [str(x or "").strip() for x in str(content or "").splitlines()]
-        keys = [x for x in lines if x]
+        tokens = str(content or "").split()
+        keys = [x for x in tokens if x]
         if not keys:
             return {"inserted": 0, "skipped": 0}
 
@@ -4486,6 +4507,7 @@ class Database:
         status: Optional[str] = None,
         progress: Optional[int] = None,
         window_pk: Optional[int] = None,
+        window_ip: Optional[str] = None,
         generation_id: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None,
@@ -4505,6 +4527,9 @@ class Database:
         if window_pk is not None:
             updates.append("window_pk=?")
             params.append(int(window_pk))
+        if window_ip is not None:
+            updates.append("window_ip=?")
+            params.append(str(window_ip).strip() if window_ip else None)
         if generation_id is not None:
             gid = str(generation_id).strip()
             updates.append("generation_id=?")

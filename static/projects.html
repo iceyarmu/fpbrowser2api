@@ -251,8 +251,8 @@
               <span class="text-muted small ms-auto" id="accountsSummary"></span>
             </div>
             <div class="mb-2">
-              <label class="form-label small mb-1">批量新增（格式：邮箱——密码——忽略——EFA，每行一个）</label>
-              <textarea class="form-control form-control-sm mono" id="accountsImportText" rows="6" placeholder="example@gmail.com——password——ignore——efa_token"></textarea>
+              <label class="form-label small mb-1">批量新增（格式：邮箱——密码——忽略——EFA，或 邮箱----密码----忽略----EFA----忽略，每行一个）</label>
+              <textarea class="form-control form-control-sm mono" id="accountsImportText" rows="6" placeholder="example@gmail.com——password——ignore——efa_token&#10;example@gmail.com----password----ignore----efa_token----ignore"></textarea>
               <div class="d-flex justify-content-end gap-2 mt-2">
                 <button class="btn btn-success btn-sm" id="btnImportAccounts">批量新增</button>
                 <button class="btn btn-danger btn-sm" id="btnSyncAccounts">同步该空间账号到本地</button>

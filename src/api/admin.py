@@ -158,6 +158,8 @@ class UpdateSystemConfigRequest(BaseModel):
     server_count: int = Field(default=1, ge=1)
     browser_open_concurrency: Optional[int] = Field(default=None, ge=1, le=50)
     browser_open_queue_timeout: Optional[float] = Field(default=None, ge=10, le=600)
+    task_queue_max_size: Optional[int] = Field(default=None, ge=1, le=100000)
+    task_queue_timeout_seconds: Optional[float] = Field(default=None, ge=10, le=3600)
 
     @field_validator("public_create_task_max_inflight")
     @classmethod
@@ -328,14 +330,17 @@ class BatchDeleteCardKeysRequest(BaseModel):
 
 # -------------------- auth helper --------------------
 def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
-    """解析批量账号文本：邮箱——密码——忽略——EFA。"""
+    """解析批量账号文本，支持多种分隔符格式：
+    - 邮箱——密码——忽略——EFA（中文长横线）
+    - 邮箱----密码----忽略----EFA----忽略（四连字符，取第1/2/4字段）
+    """
     out: List[Dict[str, Any]] = []
     lines = [str(x or "").strip() for x in str(content or "").splitlines()]
     for ln in lines:
         if not ln:
             continue
-        # 兼容：中文长横线/英文连字符
-        parts = [x.strip() for x in re.split(r"(?:——|--|—| - )", ln) if str(x or "").strip()]
+        # 兼容：四连字符 / 中文长横线 / 双连字符 / 单长破折号 / 空格连字符
+        parts = [x.strip() for x in re.split(r"(?:----|——|--|—| - )", ln) if str(x or "").strip()]
         if len(parts) < 4:
             continue
         email = str(parts[0] or "").strip()
@@ -656,6 +661,8 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
             "server_count": max(1, int(getattr(syscfg, "server_count", 1) or 1)),
             "browser_open_concurrency": int(getattr(syscfg, "browser_open_concurrency", 3) or 3),
             "browser_open_queue_timeout": float(getattr(syscfg, "browser_open_queue_timeout", 120.0) or 120.0),
+            "task_queue_max_size": int(getattr(syscfg, "task_queue_max_size", 1000) or 1000),
+            "task_queue_timeout_seconds": float(getattr(syscfg, "task_queue_timeout_seconds", 300.0) or 300.0),
             "admin_username": admin_user.username if admin_user else "admin",
         },
     }
@@ -700,11 +707,22 @@ async def update_system_config(req: UpdateSystemConfigRequest, token: str = Depe
         server_count=req.server_count,
         browser_open_concurrency=req.browser_open_concurrency,
         browser_open_queue_timeout=req.browser_open_queue_timeout,
+        task_queue_max_size=req.task_queue_max_size,
+        task_queue_timeout_seconds=req.task_queue_timeout_seconds,
     )
     await db.reload_config_to_memory()
     setup_logging()
 
     return {"success": True, "message": "系统配置已更新"}
+
+
+@router.get("/api/admin/queue-info")
+async def get_queue_info(token: str = Depends(verify_admin_token)):
+    await _ensure_any_page_access(token, {"system", "tasks"})
+    from ..api.routes import task_service as _ts
+    if not _ts:
+        return {"success": True, "queue": {}}
+    return {"success": True, "queue": _ts.get_queue_info()}
 
 
 @router.post("/api/admin/api-key")
@@ -1156,7 +1174,7 @@ async def import_space_accounts(space_pk: int, req: ImportAccountsRequest, token
 
     parsed = _parse_batch_account_lines(req.content)
     if not parsed:
-        raise HTTPException(status_code=400, detail="未解析到有效账号，请检查格式：邮箱——密码——忽略——EFA")
+        raise HTTPException(status_code=400, detail="未解析到有效账号，请检查格式：邮箱——密码——忽略——EFA 或 邮箱----密码----忽略----EFA----忽略")
 
     # 避免覆盖/重复：按 (platformUrl, platformUserName) 去重
     dedup_map: Dict[str, Dict[str, Any]] = {}

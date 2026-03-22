@@ -39,6 +39,10 @@ class SystemConfig(BaseModel):
     browser_open_concurrency: int = 3
     # 浏览器打开排队超时（秒）
     browser_open_queue_timeout: float = 120.0
+    # 任务排队队列最大长度
+    task_queue_max_size: int = 1000
+    # 任务排队超时（秒）
+    task_queue_timeout_seconds: float = 300.0
     updated_at: Optional[datetime] = None
 
 
