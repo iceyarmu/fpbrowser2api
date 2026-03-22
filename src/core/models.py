@@ -190,6 +190,7 @@ class TaskType(BaseModel):
     # 动态函数 key（来自 services/task_handler_registry.py）
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
+    error_retry_count: int = 0
     enabled: bool = True
     deleted: bool = False
     created_at: Optional[datetime] = None

@@ -40,6 +40,7 @@ class PickedWindow:
     sora_access_expires: Optional[str] = None
     window_ip: Optional[str] = None
     headless: bool = False
+    error_retry_count: int = 0
 
 
 @dataclass
@@ -48,6 +49,7 @@ class QueuedTask:
     task_type_code: str
     payload: Dict[str, Any]
     enqueued_at: float
+    retry_attempt: int = 0
 
 
 class TaskService:
@@ -258,6 +260,7 @@ class TaskService:
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
             headless=bool(r.get("headless")),
+            error_retry_count=int(r.get("error_retry_count") or 0),
         )
         if not picked.window_key:
             try:
@@ -265,6 +268,11 @@ class TaskService:
             except Exception:
                 pass
             return None
+        if picked.create_task_handler == "sora_gen_video":
+            try:
+                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
+            except Exception:
+                pass
         return picked
 
     async def _pick_window_by_mapping(self, task_type_code: str, mapping_id: int) -> Optional[PickedWindow]:
@@ -293,6 +301,7 @@ class TaskService:
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
             headless=bool(r.get("headless")),
+            error_retry_count=int(r.get("error_retry_count") or 0),
         )
         if not picked.window_key:
             try:
@@ -300,6 +309,11 @@ class TaskService:
             except Exception:
                 pass
             return None
+        if picked.create_task_handler == "sora_gen_video":
+            try:
+                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
+            except Exception:
+                pass
         return picked
 
     async def _pick_window_by_window_pk(self, task_type_code: str, window_pk: int) -> Optional[PickedWindow]:
@@ -327,6 +341,7 @@ class TaskService:
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
             headless=bool(r.get("headless")),
+            error_retry_count=int(r.get("error_retry_count") or 0),
         )
         if not picked.window_key:
             try:
@@ -334,6 +349,11 @@ class TaskService:
             except Exception:
                 pass
             return None
+        if picked.create_task_handler == "sora_gen_video":
+            try:
+                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
+            except Exception:
+                pass
         return picked
 
     # ---- 排队与调度 ----
@@ -457,12 +477,13 @@ class TaskService:
                         )
                     except Exception:
                         pass
-                    asyncio.create_task(self._run_task(item.task_id, picked))
+                    asyncio.create_task(self._run_task(item.task_id, picked, _retry_attempt=item.retry_attempt))
                     logger.info(
-                        "task dispatched from queue: %s type=%s window=%s (waited %.1fs)",
+                        "task dispatched from queue: %s type=%s window=%s retry=%d (waited %.1fs)",
                         item.task_id,
                         item.task_type_code,
                         picked.window_pk,
+                        item.retry_attempt,
                         now - item.enqueued_at,
                     )
                 else:
@@ -479,10 +500,12 @@ class TaskService:
             "dispatcher_running": self._dispatcher_task is not None and not self._dispatcher_task.done(),
         }
 
-    async def _run_task(self, task_id: str, picked: PickedWindow) -> None:
+    async def _run_task(self, task_id: str, picked: PickedWindow, *, _retry_attempt: int = 0) -> None:
+        _need_retry = False
+        _retry_error_msg = ""
         try:
             await self.db.update_task(task_id, status="running", progress=0, set_started=True)
-            logger.info("task started: %s type=%s window=%s mapping=%s", task_id, picked.task_code, picked.window_pk, picked.mapping_id)
+            logger.info("task started: %s type=%s window=%s mapping=%s attempt=%d", task_id, picked.task_code, picked.window_pk, picked.mapping_id, _retry_attempt)
 
             _last_saved_progress = -1
 
@@ -722,14 +745,59 @@ class TaskService:
                     or "包含违禁画面" in str(e)
                     or "包含违规内容" in str(e)
                 )
-                await self.db.update_task(
-                    task_id,
-                    status="failed",
-                    error_message=str(e),
-                    result=err_result,
-                    content_violation=_is_violation if _is_violation else None,
-                    set_completed=True,
+                # ---- 错误重试逻辑 ----
+                max_retries = picked.error_retry_count
+                can_retry = (
+                    max_retries > 0
+                    and _retry_attempt < max_retries
+                    and not _is_violation
                 )
+                if can_retry:
+                    archive_id = uuid.uuid4().hex
+                    try:
+                        prompt_text = self._payload_to_prompt_text(payload)
+                        await self.db.create_task(
+                            Task(
+                                task_id=archive_id,
+                                task_type_code=picked.task_code,
+                                generation_id=None,
+                                status="failed",
+                                progress=0,
+                                prompt=prompt_text,
+                                image_path=None,
+                                window_pk=picked.window_pk,
+                                window_ip=picked.window_ip,
+                            )
+                        )
+                        await self.db.update_task(
+                            archive_id,
+                            status="failed",
+                            error_message=f"[retry {_retry_attempt + 1}/{max_retries}] {e}",
+                            result=err_result,
+                            content_violation=_is_violation if _is_violation else None,
+                            set_completed=True,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await self.db.update_task(task_id, status="queued", progress=0)
+                    except Exception:
+                        pass
+                    _need_retry = True
+                    _retry_error_msg = str(e)
+                    logger.warning(
+                        "task will retry %d/%d: %s err=%s, picking new window",
+                        _retry_attempt + 1, max_retries, task_id, e,
+                    )
+                else:
+                    await self.db.update_task(
+                        task_id,
+                        status="failed",
+                        error_message=str(e),
+                        result=err_result,
+                        content_violation=_is_violation if _is_violation else None,
+                        set_completed=True,
+                    )
                 # 某些错误不应计入“窗口连续错误”（例如：Sora create 400 invalid_request、未抓到 POST 等环境/请求错误）
                 # 执行器侧会抛出带 no_penalty=true 的异常（或同名属性），这里做兼容判断。
                 if not no_penalty and not picked.create_task_handler == "sora_wm_remove":
@@ -760,14 +828,60 @@ class TaskService:
                             sess._schedule_idle_close()
                         except Exception:
                             pass
-                logger.exception("task failed: %s err=%s", task_id, e)
+                if not _need_retry:
+                    logger.exception("task failed: %s err=%s", task_id, e)
             finally:
-                # 清理内存 payload（避免堆积）
-                self._task_payloads.pop(task_id, None)
+                if not _need_retry:
+                    self._task_payloads.pop(task_id, None)
         finally:
             try:
                 await self.db.release_mapping_slot(picked.mapping_id)
             except Exception:
                 pass
             self._dispatch_event.set()
+
+            if _need_retry:
+                try:
+                    new_picked = await self._pick_window(picked.task_code)
+                    if new_picked:
+                        try:
+                            await self.db.update_task(task_id, window_pk=new_picked.window_pk, window_ip=new_picked.window_ip)
+                        except Exception:
+                            pass
+                        logger.info(
+                            "task retry dispatched: %s attempt=%d/%d new_window=%s",
+                            task_id, _retry_attempt + 1, picked.error_retry_count, new_picked.window_pk,
+                        )
+                        asyncio.create_task(self._run_task(task_id, new_picked, _retry_attempt=_retry_attempt + 1))
+                    else:
+                        # 没有可用窗口，加入排队队列等待
+                        self._ensure_dispatcher()
+                        payload = self._task_payloads.get(task_id) or {}
+                        async with self._queue_lock:
+                            self._pending_queue.append(
+                                QueuedTask(
+                                    task_id=task_id,
+                                    task_type_code=picked.task_code,
+                                    payload=payload,
+                                    enqueued_at=time.monotonic(),
+                                    retry_attempt=_retry_attempt + 1,
+                                )
+                            )
+                        self._dispatch_event.set()
+                        logger.info(
+                            "task retry enqueued (no window now): %s attempt=%d/%d queue_size=%d",
+                            task_id, _retry_attempt + 1, picked.error_retry_count, len(self._pending_queue),
+                        )
+                except Exception as retry_err:
+                    try:
+                        await self.db.update_task(
+                            task_id,
+                            status="failed",
+                            error_message=f"retry exception ({_retry_attempt + 1}/{picked.error_retry_count}): {retry_err}. original error: {_retry_error_msg}",
+                            set_completed=True,
+                        )
+                    except Exception:
+                        pass
+                    self._task_payloads.pop(task_id, None)
+                    logger.exception("task retry error: %s err=%s", task_id, retry_err)
 

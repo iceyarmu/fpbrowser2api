@@ -217,6 +217,7 @@ class CreateTaskTypeRequest(BaseModel):
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
+    error_retry_count: int = Field(default=0, ge=0, le=10)
 
 
 class UpdateTaskTypeRequest(BaseModel):
@@ -229,6 +230,7 @@ class UpdateTaskTypeRequest(BaseModel):
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
+    error_retry_count: int = Field(default=0, ge=0, le=10)
     enabled: bool = True
 
 
@@ -2006,6 +2008,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             req.timeout_seconds,
             create_task_handler=req.create_task_handler,
             refresh_quota_handler=req.refresh_quota_handler,
+            error_retry_count=req.error_retry_count,
         )
         return {"success": True, "task_type_id": tid}
     except Exception as e:
@@ -2047,6 +2050,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             create_task_handler=req.create_task_handler,
             refresh_quota_handler=req.refresh_quota_handler,
             enabled=req.enabled,
+            error_retry_count=req.error_retry_count,
         )
         return {"success": True}
     except Exception as e:
