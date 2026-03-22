@@ -176,7 +176,7 @@ async def create_task(
 
         # 系统维护：停止接收新任务
         if stop_accepting:
-            raise HTTPException(status_code=503, detail="服务器稳定性&每日容量升级中，请稍后再试...")
+            raise HTTPException(status_code=503, detail="服务器稳定性&每日容量升级10分钟，请10分钟后再试...")
 
         tcode = (body.task_type_code or "").strip()
         payload = body.json or {}
