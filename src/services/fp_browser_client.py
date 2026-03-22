@@ -191,8 +191,6 @@ class FPBrowserClient:
             ##args.append("--headless=old") 容易触发机器人
             ##args.append("--disable-gpu") 容易触发机器人
             args.append("--disable-software-rasterizer")
-            
-
             args.append("--disable-animations")
             args.append("--disable-threaded-animation")
             args.append("--disable-threaded-scrolling")

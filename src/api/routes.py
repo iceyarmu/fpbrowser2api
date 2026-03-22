@@ -34,7 +34,7 @@ task_service: TaskService | None = None
 # 创建任务接口并发闸门，避免峰值时打爆 DB/线程资源。
 _CREATE_TASK_MAX_INFLIGHT = DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT
 _SERVER_COUNT = DEFAULT_SERVER_COUNT
-_CREATE_TASK_ACQUIRE_TIMEOUT_SEC = max(0.1, float(os.getenv("PUBLIC_CREATE_TASK_ACQUIRE_TIMEOUT_SEC", "1.5")))
+_CREATE_TASK_ACQUIRE_TIMEOUT_SEC = max(0.1, float(os.getenv("PUBLIC_CREATE_TASK_ACQUIRE_TIMEOUT_SEC", "3")))
 _create_task_semaphore: asyncio.Semaphore | None = None
 _create_task_gate_lock = asyncio.Lock()
 
