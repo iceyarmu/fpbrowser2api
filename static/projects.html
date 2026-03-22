@@ -1688,7 +1688,8 @@
             return hay.includes(q);
           });
         }
-        accountsSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 条`;
+        const unboundAccountCount = items.filter(a => Number(a.deleted || 0) !== 1 && Number(a.binding_count || 0) === 0).length;
+        accountsSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 条，未绑定 ${unboundAccountCount} 条`;
         if (!filtered.length) {
           accountsBody.innerHTML = `<div class="text-muted small">暂无本地账号数据，请点击“同步该空间账号到本地”。</div>`;
           return;
@@ -2360,7 +2361,8 @@
             return hay.includes(q);
           });
         }
-        proxiesSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 条`;
+        const unboundProxyCount = items.filter(p => Number(p.deleted || 0) !== 1 && Number(p.binding_count || 0) === 0).length;
+        proxiesSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 条，未绑定 ${unboundProxyCount} 条`;
 
         if (!filtered.length) {
           proxiesBody.innerHTML = `<div class="text-muted small">暂无本地代理数据，请点击“同步该空间代理到本地”。</div>`;
