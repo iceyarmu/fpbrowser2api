@@ -2593,6 +2593,7 @@ async def list_tasks(
     window_pk: Optional[int] = None,
     window_ip: Optional[str] = None,
     q: Optional[str] = None,
+    prompt_tag: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
     await _ensure_page_access(token, "tasks")
@@ -2601,7 +2602,7 @@ async def list_tasks(
 
     lim = max(1, min(200, int(limit or 50)))
     off = max(0, int(offset or 0))
-    total = await db.count_tasks(task_type_code=task_type_code, status=status, window_pk=window_pk, window_ip=window_ip, q=q)
+    total = await db.count_tasks(task_type_code=task_type_code, status=status, window_pk=window_pk, window_ip=window_ip, q=q, prompt_tag=prompt_tag)
     items = await db.list_tasks(
         limit=lim,
         offset=off,
@@ -2610,6 +2611,7 @@ async def list_tasks(
         window_pk=window_pk,
         window_ip=window_ip,
         q=q,
+        prompt_tag=prompt_tag,
     )
     return {"success": True, "total": total, "limit": lim, "offset": off, "items": items}
 

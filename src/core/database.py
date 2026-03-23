@@ -4145,6 +4145,7 @@ class Database:
         window_pk: Optional[int] = None,
         window_ip: Optional[str] = None,
         q: Optional[str] = None,
+        prompt_tag: Optional[str] = None,
     ) -> int:
         where: List[str] = ["1=1"]
         params: List[Any] = []
@@ -4165,6 +4166,8 @@ class Database:
             qq = f"%{q.strip()}%"
             where.append("(task_id LIKE ? OR generation_id LIKE ? OR prompt LIKE ? OR error_message LIKE ? OR window_ip LIKE ?)")
             params.extend([qq, qq, qq, qq, qq])
+        if prompt_tag == "character_creation":
+            where.append("(prompt LIKE '%video_url%' OR prompt LIKE '%generation_id%')")
 
         async with self._read_conn() as db:
             cur = await db.execute(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
@@ -4183,6 +4186,7 @@ class Database:
         window_pk: Optional[int] = None,
         window_ip: Optional[str] = None,
         q: Optional[str] = None,
+        prompt_tag: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         lim = max(1, min(200, int(limit or 50)))
         off = max(0, int(offset or 0))
@@ -4206,6 +4210,8 @@ class Database:
             qq = f"%{q.strip()}%"
             where.append("(t.task_id LIKE ? OR t.generation_id LIKE ? OR t.prompt LIKE ? OR t.error_message LIKE ? OR t.window_ip LIKE ?)")
             params.extend([qq, qq, qq, qq, qq])
+        if prompt_tag == "character_creation":
+            where.append("(t.prompt LIKE '%video_url%' OR t.prompt LIKE '%generation_id%')")
 
         params.extend([lim, off])
 

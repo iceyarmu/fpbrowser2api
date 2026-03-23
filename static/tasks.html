@@ -65,7 +65,14 @@
                 <option value="failed">failed</option>
               </select>
             </div>
-            <div class="col-12 col-md-4">
+            <div class="col-12 col-md-1">
+              <label class="form-label">标签</label>
+              <select class="form-select" id="fltPromptTag">
+                <option value="">（全部）</option>
+                <option value="character_creation">角色创建</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-3">
               <label class="form-label">关键字</label>
               <input class="form-control" id="fltQ" placeholder="task_id / prompt / error_message" />
             </div>
@@ -650,6 +657,7 @@
         return {
           task_type_code: document.getElementById("fltType").value || "",
           status: document.getElementById("fltStatus").value || "",
+          prompt_tag: document.getElementById("fltPromptTag").value || "",
           q: (document.getElementById("fltQ").value || "").trim(),
           limit: parseInt(document.getElementById("fltLimit").value, 10) || 50,
           window_pk: scope.window_pk,
@@ -805,6 +813,7 @@
           params.set("offset", String(state.offset));
           if (f.task_type_code) params.set("task_type_code", f.task_type_code);
           if (f.status) params.set("status", f.status);
+          if (f.prompt_tag) params.set("prompt_tag", f.prompt_tag);
           if (f.q) params.set("q", f.q);
           if (f.window_pk) params.set("window_pk", f.window_pk);
           if (f.window_ip) params.set("window_ip", f.window_ip);
@@ -825,6 +834,7 @@
       function resetFilters() {
         document.getElementById("fltType").value = "";
         document.getElementById("fltStatus").value = "";
+        document.getElementById("fltPromptTag").value = "";
         document.getElementById("fltQ").value = "";
         document.getElementById("fltLimit").value = "50";
         state.offset = 0;
@@ -938,7 +948,7 @@
         await load();
       });
 
-      ["fltType", "fltStatus", "fltLimit"].forEach(id => {
+      ["fltType", "fltStatus", "fltPromptTag", "fltLimit"].forEach(id => {
         document.getElementById(id).addEventListener("change", async () => {
           state.offset = 0;
           await load();
