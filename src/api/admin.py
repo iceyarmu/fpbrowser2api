@@ -724,7 +724,7 @@ async def get_queue_info(token: str = Depends(verify_admin_token)):
     from ..api.routes import task_service as _ts
     if not _ts:
         return {"success": True, "queue": {}}
-    return {"success": True, "queue": _ts.get_queue_info()}
+    return {"success": True, "queue": await _ts.get_queue_info()}
 
 
 @router.post("/api/admin/api-key")

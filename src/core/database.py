@@ -4115,6 +4115,29 @@ class Database:
                 d.pop("result_json", None)
                 return Task(**d)
 
+    async def task_status_summary(self) -> Dict[str, int]:
+        """Return counts: running, completed, failed (excluding violation), violation."""
+        async with self._read_conn() as db:
+            cur = await db.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                    SUM(CASE WHEN status = 'failed' AND COALESCE(content_violation, 0) = 0 THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN COALESCE(content_violation, 0) = 1 THEN 1 ELSE 0 END) AS violation
+                FROM tasks
+                """
+            )
+            row = await cur.fetchone()
+            if not row:
+                return {"running": 0, "completed": 0, "failed": 0, "violation": 0}
+            return {
+                "running": int(row[0] or 0),
+                "completed": int(row[1] or 0),
+                "failed": int(row[2] or 0),
+                "violation": int(row[3] or 0),
+            }
+
     async def count_tasks(
         self,
         task_type_code: Optional[str] = None,

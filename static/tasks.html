@@ -38,11 +38,15 @@
     </nav>
 
     <div class="container-fluid py-4">
-      <div id="queueInfoBar" class="alert alert-info py-2 mb-3 d-flex align-items-center gap-3 small d-none">
+      <div id="queueInfoBar" class="alert alert-info py-2 mb-3 d-flex align-items-center gap-3 small flex-wrap d-none">
         <strong>排队状态</strong>
         <span>队列中：<span class="fw-semibold mono" id="queueSize">0</span> / <span class="mono" id="queueMaxSize">—</span></span>
         <span>排队超时：<span class="mono" id="queueTimeout">—</span>s</span>
         <span>调度器：<span id="queueDispatcher" class="fw-semibold">—</span></span>
+        <span class="border-start ps-3">运行：<span class="fw-semibold mono text-primary" id="statRunning">0</span></span>
+        <span>成功：<span class="fw-semibold mono text-success" id="statCompleted">0</span></span>
+        <span>失败：<span class="fw-semibold mono text-danger" id="statFailed">0</span></span>
+        <span>违规：<span class="fw-semibold mono text-warning" id="statViolation">0</span></span>
       </div>
       <div class="card shadow-sm mb-3">
         <div class="card-body">
@@ -671,6 +675,11 @@
             el.textContent = "—";
             el.className = "fw-semibold";
           }
+          const ts = q.task_stats || {};
+          document.getElementById("statRunning").textContent = String(ts.running ?? 0);
+          document.getElementById("statCompleted").textContent = String(ts.completed ?? 0);
+          document.getElementById("statFailed").textContent = String(ts.failed ?? 0);
+          document.getElementById("statViolation").textContent = String(ts.violation ?? 0);
           bar.classList.remove("d-none");
           bar.classList.toggle("alert-warning", (q.queue_size || 0) > 0);
           bar.classList.toggle("alert-info", (q.queue_size || 0) === 0);

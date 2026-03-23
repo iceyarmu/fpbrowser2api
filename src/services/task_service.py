@@ -492,13 +492,18 @@ class TaskService:
 
             self._pending_queue = still_pending
 
-    def get_queue_info(self) -> Dict[str, Any]:
-        return {
+    async def get_queue_info(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
             "queue_size": len(self._pending_queue),
             "queue_max_size": self._queue_max_size,
             "queue_timeout_seconds": self._queue_timeout_seconds,
             "dispatcher_running": self._dispatcher_task is not None and not self._dispatcher_task.done(),
         }
+        try:
+            info["task_stats"] = await self.db.task_status_summary()
+        except Exception:
+            info["task_stats"] = {}
+        return info
 
     async def _run_task(self, task_id: str, picked: PickedWindow, *, _retry_attempt: int = 0) -> None:
         _need_retry = False
