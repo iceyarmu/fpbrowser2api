@@ -50,6 +50,7 @@ class QueuedTask:
     payload: Dict[str, Any]
     enqueued_at: float
     retry_attempt: int = 0
+    required_window_pk: Optional[int] = None
 
 
 class TaskService:
@@ -463,11 +464,14 @@ class TaskService:
                     logger.warning("task queue timeout: %s", item.task_id)
                     continue
 
-                if item.task_type_code in exhausted_types:
+                if item.task_type_code in exhausted_types and item.required_window_pk is None:
                     still_pending.append(item)
                     continue
 
-                picked = await self._pick_window(item.task_type_code)
+                if item.required_window_pk is not None:
+                    picked = await self._pick_window_by_window_pk(item.task_type_code, item.required_window_pk)
+                else:
+                    picked = await self._pick_window(item.task_type_code)
                 if picked:
                     try:
                         await self.db.update_task(
@@ -847,21 +851,29 @@ class TaskService:
 
             if _need_retry:
                 try:
-                    new_picked = await self._pick_window(picked.task_code)
+                    payload = self._task_payloads.get(task_id) or {}
+                    _retry_gen_id = str(payload.get("generation_id") or "").strip() or None
+                    _retry_head_url = str(payload.get("head_url") or "").strip() or None
+                    _bind_window_pk: Optional[int] = None
+                    if _retry_gen_id and _retry_head_url:
+                        _bind_window_pk = picked.window_pk
+
+                    if _bind_window_pk is not None:
+                        new_picked = await self._pick_window_by_window_pk(picked.task_code, _bind_window_pk)
+                    else:
+                        new_picked = await self._pick_window(picked.task_code)
                     if new_picked:
                         try:
                             await self.db.update_task(task_id, window_pk=new_picked.window_pk, window_ip=new_picked.window_ip)
                         except Exception:
                             pass
                         logger.info(
-                            "task retry dispatched: %s attempt=%d/%d new_window=%s",
-                            task_id, _retry_attempt + 1, picked.error_retry_count, new_picked.window_pk,
+                            "task retry dispatched: %s attempt=%d/%d new_window=%s bind_window=%s",
+                            task_id, _retry_attempt + 1, picked.error_retry_count, new_picked.window_pk, _bind_window_pk,
                         )
                         asyncio.create_task(self._run_task(task_id, new_picked, _retry_attempt=_retry_attempt + 1))
                     else:
-                        # 没有可用窗口，加入排队队列等待
                         self._ensure_dispatcher()
-                        payload = self._task_payloads.get(task_id) or {}
                         async with self._queue_lock:
                             self._pending_queue.append(
                                 QueuedTask(
@@ -870,12 +882,13 @@ class TaskService:
                                     payload=payload,
                                     enqueued_at=time.monotonic(),
                                     retry_attempt=_retry_attempt + 1,
+                                    required_window_pk=_bind_window_pk,
                                 )
                             )
                         self._dispatch_event.set()
                         logger.info(
-                            "task retry enqueued (no window now): %s attempt=%d/%d queue_size=%d",
-                            task_id, _retry_attempt + 1, picked.error_retry_count, len(self._pending_queue),
+                            "task retry enqueued (no window now): %s attempt=%d/%d queue_size=%d bind_window=%s",
+                            task_id, _retry_attempt + 1, picked.error_retry_count, len(self._pending_queue), _bind_window_pk,
                         )
                 except Exception as retry_err:
                     try:
