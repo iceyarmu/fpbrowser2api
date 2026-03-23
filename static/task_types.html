@@ -228,6 +228,8 @@
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-danger" id="btnBulkTransfer">批量转移</button>
+                    <button class="btn btn-outline-warning" id="btnBulkHeadlessOn">批量启动无头</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkHeadlessOff">批量关闭无头</button>
                     <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                   </div>
@@ -4183,6 +4185,8 @@
         setBtnDisabledById("btnBulkOpen", true);
         setBtnDisabledById("btnBulkClose", true);
         setBtnDisabledById("btnBulkTransfer", true);
+        setBtnDisabledById("btnBulkHeadlessOn", true);
+        setBtnDisabledById("btnBulkHeadlessOff", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
           let ok = 0, fail = 0;
@@ -4201,6 +4205,8 @@
           setBtnDisabledById("btnBulkOpen", false);
           setBtnDisabledById("btnBulkClose", false);
           setBtnDisabledById("btnBulkTransfer", false);
+          setBtnDisabledById("btnBulkHeadlessOn", false);
+          setBtnDisabledById("btnBulkHeadlessOff", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
         }
@@ -4225,6 +4231,42 @@
           ids,
           runner: async (mappingId) => {
             await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
+          },
+        });
+      }
+
+      async function bulkHeadlessOnSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量启动无头",
+          ids,
+          runner: async (mappingId) => {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ headless: true }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "启动无头失败");
+            updateMappingRowUI(mappingId, { headless: true });
+          },
+        });
+      }
+
+      async function bulkHeadlessOffSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量关闭无头",
+          ids,
+          runner: async (mappingId) => {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ headless: false }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "关闭无头失败");
+            updateMappingRowUI(mappingId, { headless: false });
           },
         });
       }
@@ -4458,6 +4500,8 @@
       document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
       document.getElementById("btnBulkClose")?.addEventListener("click", bulkCloseSelected);
       document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
+      document.getElementById("btnBulkHeadlessOn")?.addEventListener("click", bulkHeadlessOnSelected);
+      document.getElementById("btnBulkHeadlessOff")?.addEventListener("click", bulkHeadlessOffSelected);
       document.getElementById("btnSyncAllWindowStatus")?.addEventListener("click", (e) => syncAllWindowStatusForCurrentType(e.currentTarget));
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
