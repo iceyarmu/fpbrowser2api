@@ -3538,7 +3538,7 @@ async def sora_gen_video(
                     break
                 except Exception as e:
                     await sess._bring_sora_drafts_to_front()
-                    if _from_gen_attempt == 2:
+                    if _from_gen_attempt == 3:
                         raise
             cameo_id = str((cameo_obj or {}).get("id") or "").strip()
             if not cameo_id:
@@ -3559,13 +3559,13 @@ async def sora_gen_video(
                     pass
 
                 try:
-                    cameo_status = await sess.api_cameo_owned_status(target_url=target_url, cameo_id=cameo_id)
+                    cameo_status = await sess.api_cameo_status(target_url=target_url, cameo_id=cameo_id)
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
                     await sess._bring_sora_drafts_to_front();
-                    if consecutive_errors >= 3:
-                        raise RuntimeError(f"轮询 cameo owned 状态失败次数过多：{e}")
+                    if consecutive_errors >= 5:
+                        raise RuntimeError(f"轮询 cameo owned 状态失败{consecutive_errors}次：{e}")
                     continue
 
                 msg = str((cameo_status or {}).get("status_message") or "").strip()
@@ -3735,8 +3735,8 @@ async def sora_gen_video(
                 except Exception as e:
                     consecutive_errors += 1
                     await sess._bring_sora_drafts_to_front()
-                    if consecutive_errors >= 3:
-                        raise RuntimeError(f"轮询 cameo 状态失败次数过多：{e}")
+                    if consecutive_errors >= 4:
+                        raise RuntimeError(f"轮询 cameo 状态失败{consecutive_errors}次数过多：{e}")
                     continue
 
                 cur = cameo_status.get("status")
