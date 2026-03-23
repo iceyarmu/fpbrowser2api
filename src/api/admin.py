@@ -184,6 +184,7 @@ class CreateBrowserRequest(BaseModel):
     lan_addr: str = Field(min_length=3, max_length=255)
     vendor: str = Field(default="roxy", max_length=50)
     access_key: Optional[str] = Field(default=None, max_length=255)
+    browser_pool_limit: int = Field(default=0, ge=0)
 
 
 class UpdateBrowserRequest(BaseModel):
@@ -191,6 +192,7 @@ class UpdateBrowserRequest(BaseModel):
     lan_addr: str = Field(min_length=3, max_length=255)
     vendor: str = Field(default="roxy", max_length=50)
     access_key: Optional[str] = Field(default=None, max_length=255)
+    browser_pool_limit: int = Field(default=0, ge=0)
 
 
 class CreateSpaceRequest(BaseModel):
@@ -790,7 +792,7 @@ async def list_browsers(project_id: int, token: str = Depends(verify_admin_token
 async def create_browser(req: CreateBrowserRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    bid = await db.create_browser(req.project_id, req.name, req.lan_addr, req.vendor, req.access_key)
+    bid = await db.create_browser(req.project_id, req.name, req.lan_addr, req.vendor, req.access_key, req.browser_pool_limit)
     return {"success": True, "browser_id": bid}
 
 
@@ -798,7 +800,7 @@ async def create_browser(req: CreateBrowserRequest, token: str = Depends(verify_
 async def update_browser(browser_id: int, req: UpdateBrowserRequest, token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    await db.update_browser(browser_id, req.name, req.lan_addr, req.vendor, req.access_key)
+    await db.update_browser(browser_id, req.name, req.lan_addr, req.vendor, req.access_key, req.browser_pool_limit)
     return {"success": True}
 
 

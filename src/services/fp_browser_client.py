@@ -185,9 +185,8 @@ class FPBrowserClient:
             workspace_id = int(space_id)
         except Exception:
             raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+        args = args or []
         if headless:
-            
-            args = args or []
             ##args.append("--headless=old") 容易触发机器人
             ##args.append("--disable-gpu") 容易触发机器人
             args.append("--disable-software-rasterizer")
@@ -197,7 +196,14 @@ class FPBrowserClient:
             args.append("--mute-audio")
             args.append("--disable-extensions")
             args.append("--blink-settings=imagesEnabled=false")
-            pass
+        else:
+            args.append("--disable-software-rasterizer")
+            args.append("--disable-animations")
+            args.append("--disable-threaded-animation")
+            args.append("--disable-threaded-scrolling")
+            args.append("--mute-audio")
+            args.append("--disable-extensions")
+            args.append("--blink-settings=imagesEnabled=false")
 
         return await self._roxy_open_browser(
             base_url=base_url,

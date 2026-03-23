@@ -110,6 +110,11 @@
               <label class="form-label">Access Key（可选）</label>
               <input class="form-control mono" id="browserKey" placeholder="指纹浏览器侧 API key" />
             </div>
+            <div class="mb-3">
+              <label class="form-label">窗口池上限（Browser Pool Limit）</label>
+              <input class="form-control mono" id="browserPoolLimit" type="number" min="0" value="0" placeholder="0" />
+              <div class="form-text">每个浏览器独立的窗口池上限，0 表示使用全局默认值。</div>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -660,6 +665,7 @@
                     <span class="badge text-bg-light mono border text-nowrap">#${b.id}</span>
                     <span class="badge text-bg-secondary text-nowrap">${escapeHtml(b.vendor || "generic")}</span>
                     <span class="text-muted small mono browser-lan">${escapeHtml(b.lan_addr || "")}</span>
+                    ${(b.browser_pool_limit > 0) ? `<span class="badge text-bg-info text-nowrap">池:${b.browser_pool_limit}</span>` : ''}
                   </div>
                 </button>
                 <div class="browser-actions">
@@ -3212,6 +3218,7 @@
         document.getElementById("browserLan").value = b?.lan_addr || "";
         document.getElementById("browserVendor").value = b?.vendor || "generic";
         document.getElementById("browserKey").value = b?.access_key || "";
+        document.getElementById("browserPoolLimit").value = b?.browser_pool_limit || 0;
         browserModal.show();
       }
 
@@ -3223,12 +3230,13 @@
         const lan_addr = document.getElementById("browserLan").value.trim();
         const vendor = document.getElementById("browserVendor").value.trim() || "generic";
         const access_key = document.getElementById("browserKey").value.trim() || null;
+        const browser_pool_limit = parseInt(document.getElementById("browserPoolLimit").value, 10) || 0;
         if (!name || !lan_addr) return toast("请填写名称与局域网地址", "error");
         let r;
         if (!bid) {
-          r = await adminFetch("/api/admin/browsers", { method: "POST", body: JSON.stringify({ project_id: pid, name, lan_addr, vendor, access_key }) });
+          r = await adminFetch("/api/admin/browsers", { method: "POST", body: JSON.stringify({ project_id: pid, name, lan_addr, vendor, access_key, browser_pool_limit }) });
         } else {
-          r = await adminFetch(`/api/admin/browsers/${bid}`, { method: "PUT", body: JSON.stringify({ name, lan_addr, vendor, access_key }) });
+          r = await adminFetch(`/api/admin/browsers/${bid}`, { method: "PUT", body: JSON.stringify({ name, lan_addr, vendor, access_key, browser_pool_limit }) });
         }
         if (!r) return;
         const d = await r.json();

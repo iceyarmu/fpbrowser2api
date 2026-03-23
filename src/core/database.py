@@ -184,6 +184,7 @@ class Database:
                     lan_addr TEXT NOT NULL,
                     vendor TEXT DEFAULT 'generic',
                     access_key TEXT,
+                    browser_pool_limit INTEGER DEFAULT 0,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
@@ -581,6 +582,15 @@ class Database:
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
                         await db.execute(f"ALTER TABLE task_types ADD COLUMN {col_name} {col_type}")
+
+            # browsers: browser_pool_limit（每个浏览器独立的窗口池上限）
+            if await self._table_exists(db, "browsers"):
+                columns_to_add = [
+                    ("browser_pool_limit", "INTEGER DEFAULT 0"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "browsers", col_name):
+                        await db.execute(f"ALTER TABLE browsers ADD COLUMN {col_name} {col_type}")
 
             # spaces: project_ids（用于 RoxyBrowser list_v3 的 projectIds 过滤）
             if await self._table_exists(db, "spaces"):
@@ -1379,27 +1389,28 @@ class Database:
         lan_addr: str,
         vendor: str = "generic",
         access_key: Optional[str] = None,
+        browser_pool_limit: int = 0,
     ) -> int:
         async with self._write_conn() as db:
             cur = await db.execute(
                 """
-                INSERT INTO browsers (project_id, name, lan_addr, vendor, access_key, deleted)
-                VALUES (?, ?, ?, ?, ?, 0)
+                INSERT INTO browsers (project_id, name, lan_addr, vendor, access_key, browser_pool_limit, deleted)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
                 """,
-                (project_id, name.strip(), lan_addr.strip(), vendor.strip() or "generic", access_key),
+                (project_id, name.strip(), lan_addr.strip(), vendor.strip() or "generic", access_key, max(0, int(browser_pool_limit or 0))),
             )
             await db.commit()
             return int(cur.lastrowid)
 
-    async def update_browser(self, browser_id: int, name: str, lan_addr: str, vendor: str, access_key: Optional[str]) -> None:
+    async def update_browser(self, browser_id: int, name: str, lan_addr: str, vendor: str, access_key: Optional[str], browser_pool_limit: int = 0) -> None:
         async with self._write_conn() as db:
             await db.execute(
                 """
                 UPDATE browsers
-                SET name=?, lan_addr=?, vendor=?, access_key=?, updated_at=datetime('now','localtime')
+                SET name=?, lan_addr=?, vendor=?, access_key=?, browser_pool_limit=?, updated_at=datetime('now','localtime')
                 WHERE id=?
                 """,
-                (name.strip(), lan_addr.strip(), vendor.strip() or "generic", access_key, browser_id),
+                (name.strip(), lan_addr.strip(), vendor.strip() or "generic", access_key, max(0, int(browser_pool_limit or 0)), browser_id),
             )
             await db.commit()
 
@@ -3378,7 +3389,7 @@ class Database:
 
                     # Step 1: 按排序挑选 1 个 mapping_id，并取出本次更新需要的并发/阈值参数
                     # 负载窗口池策略：
-                    # - 先按 browser_id 分组，把“已打开 + 已冷却未打开”的窗口压缩到每个浏览器最多 pool_limit 个。
+                    # - 先按 browser_id 分组，每个浏览器使用自身的 browser_pool_limit（0 则回退全局 pool_limit）。
                     # - 再在该窗口池中按既有策略（连续错误最少 -> 最久未用 -> 余额最多）选第 1 个。
                     cur = await db.execute(
                         """
@@ -3394,7 +3405,8 @@ class Database:
                             m.error_cooldown_until AS error_cooldown_until,
                             COALESCE(m.inflight_slots, 0) AS inflight_slots,
                             COALESCE(w.window_status, 0) AS window_status,
-                            b.id AS browser_pk
+                            b.id AS browser_pk,
+                            CASE WHEN COALESCE(b.browser_pool_limit, 0) > 0 THEN b.browser_pool_limit ELSE ? END AS effective_pool_limit
                           FROM task_types t
                           JOIN task_type_windows m ON m.task_type_id = t.id
                           JOIN windows w ON m.window_pk = w.id
@@ -3449,12 +3461,12 @@ class Database:
                           task_concurrency,
                           continuous_error_threshold
                         FROM ranked
-                        WHERE browser_pool_rank <= ?
+                        WHERE browser_pool_rank <= effective_pool_limit
                           AND is_runnable = 1
                         ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                         LIMIT 1
                         """,
-                        (code, pool_limit),
+                        (pool_limit, code),
                     )
                     picked = await cur.fetchone()
                     if not picked:

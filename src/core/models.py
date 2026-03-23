@@ -61,6 +61,7 @@ class FingerprintBrowser(BaseModel):
     lan_addr: str  # 局域网地址（如 http://192.168.1.10:50000）
     vendor: str = "generic"  # roxy/gologin/adspower/...（预留扩展）
     access_key: Optional[str] = None  # 指纹浏览器侧 API Key（如需要）
+    browser_pool_limit: int = 0  # 每个浏览器独立的窗口池上限，0 表示使用全局默认值
     deleted: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
