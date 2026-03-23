@@ -283,6 +283,12 @@
         windowScopeLabel: "",
       };
 
+      function isCharacterCreation(item) {
+        const p = getPromptText(item);
+        if (!p) return false;
+        return p.includes("video_url") || p.includes("generation_id");
+      }
+
       function badgeForStatus(s) {
         const v = String(s || "").toLowerCase();
         if (v === "completed") return `<span class="badge text-bg-success">completed</span>`;
@@ -759,7 +765,7 @@
               <td class="mono truncate-1" title="${escapeHtml(windowIp)}">${escapeHtml(windowIp)}</td>
               <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
               <td class="mono" style="max-width: 120px;">${escapeHtml(x.task_id || "")}</td>
-              <td>${badgeForStatus(x.status)}</td>
+              <td>${badgeForStatus(x.status)}${isCharacterCreation(x) ? ' <span class="badge text-bg-info">角色创建</span>' : ''}</td>
               <td>
                 ${
                   progress === null
