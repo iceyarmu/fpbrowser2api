@@ -2443,7 +2443,7 @@ class SoraSession:
         await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         last_err: Exception | None = None
-        for _attempt in range(3):
+        for _attempt in range(2):
             async with self._bring_drafts_lock:
                 if self.pw_ctx.page is None:
                     raise RuntimeError("page 未初始化")
@@ -2861,7 +2861,7 @@ class SoraSession:
                             except Exception:
                                 pass
 
-                max_create_attempts = 3 if str(first_image_url or "").strip() else 2
+                max_create_attempts = 2 if str(first_image_url or "").strip() else 1
                 task_id: Optional[str] = None
                 create_tx: Dict[str, Any] = {}
                 auth_state: Dict[str, Any] = {}
@@ -3269,7 +3269,7 @@ class SoraSession:
         reason_str = str(draft_item.get("reason_str") or "").strip()
         markdown_reason_str = str(draft_item.get("markdown_reason_str") or "").strip()
             
-        max_publish_attempts = 5
+        max_publish_attempts = 3
         post_resp: Dict[str, Any] = {}
         for publish_attempt in range(1, max_publish_attempts + 1):
             try:
@@ -3532,7 +3532,7 @@ async def sora_gen_video(
             await progress_cb(10, {"stage": "character_from_generation_submit", "generation_id": generation_id})
 
             cameo_obj = None
-            for _from_gen_attempt in range(3):
+            for _from_gen_attempt in range(2):
                 try:
                     cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
                     break
@@ -3617,7 +3617,7 @@ async def sora_gen_video(
 
             await progress_cb(85, {"stage": "character_finalize"})
             character_id = None
-            for _finalize_attempt in range(3):
+            for _finalize_attempt in range(2):
                 try:
                     character_id = await sess.api_character_finalize(
                         target_url=target_url,
@@ -3785,7 +3785,7 @@ async def sora_gen_video(
 
             await progress_cb(85, {"stage": "character_finalize"})
             character_id = None
-            for _finalize_attempt in range(3):
+            for _finalize_attempt in range(2):
                 try:
                     character_id = await sess.api_character_finalize(
                         target_url=target_url,
