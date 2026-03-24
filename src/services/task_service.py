@@ -639,7 +639,7 @@ class TaskService:
 
                 # 当 remaining_count=0 时，参考 admin 接口逻辑尝试在窗口内刷新一次 access_token
                 try:
-                    if nf_check and int(nf_check.get("remaining_count") or 0) == 0:
+                    if nf_check is None or (nf_check and int(nf_check.get("remaining_count") or 0) == 0):
                         info = await sora_fetch_access_token_in_window(sess=sess, target_url=target_url)
                         access_token = str((info or {}).get("access_token") or "").strip() or None
                         expires = str((info or {}).get("expires") or "").strip() or None
