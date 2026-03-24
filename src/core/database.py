@@ -1233,6 +1233,7 @@ class Database:
                   p.created_at AS p_created_at, p.updated_at AS p_updated_at,
                   b.id AS b_id, b.project_id AS b_project_id, b.name AS b_name,
                   b.lan_addr AS b_lan_addr, b.vendor AS b_vendor, b.access_key AS b_access_key,
+                  b.browser_pool_limit AS b_browser_pool_limit,
                   b.deleted AS b_deleted, b.created_at AS b_created_at, b.updated_at AS b_updated_at,
                   s.id AS s_id, s.browser_id AS s_browser_id, s.name AS s_name,
                   s.space_id AS s_space_id, s.project_ids AS s_project_ids,
@@ -1285,7 +1286,9 @@ class Database:
                     b_dict = {
                         "id": bid, "project_id": r["b_project_id"], "name": r["b_name"],
                         "lan_addr": r["b_lan_addr"], "vendor": r["b_vendor"],
-                        "access_key": r["b_access_key"], "deleted": bool(r["b_deleted"]),
+                        "access_key": r["b_access_key"],
+                        "browser_pool_limit": r["b_browser_pool_limit"] or 0,
+                        "deleted": bool(r["b_deleted"]),
                         "created_at": r["b_created_at"], "updated_at": r["b_updated_at"],
                         "spaces": [],
                     }
