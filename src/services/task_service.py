@@ -19,6 +19,7 @@ from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
 from .sora_wm_remove_executor import sora_wm_remove
 from .sora_plus_register_executor import sora_plus_register
+from .veo_workflow_executor import veo_workflow
 
 
 @dataclass
@@ -724,6 +725,21 @@ class TaskService:
                             timeout_seconds=float(picked.timeout_seconds),
                             access_token=picked.sora_access_token,
                             access_expires=picked.sora_access_expires,
+                            headless=picked.headless,
+                        ),
+                        timeout=float(picked.timeout_seconds),
+                    )
+                elif picked.create_task_handler == "veo_workflow":
+                    result = await asyncio.wait_for(
+                        veo_workflow(
+                            payload,
+                            progress_cb,
+                            browser_vendor=picked.browser_vendor,
+                            browser_base_url=picked.browser_base_url,
+                            browser_access_key=picked.browser_access_key,
+                            space_id=picked.space_id,
+                            window_key=picked.window_key,
+                            timeout_seconds=float(picked.timeout_seconds),
                             headless=picked.headless,
                         ),
                         timeout=float(picked.timeout_seconds),

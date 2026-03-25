@@ -192,6 +192,7 @@ class TaskType(BaseModel):
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
     error_retry_count: int = 0
+    default_target_url: Optional[str] = None
     enabled: bool = True
     deleted: bool = False
     created_at: Optional[datetime] = None

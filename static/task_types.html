@@ -185,6 +185,11 @@
                   <div class="text-muted small">点击额度后的刷新按钮会调用此函数。</div>
                 </div>
                 <div class="col-12">
+                  <label class="form-label form-label-tight">默认目标网址</label>
+                  <input class="form-control form-control-sm mono" id="typeDefaultTargetUrl" placeholder="https://example.com/..." />
+                  <div class="text-muted small">窗口操作（打开/启动/刷新等）时默认导航到此 URL。</div>
+                </div>
+                <div class="col-12">
                   <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="typeEnabled" checked />
                     <label class="form-check-label" for="typeEnabled">启用</label>
@@ -713,6 +718,7 @@
           "typeErrRetry",
           "typeCreateHandler",
           "typeQuotaHandler",
+          "typeDefaultTargetUrl",
           "typeEnabled",
         ].forEach((id) => {
           const el = document.getElementById(id);
@@ -1919,6 +1925,7 @@
         document.getElementById("typeErrRetry").value = t?.error_retry_count ?? 0;
         document.getElementById("typeCreateHandler").value = t?.create_task_handler || "";
         document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
+        document.getElementById("typeDefaultTargetUrl").value = t?.default_target_url || "";
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
         setTaskTypeConfigReadonly(!canEditTaskTypeConfig());
@@ -1955,6 +1962,7 @@
             error_retry_count: parseInt(document.getElementById("typeErrRetry").value, 10) || 0,
             create_task_handler: document.getElementById("typeCreateHandler").value || null,
             refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
+            default_target_url: document.getElementById("typeDefaultTargetUrl").value.trim() || null,
             enabled: document.getElementById("typeEnabled").checked,
           };
           if (!payload.name || !payload.code) throw new Error("请填写名称与英文名称");
@@ -2392,6 +2400,11 @@
           const failConsecutive = Number(m.consecutive_errors ?? 0) || 0;
           const fail24h = Number(m.failed_count_24h ?? m.fail_count_24h ?? m.error_count_24h ?? 0) || 0;
           const failTotal = Number(m.total_errors ?? 0) || 0;
+          const _handler = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          const _isSora = !_handler || _handler.startsWith("sora");
+          const _isVeo = _handler === "veo_workflow";
+          const _openTitle = _isVeo ? "打开窗口并导航到目标页面" : "打开窗口（禁止自动关闭）";
+          const _startTitle = _isVeo ? "启用 + 立刻重启窗口并进入目标页面" : "启用 + 立刻重启窗口并进入 Sora drafts";
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -2401,9 +2414,9 @@
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
-                  <button class="btn btn-outline-success btn-sm btn-icon" title="打开窗口（禁止自动关闭）" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
+                  <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
 
-                  <button class="btn btn-outline-primary btn-sm btn-icon" title="启用 + 立刻重启窗口并进入 Sora drafts" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
+                  <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                   <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
@@ -3500,7 +3513,8 @@
           const hl = getMappingHeadless(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
-          toast("已打开窗口，并禁止自动关闭", "success");
+          const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          toast(_h === "veo_workflow" ? "已打开窗口并导航到目标页面" : "已打开窗口，并禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
         } catch (e) {
           toast(e.message, "error");
@@ -3523,7 +3537,8 @@
           const hl = getMappingHeadless(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, { enabled: true, window_status: 1 }, { fromEl });
-          toast("已启动：启用窗口 + 重启并进入 drafts", "success");
+          const _h2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          toast(_h2 === "veo_workflow" ? "已启动：启用窗口 + 重启并进入目标页面" : "已启动：启用窗口 + 重启并进入 drafts", "success");
           flashBtnText(startBtn, "已启动");
         } catch (e) {
           toast(e.message, "error");

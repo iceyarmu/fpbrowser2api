@@ -1914,16 +1914,18 @@ class SoraSession:
         await self._push_debug_progress(page, "点击 Log in 失败（全部策略）", level="error")
         return False, has_login_button
 
-    async def _bring_sora_drafts_to_front(self, refresh_target=True) -> None:
-        """将 Sora drafts 页面置前，并尽量确保整个指纹浏览器实例只保留一个 drafts 页面。
+    async def _bring_sora_drafts_to_front(self, refresh_target=True, *, drafts_url: str = "https://sora.chatgpt.com/drafts") -> None:
+        """将目标页面置前，并尽量确保整个指纹浏览器实例只保留一个目标页面。
 
-        需求背景：指纹浏览器可能开了多个标签页/窗口；即使 ensure_open 选中了可用 page，也不一定是 drafts。
-        这里确保 `https://sora.chatgpt.com/drafts` 在每次 ensure_open 后都会被 bring_to_front，
+        需求背景：指纹浏览器可能开了多个标签页/窗口；即使 ensure_open 选中了可用 page，也不一定是目标页面。
+        这里确保 drafts_url 在每次 ensure_open 后都会被 bring_to_front，
         且会关闭同一个指纹浏览器（同一 CDP 连接）内除 drafts_url 外的其它页面（包括其它站点、about:blank、新窗口、重复 drafts 等），
-        尽量只保留一个 drafts 页面以节省内存。
+        尽量只保留一个目标页面以节省内存。
         """
-        drafts_url = "https://sora.chatgpt.com/drafts"
-        sora_host = "sora.chatgpt.com"
+        try:
+            sora_host = urlparse(drafts_url).netloc.strip().lower()
+        except Exception:
+            sora_host = "sora.chatgpt.com"
 
         async with self._bring_drafts_lock:
             def _is_page_closed(p: Any) -> bool:

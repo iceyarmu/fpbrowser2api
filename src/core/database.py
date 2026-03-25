@@ -313,6 +313,7 @@ class Database:
                     timeout_seconds INTEGER DEFAULT 1800,
                     create_task_handler TEXT,
                     refresh_quota_handler TEXT,
+                    default_target_url TEXT,
                     enabled BOOLEAN DEFAULT 1,
                     deleted BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
@@ -578,6 +579,7 @@ class Database:
                     ("continuous_error_close_window_threshold", "INTEGER DEFAULT 3"),
                     ("project_id", "INTEGER"),
                     ("error_retry_count", "INTEGER DEFAULT 0"),
+                    ("default_target_url", "TEXT"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
@@ -2970,16 +2972,17 @@ class Database:
         create_task_handler: Optional[str] = None,
         refresh_quota_handler: Optional[str] = None,
         error_retry_count: int = 0,
+        default_target_url: Optional[str] = None,
     ) -> int:
         async with self._write_conn() as db:
             cur = await db.execute(
                 """
                 INSERT INTO task_types (
                   name, code, project_id, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
-                  create_task_handler, refresh_quota_handler, error_retry_count,
+                  create_task_handler, refresh_quota_handler, error_retry_count, default_target_url,
                   enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
@@ -2992,6 +2995,7 @@ class Database:
                     (create_task_handler or "").strip() or None,
                     (refresh_quota_handler or "").strip() or None,
                     int(error_retry_count),
+                    (default_target_url or "").strip() or None,
                 ),
             )
             await db.commit()
@@ -3011,6 +3015,7 @@ class Database:
         refresh_quota_handler: Optional[str],
         enabled: bool,
         error_retry_count: int = 0,
+        default_target_url: Optional[str] = None,
     ) -> None:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -3036,7 +3041,7 @@ class Database:
                 """
                 UPDATE task_types
                 SET name=?, code=?, project_id=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
-                    create_task_handler=?, refresh_quota_handler=?, error_retry_count=?,
+                    create_task_handler=?, refresh_quota_handler=?, error_retry_count=?, default_target_url=?,
                     enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
                 """,
@@ -3051,6 +3056,7 @@ class Database:
                     (create_task_handler or "").strip() or None,
                     (refresh_quota_handler or "").strip() or None,
                     int(error_retry_count),
+                    (default_target_url or "").strip() or None,
                     1 if enabled else 0,
                     task_type_id,
                 ),
@@ -3073,6 +3079,7 @@ class Database:
                   t.code AS task_code,
                   t.create_task_handler,
                   t.refresh_quota_handler,
+                  t.default_target_url,
                   w.window_key,
                   w.window_name,
                   w.platform_account,
