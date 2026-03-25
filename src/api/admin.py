@@ -2467,7 +2467,7 @@ async def convert_sora_session_token_to_access_token(
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
 async def manual_open_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
-    """手动打开窗口并禁止 _schedule_idle_close 自动关闭（保持窗口常驻）。"""
+    """手动仅打开指纹浏览器窗口并禁止空闲自动关闭；不连接 CDP、不导航/初始化页面（降低自动化风控触发）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -2484,12 +2484,10 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
-    default_target_url = str(ctx_row.get("default_target_url") or "").strip()
 
     if handler == "veo_workflow":
         from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
 
-        target_url = default_target_url or "https://veo.google.com"
         veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         veo_ctx.browser_headless = headless
         veo_ctx.idle_close_disabled = True
@@ -2498,14 +2496,16 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
         except Exception:
             pass
         try:
-            await veo_ctx.ensure_open(args=[], force_open=False, headless=headless)
-            await veo_ctx._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+            await veo_ctx.pw_ctx.open_fingerprint_window_only(
+                args=veo_ctx.browser_open_args,
+                force_open=veo_ctx.browser_force_open,
+                headless=headless,
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
     else:
         from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
-        target_url = default_target_url or "https://sora.chatgpt.com/drafts"
         sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         sora_ctx.browser_headless = headless
         sora_ctx.idle_close_disabled = True
@@ -2514,8 +2514,11 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
         except Exception:
             pass
         try:
-            await sora_ctx.ensure_open(args=[], force_open=False, headless=headless)
-            await sora_ctx._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
+            await sora_ctx.pw_ctx.open_fingerprint_window_only(
+                args=sora_ctx.browser_open_args,
+                force_open=sora_ctx.browser_force_open,
+                headless=headless,
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
 

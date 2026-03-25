@@ -20,7 +20,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
 
 from ..core.database import Database
@@ -486,6 +486,62 @@ class PlaywrightBrowserContext:
             self.context = await self.browser.new_context()
         await self._sync_window_status(True)
 
+    async def disconnect_playwright_only(self) -> None:
+        """关闭本地 Playwright/CDP 连接，不调用指纹 API 关窗（指纹侧窗口可保持打开）。"""
+        br = self.browser
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.cdp_endpoint = None
+        try:
+            if br is not None:
+                await br.close()
+        except Exception:
+            pass
+        pw = self.playwright
+        self.playwright = None
+        try:
+            if pw is not None:
+                await pw.stop()
+        except Exception:
+            pass
+
+    async def open_fingerprint_window_only(
+        self,
+        *,
+        args: Optional[List[str]] = None,
+        force_open: bool = False,
+        headless: bool = False,
+    ) -> None:
+        """仅通过指纹 API 打开/唤起窗口：不 connect_over_cdp、不挑选或初始化 page。"""
+        await self.disconnect_playwright_only()
+        async with acquire_browser_open_slot(self.base_url):
+            rsp = await self.fp_client.browser_open(
+                vendor=self.vendor,
+                base_url=self.base_url,
+                access_key=self.access_key,
+                space_id=self.space_id,
+                window_key=self.window_key,
+                args=list(args or []),
+                force_open=bool(force_open),
+                headless=bool(headless),
+            )
+            if (rsp or {}).get("code") != 0:
+                raw_endpoint = ""
+                try:
+                    conn = await self.fp_client.get_open_window_connection_info(
+                        vendor=self.vendor,
+                        base_url=self.base_url,
+                        access_key=self.access_key,
+                        window_key=self.window_key,
+                    )
+                    if conn:
+                        raw_endpoint = str(conn.get("http") or conn.get("ws") or "").strip()
+                except Exception:
+                    pass
+                if not raw_endpoint:
+                    raise RuntimeError(f"browser_open 失败：{rsp}")
+        await self._sync_window_status(True)
 
     async def close(self) -> None:
         self.last_used_at = time.time()

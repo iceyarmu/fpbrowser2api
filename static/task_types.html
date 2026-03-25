@@ -2438,7 +2438,7 @@
           const _handler = String(state.current?.create_task_handler || "").trim().toLowerCase();
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
-          const _openTitle = _isVeo ? "打开窗口并导航到目标页面" : "打开窗口（禁止自动关闭）";
+          const _openTitle = "仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
           const _startTitle = _isVeo ? "启用 + 立刻重启窗口并进入目标页面" : "启用 + 立刻重启窗口并进入 Sora drafts";
           return `
           <tr class="small2" data-mid="${m.id}">
@@ -3653,8 +3653,7 @@
           const hl = getMappingHeadless(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
-          const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(_h === "veo_workflow" ? "已打开窗口并导航到目标页面" : "已打开窗口，并禁止自动关闭", "success");
+          toast("已打开指纹窗口（未连接自动化），已禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
         } catch (e) {
           toast(e.message, "error");
