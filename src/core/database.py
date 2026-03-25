@@ -362,6 +362,23 @@ class Database:
 
             await db.execute(
                 """
+                CREATE TABLE IF NOT EXISTS veo_flow_projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type_window_id INTEGER NOT NULL,
+                    project_id TEXT NOT NULL,
+                    project_name TEXT NOT NULL,
+                    tool_name TEXT NOT NULL DEFAULT 'PINHOLE',
+                    is_active BOOLEAN DEFAULT 1,
+                    deleted BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                    FOREIGN KEY (task_type_window_id) REFERENCES task_type_windows(id)
+                )
+                """
+            )
+
+            await db.execute(
+                """
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT UNIQUE NOT NULL,
@@ -442,6 +459,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_spaces_browser_id ON spaces(browser_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_windows_space_pk ON windows(space_pk)")
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_veo_flow_projects_ttw ON veo_flow_projects(task_type_window_id)"
+            )
             # 调度挑选路径索引：按 task_type 过滤 + 活跃记录排序挑选
             await db.execute(
                 """
@@ -3225,7 +3245,12 @@ class Database:
                     WHERE window_pk = m.window_pk
                       AND status = 'failed'
                       AND created_at >= datetime('now', '-24 hours', 'localtime')
-                  ) AS failed_count_24h
+                  ) AS failed_count_24h,
+                  (
+                    SELECT COUNT(*)
+                    FROM veo_flow_projects v
+                    WHERE v.task_type_window_id = m.id AND v.deleted = 0
+                  ) AS veo_flow_project_count
                 FROM task_type_windows m
                 JOIN windows w ON m.window_pk = w.id
                 JOIN spaces s ON w.space_pk = s.id
@@ -3238,6 +3263,60 @@ class Database:
             )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+    async def list_veo_flow_projects(self, task_type_window_id: int) -> List[Dict[str, Any]]:
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT id, task_type_window_id, project_id, project_name, tool_name, is_active,
+                       created_at, updated_at
+                FROM veo_flow_projects
+                WHERE task_type_window_id = ? AND deleted = 0
+                ORDER BY id DESC
+                """,
+                (int(task_type_window_id),),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def count_veo_flow_projects(self, task_type_window_id: int) -> int:
+        async with self._read_conn() as db:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM veo_flow_projects WHERE task_type_window_id = ? AND deleted = 0",
+                (int(task_type_window_id),),
+            )
+            row = await cur.fetchone()
+            try:
+                return int(row[0] or 0)
+            except Exception:
+                return 0
+
+    async def add_veo_flow_project(
+        self,
+        task_type_window_id: int,
+        project_id: str,
+        project_name: str,
+        tool_name: str = "PINHOLE",
+        is_active: bool = True,
+    ) -> int:
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                """
+                INSERT INTO veo_flow_projects (
+                  task_type_window_id, project_id, project_name, tool_name, is_active, deleted, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, datetime('now','localtime'))
+                """,
+                (
+                    int(task_type_window_id),
+                    str(project_id).strip(),
+                    str(project_name).strip(),
+                    (tool_name or "PINHOLE").strip(),
+                    1 if is_active else 0,
+                ),
+            )
+            await db.commit()
+            return int(cur.lastrowid or 0)
 
     async def add_task_type_windows(
         self,

@@ -794,9 +794,14 @@ class TaskService:
                         timeout=float(picked.timeout_seconds),
                     )
                 elif picked.create_task_handler == "veo_workflow":
+                    veo_payload = dict(payload or {})
+                    if picked.default_target_url and not str(
+                        veo_payload.get("veo_url") or veo_payload.get("target_url") or ""
+                    ).strip():
+                        veo_payload["veo_url"] = picked.default_target_url
                     result = await asyncio.wait_for(
                         veo_workflow(
-                            payload,
+                            veo_payload,
                             progress_cb,
                             browser_vendor=picked.browser_vendor,
                             browser_base_url=picked.browser_base_url,
@@ -804,6 +809,8 @@ class TaskService:
                             space_id=picked.space_id,
                             window_key=picked.window_key,
                             timeout_seconds=float(picked.timeout_seconds),
+                            access_token=picked.sora_access_token,
+                            access_expires=picked.sora_access_expires,
                             headless=picked.headless,
                         ),
                         timeout=float(picked.timeout_seconds),

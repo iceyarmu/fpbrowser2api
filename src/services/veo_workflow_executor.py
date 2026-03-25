@@ -14,8 +14,9 @@ import asyncio
 import random
 import re
 import time
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from .playwright_broswer_context import (
@@ -1034,6 +1035,170 @@ def get_or_create_veo_session(
 # Google Labs / Flow：余额与档位（与 flow2api flow_client.get_credits 对齐）
 # ---------------------------------------------------------------------------
 FLOW_LABS_CREDITS_URL = "https://aisandbox-pa.googleapis.com/v1/credits"
+FLOW_VIDEO_SUBMIT_T2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText"
+FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
+VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
+
+PAYGATE_TIER_NOT_PAID = "PAYGATE_TIER_NOT_PAID"
+PAYGATE_TIER_ONE = "PAYGATE_TIER_ONE"
+PAYGATE_TIER_TWO = "PAYGATE_TIER_TWO"
+
+
+def _veo_normalize_user_paygate_tier(user_paygate_tier: Optional[str]) -> str:
+    normalized = (user_paygate_tier or "").strip()
+    if normalized in {PAYGATE_TIER_NOT_PAID, PAYGATE_TIER_ONE, PAYGATE_TIER_TWO}:
+        return normalized
+    return PAYGATE_TIER_NOT_PAID
+
+
+def _veo_adjust_model_key_for_tier(model_key: str, tier: str) -> str:
+    """与 flow2api generation_handler._handle_video_generation 中 tier/ultra 规则对齐。"""
+    mk = (model_key or "").strip()
+    if not mk:
+        return mk
+    if tier == PAYGATE_TIER_TWO:
+        if "ultra" not in mk:
+            if "_fl" in mk:
+                mk = mk.replace("_fl", "_ultra_fl")
+            else:
+                mk = mk + "_ultra"
+    elif tier in (PAYGATE_TIER_ONE, PAYGATE_TIER_NOT_PAID):
+        if "ultra" in mk:
+            mk = mk.replace("_ultra_fl", "_fl").replace("_ultra", "")
+    return mk
+
+
+def _veo_extract_project_id_from_url(url: str) -> Optional[str]:
+    if not url:
+        return None
+    m = re.search(r"/tools/flow/project/([a-zA-Z0-9_-]+)", url)
+    return m.group(1) if m else None
+
+
+def _veo_labs_fx_prefix_url(hint_url: str) -> str:
+    """用于 _bring_target_page_to_front：任意 labs 子路径均以 {origin}/fx 为前缀。"""
+    h = (hint_url or "").strip() or "https://labs.google/fx"
+    try:
+        p = urlparse(h)
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}/fx"
+    except Exception:
+        pass
+    return "https://labs.google/fx"
+
+
+def _veo_project_page_url(*, project_id: str, hint_url: str) -> str:
+    """构建 Flow 项目页 URL（保留 hint 中的语言前缀，如 /fx/zh/tools/flow/...）。"""
+    pid = (project_id or "").strip()
+    if not pid:
+        return (hint_url or "").strip() or "https://labs.google/fx"
+    hint = (hint_url or "").strip() or "https://labs.google/fx"
+    try:
+        p = urlparse(hint)
+        origin = f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else "https://labs.google"
+    except Exception:
+        origin = "https://labs.google"
+    m = re.search(r"/fx/([a-z]{2})/tools/flow", hint, re.I)
+    if m:
+        return f"{origin}/fx/{m.group(1)}/tools/flow/project/{pid}"
+    return f"{origin}/fx/tools/flow/project/{pid}"
+
+
+def _veo_payload_looks_like_i2v(payload: Dict[str, Any]) -> bool:
+    vt = str(payload.get("video_type") or payload.get("veo_video_type") or "").strip().lower()
+    if vt in ("i2v", "image_to_video", "img2vid", "img2video"):
+        return True
+    if str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip():
+        return True
+    if str(payload.get("image_url") or payload.get("imageUrl") or "").strip():
+        return True
+    imgs = payload.get("images")
+    if isinstance(imgs, list) and len(imgs) > 0:
+        return True
+    last_u = str(payload.get("last_image_url") or payload.get("lastImageUrl") or "").strip()
+    if last_u:
+        return True
+    return False
+
+
+def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
+    """返回 (videoModelKey, aspectRatio)，默认 Veo 3.1 横屏。"""
+    raw = (
+        str(
+            payload.get("model")
+            or payload.get("veo_model")
+            or payload.get("video_model")
+            or payload.get("videoModelKey")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    portrait_aliases = (
+        "veo_3_1_t2v_fast_portrait",
+        "portrait",
+        "竖",
+        "竖屏",
+        "9:16",
+        "portrait_ultra",
+        "t2v_portrait",
+    )
+    landscape_aliases = (
+        "veo_3_1_t2v_fast",
+        "veo_3_1_t2v_fast_landscape",
+        "landscape",
+        "横",
+        "横屏",
+        "16:9",
+        "t2v_landscape",
+    )
+    if raw in portrait_aliases or ("portrait" in raw and "landscape" not in raw):
+        return "veo_3_1_t2v_fast_portrait", "VIDEO_ASPECT_RATIO_PORTRAIT"
+    if raw in landscape_aliases or "landscape" in raw:
+        return "veo_3_1_t2v_fast", "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    if not raw:
+        return "veo_3_1_t2v_fast", "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    if "portrait" in raw:
+        return "veo_3_1_t2v_fast_portrait", "VIDEO_ASPECT_RATIO_PORTRAIT"
+    return "veo_3_1_t2v_fast", "VIDEO_ASPECT_RATIO_LANDSCAPE"
+
+
+def _veo_generate_session_id() -> str:
+    return f";{int(time.time() * 1000)}"
+
+
+async def _veo_try_recaptcha_token_in_page(page: Any, *, action: str, log_file: Path) -> Optional[str]:
+    """在已打开的 Labs 页面尝试 grecaptcha.enterprise.execute（与 flow2api 站点 key / action 一致）。"""
+    try:
+        res = await page.evaluate(
+            """async ({ siteKey, action }) => {
+              try {
+                if (window.grecaptcha && window.grecaptcha.enterprise) {
+                  await new Promise((resolve) => {
+                    try {
+                      window.grecaptcha.enterprise.ready(() => resolve());
+                    } catch (e) {
+                      resolve();
+                    }
+                  });
+                  const t = await window.grecaptcha.enterprise.execute(siteKey, { action });
+                  return (t && String(t)) || null;
+                }
+              } catch (e) {
+                return { __err: String(e && e.message ? e.message : e) };
+              }
+              return null;
+            }""",
+            {"siteKey": VEO_RECAPTCHA_SITE_KEY, "action": action},
+        )
+        if isinstance(res, dict) and res.get("__err"):
+            append_log(log_file, f"[veo][recaptcha] enterprise.execute error: {res.get('__err')}")
+            return None
+        s = str(res or "").strip()
+        return s or None
+    except Exception as e:
+        append_log(log_file, f"[veo][recaptcha] page.evaluate failed: {e}")
+        return None
 
 
 def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
@@ -1235,6 +1400,104 @@ async def veo_fetch_access_token_in_window(
         }
 
 
+def _veo_trpc_create_project_url(target_url: str) -> str:
+    raw = (target_url or "").strip() or "https://labs.google/fx"
+    try:
+        p = urlparse(raw)
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}/fx/api/trpc/project.createProject"
+    except Exception:
+        pass
+    return "https://labs.google/fx/api/trpc/project.createProject"
+
+
+def _parse_trpc_create_project_response(obj: Any) -> Optional[str]:
+    if obj is None:
+        return None
+    cur: Any = obj
+    if isinstance(cur, list) and cur:
+        cur = cur[0]
+    if not isinstance(cur, dict):
+        return None
+
+    def _dig(d: Any, *keys: str) -> Any:
+        x = d
+        for k in keys:
+            if not isinstance(x, dict):
+                return None
+            x = x.get(k)
+        return x
+
+    r = _dig(cur, "result", "data", "json", "result")
+    if isinstance(r, dict):
+        pid = r.get("projectId") or r.get("project_id")
+        if pid:
+            s = str(pid).strip()
+            return s or None
+
+    j = _dig(cur, "result", "data", "json")
+    if isinstance(j, dict):
+        pid2 = j.get("projectId") or j.get("project_id")
+        if pid2:
+            s2 = str(pid2).strip()
+            return s2 or None
+
+    pid3 = cur.get("projectId") or cur.get("project_id")
+    if pid3:
+        s3 = str(pid3).strip()
+        return s3 or None
+    return None
+
+
+async def veo_create_flow_project_in_window(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+    title: str,
+    tool_name: str = "PINHOLE",
+) -> str:
+    """在指纹浏览器页面内调用 Flow `project.createProject`（与 flow2api flow_client.create_project 等价，走 Cookie）。"""
+    title = str(title or "").strip()
+    if not title:
+        raise RuntimeError("项目标题不能为空")
+    tn = str(tool_name or "PINHOLE").strip() or "PINHOLE"
+
+    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
+    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+    sess._cancel_idle_close()
+
+    async with sess._bring_drafts_lock:
+        if sess.pw_ctx.page is None:
+            raise RuntimeError("page 未初始化")
+
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        url = _veo_trpc_create_project_url(target_url)
+        json_data = {"json": {"projectTitle": title, "toolName": tn}}
+
+        tx = await page_fetch_json(
+            sess.pw_ctx.page,
+            url=url,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json_data=json_data,
+            log_file=log_file,
+        )
+        st = tx.get("status")
+        if st is not None and int(st) >= 400:
+            body = safe_trim(str(tx.get("response_body") or ""), 500)
+            raise RuntimeError(f"createProject 失败：HTTP {st} {body}")
+
+        pid = _parse_trpc_create_project_response(tx.get("_json"))
+        if not pid:
+            raise RuntimeError(f"createProject 响应无效：{safe_trim(str(tx.get('response_body') or ''), 400)}")
+
+        append_log(log_file, f"[veo][project] created title={title!r} project_id={pid}")
+        return pid
+
+
 # ---------------------------------------------------------------------------
 # 入口函数
 # ---------------------------------------------------------------------------
@@ -1248,31 +1511,46 @@ async def veo_workflow(
     space_id: str,
     window_key: str,
     timeout_seconds: float,
+    access_token: Optional[str] = None,
+    access_expires: Optional[str] = None,
     headless: bool = False,
 ) -> Dict[str, Any]:
-    """VEO 视频生成工作流：复用同一指纹浏览器窗口 + Playwright(CDP) 轻量连接。
+    """VEO 文生视频（T2V）：指纹浏览器页面内 fetch aisandbox API + 轮询状态。
 
-    流程框架：
-    1. 打开指纹浏览器 / 复用已有 session
-    2. 导航到 VEO 目标页面
-    3. 提交视频生成任务
-    4. 轮询任务进度
-    5. 获取最终视频 URL 并返回
+    图生视频（I2V）仅占位：若 payload 含参考图相关字段则返回 501。
     """
-
+    _ = access_expires
     payload = payload or {}
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
         raise NonPenalizedTaskError("payload.prompt 不能为空", status_code=400)
 
-    # 从 payload 提取可选参数
-    target_url = str(payload.get("veo_url") or payload.get("target_url") or "").strip()
+    if _veo_payload_looks_like_i2v(payload):
+        raise NonPenalizedTaskError(
+            "图生视频（I2V）尚未实现，请暂时仅使用文生视频（T2V）；"
+            "请勿传 first_image_url / images 或 video_type=i2v",
+            status_code=501,
+        )
+
+    labs_hint = str(payload.get("veo_url") or payload.get("target_url") or "").strip() or "https://labs.google/fx"
+    project_id = str(
+        payload.get("veo_project_id") or payload.get("project_id") or payload.get("current_project_id") or ""
+    ).strip()
+    if not project_id:
+        project_id = _veo_extract_project_id_from_url(labs_hint) or ""
+    if not project_id:
+        raise NonPenalizedTaskError(
+            "缺少 Flow projectId：请在 payload 中设置 veo_project_id（或 project_id），"
+            "或让 veo_url 包含 /tools/flow/project/{id}",
+            status_code=400,
+        )
+
     monitor_log_path = str(payload.get("monitor_log_path") or "").strip() or None
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
-    max_wait_seconds = float(payload.get("veo_pending_max_wait_seconds") or max(30.0, min(timeout_seconds, 600.0)))
+    max_wait_seconds = float(payload.get("veo_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 1800.0)))
     poll_interval_seconds = float(payload.get("veo_pending_poll_interval_seconds") or 5.0)
+    max_submit_retries = max(1, min(5, int(payload.get("veo_submit_max_retries") or 3)))
 
-    # ── Step 1：获取/创建 VEO 会话 ──
     sess = get_or_create_veo_session(
         vendor=browser_vendor,
         base_url=browser_base_url,
@@ -1286,57 +1564,241 @@ async def veo_workflow(
 
     log_file = sess._log_file
     started_at = time.time()
+    bring_prefix = _veo_labs_fx_prefix_url(labs_hint)
+    project_page = _veo_project_page_url(project_id=project_id, hint_url=labs_hint)
 
-    append_log(log_file, f"[veo] workflow start prompt={safe_trim(prompt, 200)!r}")
-    await progress_cb(1, {"stage": "init", "prompt": safe_trim(prompt, 200)})
+    append_log(log_file, f"[veo] workflow T2V start project_id={project_id!r} prompt={safe_trim(prompt, 200)!r}")
+    await progress_cb(1, {"stage": "init", "prompt": safe_trim(prompt, 200), "project_id": project_id})
 
-    # ── Step 2：打开指纹浏览器窗口 & 建立 CDP 连接 ──
     await sess.ensure_open(headless=headless)
     await progress_cb(5, {"stage": "browser_open"})
     append_log(log_file, "[veo] browser open / CDP connected")
 
-    # ── Step 3：导航到 VEO 目标页面 ──
-    if target_url:
-        nav_timeout_ms = int(max(10_000, min(60_000, timeout_seconds * 1000)))
-        await sess.navigate_to(target_url, timeout_ms=nav_timeout_ms)
-        await progress_cb(10, {"stage": "navigate", "url": target_url})
-        append_log(log_file, f"[veo] navigated to {safe_trim(target_url, 200)!r}")
+    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
+    sess._cancel_idle_close()
+    nav_timeout_ms = int(max(15_000, min(120_000, float(timeout_seconds) * 1000)))
+    await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
+    await progress_cb(10, {"stage": "navigate", "url": project_page})
+    append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
 
-    # ── Step 4：提交视频生成任务（TODO: 对接 VEO 实际 API） ──
-    await progress_cb(15, {"stage": "submit_task", "prompt": safe_trim(prompt, 200)})
-    append_log(log_file, "[veo] TODO: submit generation task")
+    at = str(access_token or "").strip() or None
+    if not at:
+        try:
+            tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
+            at = str((tok_info or {}).get("access_token") or "").strip() or None
+        except Exception as e:
+            append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
+            at = None
+    if not at:
+        raise NonPenalizedTaskError(
+            "缺少可用的 access_token：请在任务窗口映射中配置 Labs access_token，或确保指纹窗口已登录并可取得凭证",
+            status_code=401,
+        )
 
-    # TODO: 在此处实现实际的 VEO 任务提交逻辑
-    # 示例：
-    # tx = await sess.page_fetch(
-    #     "https://veo-api-endpoint/generate",
-    #     method="POST",
-    #     json_data={"prompt": prompt, ...},
-    # )
-    # task_id = tx.get("_json", {}).get("task_id")
+    user_tier = _veo_normalize_user_paygate_tier(
+        str(payload.get("user_paygate_tier") or payload.get("userPaygateTier") or "").strip() or None
+    )
+    auto_tier_v = payload.get("veo_auto_user_paygate_tier", True)
+    do_credits_tier = True
+    if auto_tier_v is False:
+        do_credits_tier = False
+    elif isinstance(auto_tier_v, str) and auto_tier_v.strip().lower() in ("0", "false", "no", "off"):
+        do_credits_tier = False
+    try:
+        if do_credits_tier:
+            cred = await veo_fetch_credits_in_window(sess=sess, target_url=project_page, access_token=at)
+            t2 = (cred or {}).get("user_paygate_tier")
+            if t2:
+                user_tier = _veo_normalize_user_paygate_tier(str(t2))
+                append_log(log_file, f"[veo] user_paygate_tier from credits: {user_tier}")
+    except Exception as e:
+        append_log(log_file, f"[veo] credits tier probe skipped: {e}")
 
-    # ── Step 5：轮询任务进度（TODO: 对接 VEO 实际轮询接口） ──
-    await progress_cb(20, {"stage": "polling"})
-    append_log(log_file, "[veo] TODO: poll task progress")
+    base_model_key, aspect_ratio = _veo_resolve_t2v_model(payload)
+    model_key = _veo_adjust_model_key_for_tier(base_model_key, user_tier)
+    if model_key != base_model_key:
+        append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
 
-    # TODO: 在此处实现轮询逻辑
-    # deadline = time.time() + max_wait_seconds
-    # while time.time() < deadline:
-    #     status = await sess.page_fetch(f"https://veo-api-endpoint/status/{task_id}")
-    #     data = status.get("_json", {})
-    #     if data.get("status") == "completed":
-    #         video_url = data.get("video_url")
-    #         break
-    #     await asyncio.sleep(poll_interval_seconds)
+    recaptcha_override = str(
+        payload.get("recaptcha_token")
+        or payload.get("veo_recaptcha_token")
+        or payload.get("recaptchaContextToken")
+        or ""
+    ).strip() or None
 
-    # ── Step 6：返回结果 ──
+    await asyncio.sleep(max(0.5, float(payload.get("veo_recaptcha_pre_wait_seconds") or 2.0)))
+
+    page = sess.pw_ctx.page
+    if page is None:
+        raise RuntimeError("page 未初始化")
+
+    operations: List[Dict[str, Any]] = []
+    last_submit_err: Optional[str] = None
+
+    for attempt in range(max_submit_retries):
+        recaptcha_token = recaptcha_override
+        if not recaptcha_token:
+            recaptcha_token = await _veo_try_recaptcha_token_in_page(
+                page, action="VIDEO_GENERATION", log_file=log_file
+            )
+        if not recaptcha_token:
+            last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
+            append_log(log_file, f"[veo] submit attempt {attempt + 1}: no recaptcha token")
+            if attempt + 1 < max_submit_retries:
+                await asyncio.sleep(2.0)
+                try:
+                    await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
+                except Exception:
+                    pass
+            continue
+
+        session_id = _veo_generate_session_id()
+        scene_id = str(uuid.uuid4())
+        json_data: Dict[str, Any] = {
+            "clientContext": {
+                "recaptchaContext": {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                },
+                "sessionId": session_id,
+                "projectId": project_id,
+                "tool": "PINHOLE",
+                "userPaygateTier": user_tier,
+            },
+            "requests": [
+                {
+                    "aspectRatio": aspect_ratio,
+                    "seed": random.randint(1, 99999),
+                    "textInput": {"prompt": prompt},
+                    "videoModelKey": model_key,
+                    "metadata": {"sceneId": scene_id},
+                }
+            ],
+        }
+
+        await progress_cb(18, {"stage": "submit_task", "attempt": attempt + 1})
+        try:
+            tx = await page_fetch_json(
+                page,
+                url=FLOW_VIDEO_SUBMIT_T2V_URL,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {at}",
+                },
+                json_data=json_data,
+                log_file=log_file,
+            )
+        except Exception as e:
+            last_submit_err = _short_err_msg(e, max_len=200)
+            append_log(log_file, f"[veo] submit fetch error: {e}")
+            continue
+
+        st = tx.get("status")
+        if st is not None and int(st) >= 400:
+            body = safe_trim(str(tx.get("response_body") or ""), 500)
+            last_submit_err = f"HTTP {st} {body}"
+            append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
+            recaptcha_override = None
+            continue
+
+        resp = tx.get("_json")
+        ops = resp.get("operations") if isinstance(resp, dict) else None
+        if not isinstance(ops, list) or len(ops) == 0:
+            last_submit_err = f"提交返回无 operations: {safe_trim(str(resp), 300)}"
+            append_log(log_file, f"[veo] submit bad response: {last_submit_err}")
+            continue
+
+        operations = ops
+        append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
+        break
+    else:
+        raise NonPenalizedTaskError(last_submit_err or "文生视频提交失败", status_code=502)
+
+    await progress_cb(25, {"stage": "polling", "operations": len(operations)})
+    max_attempts = max(3, int(max_wait_seconds / max(0.5, poll_interval_seconds)) + 3)
+    consecutive_poll_errors = 0
+    video_url: Optional[str] = None
+
+    for attempt in range(max_attempts):
+        await asyncio.sleep(poll_interval_seconds)
+        pct = 25 + min(70, int((attempt + 1) / max(1, max_attempts) * 70))
+        try:
+            ptx = await page_fetch_json(
+                page,
+                url=FLOW_VIDEO_POLL_URL,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {at}",
+                },
+                json_data={"operations": operations},
+                log_file=log_file,
+            )
+        except Exception as e:
+            consecutive_poll_errors += 1
+            append_log(log_file, f"[veo] poll error: {e}")
+            if consecutive_poll_errors >= 3:
+                raise NonPenalizedTaskError(f"视频状态轮询失败: {_short_err_msg(e)}", status_code=502) from e
+            await progress_cb(pct, {"stage": "polling", "error": _short_err_msg(e)})
+            continue
+
+        consecutive_poll_errors = 0
+        pst = ptx.get("status")
+        if pst is not None and int(pst) >= 400:
+            consecutive_poll_errors += 1
+            body = safe_trim(str(ptx.get("response_body") or ""), 400)
+            append_log(log_file, f"[veo] poll HTTP {pst} {body}")
+            if consecutive_poll_errors >= 3:
+                raise NonPenalizedTaskError(f"视频状态查询被拒绝: HTTP {pst}", status_code=502)
+            continue
+
+        checked = ptx.get("_json")
+        checked_ops = checked.get("operations") if isinstance(checked, dict) else None
+        if not isinstance(checked_ops, list) or len(checked_ops) == 0:
+            await progress_cb(pct, {"stage": "polling", "upstream_status": None})
+            continue
+
+        op0 = checked_ops[0]
+        status = op0.get("status")
+        await progress_cb(pct, {"stage": "polling", "upstream_status": status})
+
+        if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
+            meta = (op0.get("operation") or {}).get("metadata") or {}
+            vinfo = meta.get("video") or {}
+            video_url = str(vinfo.get("fifeUrl") or "").strip() or None
+            if not video_url:
+                raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
+            break
+
+        if status == "MEDIA_GENERATION_STATUS_FAILED":
+            err = ((op0.get("operation") or {}).get("error") or {})
+            msg = str(err.get("message") or "未知错误")
+            code = str(err.get("code") or "")
+            raise NonPenalizedTaskError(f"视频生成失败: {msg}" + (f" ({code})" if code else ""), status_code=502)
+
+        if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
+            raise NonPenalizedTaskError(f"视频生成错误状态: {status}", status_code=502)
+
+    else:
+        raise NonPenalizedTaskError(
+            f"视频生成超时（已轮询约 {max_attempts} 次，间隔 {poll_interval_seconds}s）",
+            status_code=504,
+        )
+
     elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
-    await progress_cb(100, {"stage": "done", "elapsed_ms": elapsed_ms})
-    append_log(log_file, f"[veo] workflow done elapsed_ms={elapsed_ms}")
+    await progress_cb(100, {"stage": "done", "elapsed_ms": elapsed_ms, "video_url": video_url})
+    append_log(log_file, f"[veo] workflow T2V done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}")
 
     return {
         "type": "veo_workflow",
-        "message": "VEO 视频生成完成",
-        "video_url": None,  # TODO: 替换为实际视频 URL
+        "message": "VEO 文生视频完成",
+        "video_url": video_url,
+        "video_type": "t2v",
+        "model_key": model_key,
+        "aspect_ratio": aspect_ratio,
+        "project_id": project_id,
         "elapsed_ms": elapsed_ms,
     }

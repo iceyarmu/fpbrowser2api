@@ -5,10 +5,11 @@ from __future__ import annotations
 import ipaddress
 import re
 import secrets
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel, Field, field_validator
 
 from ..core.auth import AuthManager
@@ -2719,6 +2720,114 @@ async def update_task_type_window(mapping_id: int, req: UpdateTaskTypeWindowRequ
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True}
+
+
+def _admin_veo_pool_base_name(raw: Optional[str]) -> str:
+    s = (raw or "").strip()
+    if s:
+        parts = s.rsplit(" ", 1)
+        if len(parts) == 2 and parts[1].startswith("P") and parts[1][1:].isdigit():
+            return parts[0]
+        return s
+    return datetime.now().strftime("%b %d - %H:%M")
+
+
+def _admin_veo_pooled_project_title(pool_index: int, base_name: Optional[str]) -> str:
+    return f"{_admin_veo_pool_base_name(base_name)} P{pool_index}"
+
+
+@router.get("/api/admin/task-type-windows/{mapping_id}/veo-flow-projects")
+async def admin_list_veo_flow_projects(mapping_id: int, token: str = Depends(verify_admin_token)):
+    user = await _ensure_any_page_access(token, {"task_types", "test"})
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    ctx = await db.get_task_type_window_context(mapping_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="绑定不存在或已删除")
+    allowed = await _get_allowed_task_type_ids(user)
+    ttid = int(ctx.get("task_type_id") or 0)
+    if allowed is not None and ttid not in {int(x) for x in allowed}:
+        raise HTTPException(status_code=403, detail="无权查看该绑定")
+    if str(ctx.get("create_task_handler") or "").strip().lower() != "veo_workflow":
+        raise HTTPException(status_code=400, detail="仅 veo_workflow 任务类型支持 Veo 项目管理")
+    items = await db.list_veo_flow_projects(mapping_id)
+    return {"success": True, "items": items}
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/veo-flow-projects")
+async def admin_create_veo_flow_project(
+    mapping_id: int,
+    headless: bool = False,
+    base_name: Optional[str] = Query(None, max_length=240),
+    token: str = Depends(verify_admin_token),
+):
+    await _ensure_page_access(token, "task_types")
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx = await db.get_task_type_window_context(mapping_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="绑定不存在或已删除")
+
+    user = await _get_user_by_token(token)
+    allowed_task_type_ids = await _get_allowed_task_type_ids(user)
+    ttid = int(ctx.get("task_type_id") or 0)
+    if allowed_task_type_ids is not None and ttid not in {int(x) for x in allowed_task_type_ids}:
+        raise HTTPException(status_code=403, detail="无权操作该绑定")
+
+    if str(ctx.get("create_task_handler") or "").strip().lower() != "veo_workflow":
+        raise HTTPException(status_code=400, detail="仅 veo_workflow 任务类型可通过此处创建 Flow 项目")
+
+    vendor = str(ctx.get("vendor") or "roxy")
+    base_url = str(ctx.get("lan_addr") or "")
+    access_key = ctx.get("access_key")
+    space_id = str(ctx.get("space_id") or "")
+    window_key = str(ctx.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="绑定缺少浏览器/空间/窗口信息")
+
+    n_existing = await db.count_veo_flow_projects(mapping_id)
+    pool_index = n_existing + 1
+    project_title = _admin_veo_pooled_project_title(pool_index, base_name)
+
+    default_target_url = str(ctx.get("default_target_url") or "").strip()
+    target_url = default_target_url or "https://labs.google/fx"
+
+    from ..services.veo_workflow_executor import get_or_create_veo_session, veo_create_flow_project_in_window  # type: ignore
+
+    sess = get_or_create_veo_session(
+        vendor=vendor,
+        base_url=base_url,
+        access_key=access_key,
+        space_id=space_id,
+        window_key=window_key,
+    )
+    sess.browser_headless = bool(headless)
+
+    try:
+        flow_project_id = await veo_create_flow_project_in_window(
+            sess=sess,
+            target_url=target_url,
+            title=project_title,
+            tool_name="PINHOLE",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"创建 Flow 项目失败：{e}")
+
+    row_id = await db.add_veo_flow_project(
+        task_type_window_id=mapping_id,
+        project_id=flow_project_id,
+        project_name=project_title,
+        tool_name="PINHOLE",
+    )
+
+    return {
+        "success": True,
+        "id": row_id,
+        "project_id": flow_project_id,
+        "project_name": project_title,
+        "veo_flow_project_count": n_existing + 1,
+    }
 
 
 # -------------------- tasks --------------------

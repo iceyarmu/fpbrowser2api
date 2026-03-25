@@ -295,7 +295,7 @@
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>测IP</th>
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
-                      <th>邀请码</th>
+                      <th id="thMappingInviteOrVeo">邀请码</th>
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
                       <th class="sort-head" id="thInflight" title="点击按占用排序">占用 <span class="text-muted" id="inflightSortHint">↕</span></th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
@@ -528,6 +528,35 @@
       </div>
     </div>
 
+    <!-- Veo Flow projects (per task_type_window mapping) -->
+    <div class="modal fade" id="veoProjectsModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="veoProjectsModalTitle">Veo Flow 项目</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div id="veoProjectsModalBody" class="mb-3 small">加载中…</div>
+            <hr class="my-2" />
+            <div class="text-muted small mb-2">新建项目（名称规则与 Flow 池一致：可选基础名 + 自动序号 P1/P2/…，在指纹浏览器内调用 project.createProject）</div>
+            <div class="row g-2 align-items-end">
+              <div class="col-12 col-md-8">
+                <label class="form-label small mb-0">基础名称（可选）</label>
+                <input class="form-control form-control-sm" id="veoProjectBaseName" placeholder="留空则使用当前日期时间作为前缀" />
+              </div>
+              <div class="col-12 col-md-4">
+                <button type="button" class="btn btn-primary btn-sm w-100" id="btnVeoProjectCreate">新增项目</button>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Window Error List Modal -->
     <div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -683,6 +712,8 @@
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
       const tokenModal = new bootstrap.Modal("#tokenModal");
       const remarkBsModal = new bootstrap.Modal("#remarkModal");
+      const veoProjectsBsModal = new bootstrap.Modal("#veoProjectsModal");
+      let veoProjectsModalMappingId = 0;
 
       let state = {
         types: [],
@@ -2393,6 +2424,10 @@
         const from = rawPageSize === -1 ? 0 : (ui.mappingList.page - 1) * pageSize;
         const items = rawPageSize === -1 ? sortedItems : sortedItems.slice(from, from + pageSize);
         updateMappingPaginationUI(totalItems);
+        const _mapHandler = String(state.current?.create_task_handler || "").trim().toLowerCase();
+        const _isVeoMappingCol = _mapHandler === "veo_workflow";
+        const thInviteOrVeo = document.getElementById("thMappingInviteOrVeo");
+        if (thInviteOrVeo) thInviteOrVeo.textContent = _isVeoMappingCol ? "Veo 项目" : "邀请码";
         body.innerHTML = items.map(m => {
           const cooling = coolingFlagForMapping(m);
           const success24h = Number(m.success_count_24h ?? m.success_24h_count ?? m.success_24h ?? 0) || 0;
@@ -2509,12 +2544,20 @@
                 <span  class="text-muted d-flex flex-wrap align-items-center gap-2 small2">24h成功|总成功|连续失败|24h失败|总失败</span>
               </div>
             </td>
+            ${_isVeo ? `
+            <td>
+              <button type="button" class="btn btn-outline-primary btn-sm" title="查看并管理该窗口绑定的 Flow 项目" data-act="veoProjects" data-mid="${m.id}">
+                管理（${Number(m.veo_flow_project_count ?? 0) || 0}）
+              </button>
+            </td>
+            ` : `
             <td class="mono">
               <div class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="fw-semibold invite-click" title="点击复制邀请链接" data-role="inviteCode" data-mid="${m.id}">${escapeHtml(m.sora_invite_code || "-")}</div>
                 <button class="btn btn-outline-secondary btn-sm" title="刷新邀请码" data-act="refreshInvite" data-mid="${m.id}">⟳</button>
               </div>
             </td>
+            `}
             <td class="mono">
               <span class="fw-semibold ${cooling ? "text-danger" : "text-success"}" data-role="coolingFlag" data-mid="${m.id}">${cooling}</span>
             </td>
@@ -2683,6 +2726,92 @@
         renderMappings();
       }
 
+      async function openVeoProjectsModal(mappingId) {
+        veoProjectsModalMappingId = mappingId;
+        const m = (state.mappings || []).find(x => String(x.id) === String(mappingId));
+        const t = document.getElementById("veoProjectsModalTitle");
+        if (t) {
+          t.textContent = m
+            ? `Veo Flow 项目 · #${m.window_sort_num ?? m.window_pk ?? "-"} ${m.window_name || ""}`
+            : `Veo Flow 项目 · mapping ${mappingId}`;
+        }
+        const baseInp = document.getElementById("veoProjectBaseName");
+        if (baseInp) baseInp.value = "";
+        await loadVeoProjectsModalList();
+        veoProjectsBsModal.show();
+      }
+
+      async function loadVeoProjectsModalList() {
+        const mid = veoProjectsModalMappingId;
+        const body = document.getElementById("veoProjectsModalBody");
+        if (!body || !mid) return;
+        body.innerHTML = `<div class="text-muted small">加载中…</div>`;
+        try {
+          const r = await adminFetch(`/api/admin/task-type-windows/${mid}/veo-flow-projects`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "加载失败");
+          const items = d.items || [];
+          if (!items.length) {
+            body.innerHTML = `<div class="text-muted small">暂无项目，可在下方新建。</div>`;
+            return;
+          }
+          body.innerHTML = `
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead><tr class="small text-muted">
+                  <th>名称</th><th class="mono">project_id</th><th>tool</th><th>创建时间</th>
+                </tr></thead>
+                <tbody>
+                  ${items.map((p) => `
+                    <tr>
+                      <td>${escapeHtml(p.project_name || "-")}</td>
+                      <td class="mono small">${escapeHtml(p.project_id || "-")}</td>
+                      <td>${escapeHtml(p.tool_name || "PINHOLE")}</td>
+                      <td class="small text-muted">${escapeHtml(p.created_at || "-")}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>`;
+        } catch (e) {
+          body.innerHTML = `<div class="text-danger small">${escapeHtml(e.message || "加载失败")}</div>`;
+        }
+      }
+
+      async function submitVeoProjectCreate() {
+        if (!canEditTaskTypeConfig()) return toast("当前账号无权操作", "warning");
+        const mid = veoProjectsModalMappingId;
+        if (!mid) return;
+        const base = String(document.getElementById("veoProjectBaseName")?.value || "").trim();
+        const hl = getMappingHeadless(mid);
+        const qs = new URLSearchParams();
+        if (hl) qs.set("headless", "true");
+        if (base) qs.set("base_name", base);
+        const qstr = qs.toString();
+        const url = `/api/admin/task-type-windows/${mid}/veo-flow-projects${qstr ? `?${qstr}` : ""}`;
+        const btn = document.getElementById("btnVeoProjectCreate");
+        try {
+          setBtnBusy(btn, true, { loadingText: "创建中", keepWidth: false });
+          const r = await adminFetch(url, { method: "POST", body: "{}" });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "创建失败");
+          toast(`已创建：${d.project_name || ""}`, "success");
+          const baseInp = document.getElementById("veoProjectBaseName");
+          if (baseInp) baseInp.value = "";
+          patchMappingInState(mid, { veo_flow_project_count: d.veo_flow_project_count });
+          const cntBtn = document.querySelector(`button[data-act="veoProjects"][data-mid="${mid}"]`);
+          if (cntBtn) cntBtn.textContent = `管理（${d.veo_flow_project_count ?? 0}）`;
+          await loadVeoProjectsModalList();
+          await loadMappings({ preserveSelection: true });
+        } catch (e) {
+          toast(e.message || "创建失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       async function openMappingEditor(mappingId, act, el) {
         if (!canEditTaskTypeConfig() && (act === "edit" || act === "del")) {
           toast("当前账号无权编辑绑定", "warning");
@@ -2713,6 +2842,9 @@
         }
         if (act === "refreshInvite") {
           return refreshInvite(mappingId);
+        }
+        if (act === "veoProjects") {
+          return openVeoProjectsModal(mappingId);
         }
         if (act === "refreshSubscription") {
           return refreshSubscription(mappingId);
@@ -2902,6 +3034,10 @@
       document.getElementById("btnRemarkClear").addEventListener("click", () => {
         document.getElementById("remarkInput").value = "";
         saveRemark("");
+      });
+
+      document.getElementById("btnVeoProjectCreate").addEventListener("click", () => {
+        submitVeoProjectCreate();
       });
 
       function collectAllSpacesFromTree(tree) {

@@ -230,6 +230,20 @@ class TaskTypeWindow(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class VeoFlowProject(BaseModel):
+    """Google Labs Flow 项目（绑定到 task_type_windows.id，供 veo_workflow 使用）。"""
+
+    id: Optional[int] = None
+    task_type_window_id: int
+    project_id: str
+    project_name: str
+    tool_name: str = "PINHOLE"
+    is_active: bool = True
+    deleted: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class Task(BaseModel):
     id: Optional[int] = None
     task_id: str
