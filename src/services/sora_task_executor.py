@@ -1560,7 +1560,7 @@ class SoraSession:
             return
         cur = page
         for _ in range(2):
-            is_cf = await self._is_cloudflare_page(cur, deep=True)
+            is_cf = await self._is_cloudflare_page(cur, deep=False)
             if not is_cf and not await self._drafts_page_suggests_login_recovery(cur):
                 return
             await self._try_resolve_drafts_login_prompt_if_needed(cur, drafts_url)
@@ -1568,7 +1568,7 @@ class SoraSession:
             cur = self.pw_ctx.page
             if cur is None:
                 return
-        if await self._is_cloudflare_page(cur, deep=True):
+        if await self._is_cloudflare_page(cur, deep=False):
             raise NonPenalizedTaskError(
                 f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
                 status_code=503,
