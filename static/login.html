@@ -35,6 +35,10 @@
                   <label class="form-label">密码</label>
                   <input class="form-control" name="password" type="password" autocomplete="current-password" required />
                 </div>
+                <div class="mb-3 form-check">
+                  <input class="form-check-input" type="checkbox" id="rememberCredentials" checked />
+                  <label class="form-check-label" for="rememberCredentials">记住账号密码（保存在本机浏览器）</label>
+                </div>
                 <button id="btnLogin" class="btn btn-primary w-100" type="submit">登录</button>
               </form>
             </div>
@@ -49,6 +53,21 @@
 
       const form = document.getElementById("loginForm");
       const btn = document.getElementById("btnLogin");
+      const rememberEl = document.getElementById("rememberCredentials");
+      const LOGIN_CACHE_KEY = "fpbrowser2api_login_cache_v1";
+
+      function loadCachedCredentials() {
+        try {
+          const raw = localStorage.getItem(LOGIN_CACHE_KEY);
+          if (!raw) return;
+          const o = JSON.parse(raw);
+          if (o && typeof o.username === "string") form.username.value = o.username;
+          if (o && typeof o.password === "string") form.password.value = o.password;
+          rememberEl.checked = true;
+        } catch (_) {}
+      }
+
+      loadCachedCredentials();
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -66,6 +85,17 @@
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "登录失败");
+          if (rememberEl.checked) {
+            localStorage.setItem(
+              LOGIN_CACHE_KEY,
+              JSON.stringify({
+                username: String(fd.get("username") || ""),
+                password: String(fd.get("password") || ""),
+              }),
+            );
+          } else {
+            localStorage.removeItem(LOGIN_CACHE_KEY);
+          }
           setAdminToken(d.token);
           const me = await getAdminProfile(true);
           const order = ["system", "projects", "task_types", "tasks", "tasks_gantt", "test", "card_keys", "logs", "users"];
