@@ -812,6 +812,8 @@ class TaskService:
                             access_token=picked.sora_access_token,
                             access_expires=picked.sora_access_expires,
                             headless=picked.headless,
+                            db=self.db,
+                            task_type_window_id=picked.mapping_id,
                         ),
                         timeout=float(picked.timeout_seconds),
                     )

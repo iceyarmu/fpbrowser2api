@@ -1514,6 +1514,8 @@ async def veo_workflow(
     access_token: Optional[str] = None,
     access_expires: Optional[str] = None,
     headless: bool = False,
+    db: Any = None,
+    task_type_window_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """VEO 文生视频（T2V）：指纹浏览器页面内 fetch aisandbox API + 轮询状态。
 
@@ -1538,9 +1540,19 @@ async def veo_workflow(
     ).strip()
     if not project_id:
         project_id = _veo_extract_project_id_from_url(labs_hint) or ""
+    if not project_id and db is not None and task_type_window_id:
+        try:
+            mid = int(task_type_window_id)
+            if mid > 0:
+                picked_pid = await db.get_random_veo_flow_project_id(mid)
+                if picked_pid:
+                    project_id = str(picked_pid).strip()
+        except Exception:
+            project_id = project_id or ""
     if not project_id:
         raise NonPenalizedTaskError(
-            "缺少 Flow projectId：请在 payload 中设置 veo_project_id（或 project_id），"
+            "缺少 Flow projectId：请在本窗口绑定的「Veo 项目」中至少添加一个项目，"
+            "或在 payload 中设置 veo_project_id（或 project_id），"
             "或让 veo_url 包含 /tools/flow/project/{id}",
             status_code=400,
         )

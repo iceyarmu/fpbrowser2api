@@ -3280,6 +3280,24 @@ class Database:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
+    async def get_random_veo_flow_project_id(self, task_type_window_id: int) -> Optional[str]:
+        """从该任务窗口绑定（task_type_windows.id）的 Veo Flow 项目中随机取一个 project_id。"""
+        async with self._read_conn() as db:
+            cur = await db.execute(
+                """
+                SELECT project_id FROM veo_flow_projects
+                WHERE task_type_window_id = ? AND deleted = 0 AND IFNULL(is_active, 1) = 1
+                ORDER BY RANDOM()
+                LIMIT 1
+                """,
+                (int(task_type_window_id),),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            s = str(row[0] or "").strip()
+            return s or None
+
     async def count_veo_flow_projects(self, task_type_window_id: int) -> int:
         async with self._read_conn() as db:
             cur = await db.execute(
