@@ -1552,6 +1552,24 @@ class SoraSession:
             return True
         return False
 
+    async def _raise_if_cloudflare_page_nonpenalized(self, page, *, stage: str) -> None:
+        """若为 Cloudflare 拦截/挑战页，则最多 2 次 bring drafts 尝试自愈；仍判定为 CF 再抛 NonPenalizedTaskError。"""
+        if page is None:
+            return
+        cur = page
+        for _ in range(2):
+            if not await self._is_cloudflare_page(cur, deep=True):
+                return
+            await self._bring_sora_drafts_to_front(refresh_target=False)
+            cur = self.pw_ctx.page
+            if cur is None:
+                return
+        if await self._is_cloudflare_page(cur, deep=True):
+            raise NonPenalizedTaskError(
+                f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
+                status_code=503,
+            )
+
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
 
@@ -2869,7 +2887,7 @@ class SoraSession:
                 auth_state: Dict[str, Any] = {}
                 last_create_err: Optional[Exception] = None
                 token_refresh_used = False
-
+                await self._raise_if_cloudflare_page_nonpenalized(self.pw_ctx.page, stage="创建 Sora 任务")
                 for attempt in range(1, max_create_attempts + 1):
                     try:
                         async with self._bring_drafts_lock:
@@ -3532,6 +3550,9 @@ async def sora_gen_video(
             tmp_img = await _write_bytes_to_tempfile_local_async(avatar_bytes, suffix=tmp_suffix)
 
             await progress_cb(10, {"stage": "character_from_generation_submit", "generation_id": generation_id})
+            await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
+            await sess._bring_sora_drafts_to_front(refresh_target=False)
+            await sess._raise_if_cloudflare_page_nonpenalized(sess.pw_ctx.page, stage="角色创建（from_generation 前）")
 
             cameo_obj = None
             for _from_gen_attempt in range(2):
@@ -3540,7 +3561,7 @@ async def sora_gen_video(
                     break
                 except Exception as e:
                     await sess._bring_sora_drafts_to_front()
-                    if _from_gen_attempt == 3:
+                    if _from_gen_attempt == 2:
                         raise
             cameo_id = str((cameo_obj or {}).get("id") or "").strip()
             if not cameo_id:
@@ -3709,6 +3730,10 @@ async def sora_gen_video(
                 raise NonPenalizedTaskError(f"无法解析视频时长（仅支持 MP4）：{e}", status_code=400)
             if float(dur) > 16.0 + 1e-6:
                 raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤16s）", status_code=400)
+
+            await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
+            await sess._bring_sora_drafts_to_front(refresh_target=False)
+            await sess._raise_if_cloudflare_page_nonpenalized(sess.pw_ctx.page, stage="角色创建（上传角色视频前）")
 
             await progress_cb(10, {"stage": "character_upload_video"})
 
