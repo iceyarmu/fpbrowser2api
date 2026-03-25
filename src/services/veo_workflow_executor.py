@@ -1519,10 +1519,15 @@ async def veo_workflow(
 ) -> Dict[str, Any]:
     """VEO 文生视频（T2V）：指纹浏览器页面内 fetch aisandbox API + 轮询状态。
 
+    project_id 解析顺序：payload（veo_project_id / project_id / current_project_id）
+    → veo_url 中的 /tools/flow/project/{id}
+    → 若传入 db 与 task_type_window_id（task_type_windows.id），则从 veo_flow_projects 随机一条。
+
     图生视频（I2V）仅占位：若 payload 含参考图相关字段则返回 501。
     """
     _ = access_expires
     payload = payload or {}
+    project_id_from_db = False
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
         raise NonPenalizedTaskError("payload.prompt 不能为空", status_code=400)
@@ -1547,6 +1552,7 @@ async def veo_workflow(
                 picked_pid = await db.get_random_veo_flow_project_id(mid)
                 if picked_pid:
                     project_id = str(picked_pid).strip()
+                    project_id_from_db = True
         except Exception:
             project_id = project_id or ""
     if not project_id:
@@ -1579,18 +1585,22 @@ async def veo_workflow(
     bring_prefix = _veo_labs_fx_prefix_url(labs_hint)
     project_page = _veo_project_page_url(project_id=project_id, hint_url=labs_hint)
 
+    if project_id_from_db and task_type_window_id:
+        append_log(
+            log_file,
+            f"[veo] project_id from DB random pick mapping_id={int(task_type_window_id)} -> {project_id!r}",
+        )
     append_log(log_file, f"[veo] workflow T2V start project_id={project_id!r} prompt={safe_trim(prompt, 200)!r}")
     await progress_cb(1, {"stage": "init", "prompt": safe_trim(prompt, 200), "project_id": project_id})
 
     await sess.ensure_open(headless=headless)
-    await progress_cb(5, {"stage": "browser_open"})
     append_log(log_file, "[veo] browser open / CDP connected")
 
     await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
     sess._cancel_idle_close()
     nav_timeout_ms = int(max(15_000, min(120_000, float(timeout_seconds) * 1000)))
     await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
-    await progress_cb(10, {"stage": "navigate", "url": project_page})
+    await progress_cb(5, {"stage": "navigate", "url": project_page})
     append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
 
     at = str(access_token or "").strip() or None
@@ -1688,7 +1698,7 @@ async def veo_workflow(
             ],
         }
 
-        await progress_cb(18, {"stage": "submit_task", "attempt": attempt + 1})
+        await progress_cb(10, {"stage": "submit_task", "attempt": attempt + 1})
         try:
             tx = await page_fetch_json(
                 page,
