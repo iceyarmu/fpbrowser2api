@@ -1552,15 +1552,19 @@ class SoraSession:
             return True
         return False
 
-    async def _raise_if_cloudflare_page_nonpenalized(self, page, *, stage: str) -> None:
-        """若为 Cloudflare 拦截/挑战页，则最多 2 次 bring drafts 尝试自愈；仍判定为 CF 再抛 NonPenalizedTaskError。"""
+    async def _raise_if_cloudflare_page_nonpenalized(
+        self, page, *, stage: str, drafts_url: str = "https://sora.chatgpt.com/drafts"
+    ) -> None:
+        """若为 Cloudflare 或未登录类提示，则最多 2 次：先尝试登录/错误页自愈，再 bring drafts；仍判定为 CF 再抛 NonPenalizedTaskError。"""
         if page is None:
             return
         cur = page
         for _ in range(2):
-            if not await self._is_cloudflare_page(cur, deep=True):
+            is_cf = await self._is_cloudflare_page(cur, deep=True)
+            if not is_cf and not await self._drafts_page_suggests_login_recovery(cur):
                 return
-            await self._bring_sora_drafts_to_front(refresh_target=False)
+            await self._try_resolve_drafts_login_prompt_if_needed(cur, drafts_url)
+            await self._bring_sora_drafts_to_front(refresh_target=False, drafts_url=drafts_url)
             cur = self.pw_ctx.page
             if cur is None:
                 return
@@ -1852,19 +1856,14 @@ class SoraSession:
                 pass
         return None
 
-    async def _maybe_click_login_button_if_prompted(self, page) -> bool:
-        has_login_button = False
-        """尝试点击页面上的 Log in 按钮/链接（不依赖固定提示文案）。"""
+    async def _probe_log_in_cta_present(self, page) -> bool:
+        """探测页面上是否存在 Log in 入口（不点击）。"""
         if page is None:
-            return False, has_login_button
-
-        # 页面跳转到 /login 后，DOM 可能晚到；先短暂等待一次，避免误判“未发现按钮”。
+            return False
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=4000)
         except Exception:
             pass
-
-        # 同时探测 page 与所有 frame，避免登录按钮出现在 frame 内时漏检。
         scopes: list[Any] = [page]
         try:
             for fr in list(getattr(page, "frames", []) or []):
@@ -1872,10 +1871,7 @@ class SoraSession:
                     scopes.append(fr)
         except Exception:
             pass
-
         login_name_re = re.compile(r"log\s*in", re.IGNORECASE)
-
-        # 只要页面上能找到 Log in 入口，就尝试点击（按钮优先，其次链接；最后 CSS 兜底）
         try:
             for sc in scopes:
                 try:
@@ -1883,21 +1879,49 @@ class SoraSession:
                         btn_cnt = await sc.get_by_role("button", name=login_name_re).count()
                         link_cnt = await sc.get_by_role("link", name=login_name_re).count()
                         if (btn_cnt + link_cnt) > 0:
-                            has_login_button = True
-                            break
+                            return True
                     loc_probe = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=login_name_re)
                     if (await loc_probe.count()) > 0:
-                        has_login_button = True
-                        break
+                        return True
                 except Exception:
                     continue
         except Exception:
-            has_login_button = False
+            pass
+        return False
+
+    async def _drafts_page_suggests_login_recovery(self, page) -> bool:
+        """草稿相关页是否呈现未登录/异常提示（用于与 Cloudflare 共用自愈循环）。"""
+        if page is None:
+            return False
+        try:
+            page_html = await page.content()
+            if "Something went wrong. Please try again in a few minutes." in (page_html or ""):
+                return True
+        except Exception:
+            pass
+        return await self._probe_log_in_cta_present(page)
+
+    async def _maybe_click_login_button_if_prompted(self, page) -> bool:
+        has_login_button = False
+        """尝试点击页面上的 Log in 按钮/链接（不依赖固定提示文案）。"""
+        if page is None:
+            return False, has_login_button
+
+        has_login_button = await self._probe_log_in_cta_present(page)
 
         if not has_login_button:
             await self._push_debug_progress(page, "未发现 Log in 按钮/链接", level="info")
             return False, has_login_button
         await self._push_debug_progress(page, "发现 Log in 按钮/链接，准备点击", level="info")
+
+        scopes: list[Any] = [page]
+        try:
+            for fr in list(getattr(page, "frames", []) or []):
+                if fr is not page and fr not in scopes:
+                    scopes.append(fr)
+        except Exception:
+            pass
+        login_name_re = re.compile(r"log\s*in", re.IGNORECASE)
 
         # 点击 Log in（先 role，再文本兜底；同时遍历 page + frames）
         for sc in scopes:
@@ -1931,6 +1955,58 @@ class SoraSession:
 
         await self._push_debug_progress(page, "点击 Log in 失败（全部策略）", level="error")
         return False, has_login_button
+
+    async def _try_resolve_drafts_login_prompt_if_needed(self, drafts_page, drafts_url: str) -> None:
+        """若出现未登录/异常提示，尽量先触发登录（不改变「只保留 drafts 单页」的约束）。"""
+        try:
+            try:
+                page_html = await drafts_page.content()
+                if "Something went wrong. Please try again in a few minutes." in (page_html or ""):
+                    await self._push_debug_progress(
+                        drafts_page,
+                        "检测到 Something went wrong 提示，先刷新 drafts 页面",
+                        level="warn",
+                    )
+                    try:
+                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    except Exception:
+                        # 即使 goto 失败也继续，避免中断后续登录点击判断流程
+                        pass
+                    try:
+                        await asyncio.sleep(2.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
+            if clicked:
+                try:
+                    await asyncio.sleep(3.0)
+                except Exception:
+                    pass
+
+                try:
+                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                except Exception:
+                    # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
+                    pass
+
+            if not clicked and has_login_button:
+                await self._push_debug_progress(drafts_page, "重新再试一次点击login", level="ok")
+                try:
+                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                except Exception:
+                    # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
+                    pass
+
+                clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
+                if clicked:
+                    await self._push_debug_progress(drafts_page, "重新再试一次点击login成功", level="ok")
+                else:
+                    await self._push_debug_progress(drafts_page, "重新再试一次点击login失败", level="error")
+        except Exception:
+            pass
 
     async def _bring_sora_drafts_to_front(self, refresh_target=True, *, drafts_url: str = "https://sora.chatgpt.com/drafts") -> None:
         """将目标页面置前，并尽量确保整个指纹浏览器实例只保留一个目标页面。
@@ -2096,56 +2172,7 @@ class SoraSession:
 
                 await asyncio.sleep(3.0)
 
-            # 若出现未登录提示，尽量先触发登录（不改变“只保留 drafts 单页”的约束）
-            try:
-                try:
-                    page_html = await drafts_page.content()
-                    if "Something went wrong. Please try again in a few minutes." in (page_html or ""):
-                        await self._push_debug_progress(
-                            drafts_page,
-                            "检测到 Something went wrong 提示，先刷新 drafts 页面",
-                            level="warn",
-                        )
-                        try:
-                            await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-                        except Exception:
-                            # 即使 goto 失败也继续，避免中断后续登录点击判断流程
-                            pass
-                        try:
-                            await asyncio.sleep(2.0)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
-                if clicked:
-                    try:
-                        await asyncio.sleep(3.0)
-                    except Exception:
-                        pass
-
-                    try:
-                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-                    except Exception:
-                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
-                        pass
-                
-                if not clicked and has_login_button:
-                    await self._push_debug_progress(drafts_page, "重新再试一次点击login", level="ok")
-                    try:
-                        await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
-                    except Exception:
-                        # 即使 goto 失败，也继续尝试 bring_to_front（网络慢/被拦截时仍尽量保证窗口前置）
-                        pass
-
-                    clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
-                    if clicked:
-                        await self._push_debug_progress(drafts_page, "重新再试一次点击login成功", level="ok")
-                    else:
-                        await self._push_debug_progress(drafts_page, "重新再试一次点击login失败", level="error")
-            except Exception:
-                pass
+            await self._try_resolve_drafts_login_prompt_if_needed(drafts_page, drafts_url)
 
             # Cloudflare interstitial 自愈：先等最多 10 秒自动放行，超时仍是 Cloudflare 才重启一次。
             try:
@@ -2828,7 +2855,7 @@ class SoraSession:
         async with self.create_lock:
             try:
                 await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-                await self._bring_sora_drafts_to_front(refresh_target=False)
+                await self._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
 
                 log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
@@ -2860,7 +2887,7 @@ class SoraSession:
                     await _sora_ui_fill_prompt_textarea(self.pw_ctx.page, prompt=prompt, log_file=log_file)
 
                 if not self.bearer_token:
-                    await self._bring_sora_drafts_to_front(refresh_target=False)
+                    await self._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
                     async with self._bring_drafts_lock:
                         if self.pw_ctx.page is None:
                             raise RuntimeError("page 未初始化")
@@ -2887,7 +2914,9 @@ class SoraSession:
                 auth_state: Dict[str, Any] = {}
                 last_create_err: Optional[Exception] = None
                 token_refresh_used = False
-                await self._raise_if_cloudflare_page_nonpenalized(self.pw_ctx.page, stage="创建 Sora 任务")
+                await self._raise_if_cloudflare_page_nonpenalized(
+                    self.pw_ctx.page, stage="创建 Sora 任务", drafts_url=target_url
+                )
                 for attempt in range(1, max_create_attempts + 1):
                     try:
                         async with self._bring_drafts_lock:
@@ -2930,7 +2959,7 @@ class SoraSession:
                             )
                             # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
                             # 所以这里必须在未持锁状态下调用，避免锁重入。
-                            await self._bring_sora_drafts_to_front()
+                            await self._bring_sora_drafts_to_front(drafts_url=target_url)
                             try:
                                 token_info = await sora_fetch_access_token_in_window(
                                     sess=self,
@@ -2956,7 +2985,7 @@ class SoraSession:
                                 log_file,
                                 f"[sora][create] 命中 Cloudflare 挑战页（403），准备刷新页面并自愈（{attempt}/{max_create_attempts}）",
                             )
-                            await self._bring_sora_drafts_to_front()
+                            await self._bring_sora_drafts_to_front(drafts_url=target_url)
                             if attempt >= max_create_attempts:
                                 raise
                             continue
@@ -2970,7 +2999,7 @@ class SoraSession:
                         )
                         # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
                         # 所以这里必须在未持锁状态下调用，避免锁重入。
-                        await self._bring_sora_drafts_to_front()
+                        await self._bring_sora_drafts_to_front(drafts_url=target_url)
 
                 if task_id is None:
                     if last_create_err:
@@ -3551,8 +3580,10 @@ async def sora_gen_video(
 
             await progress_cb(10, {"stage": "character_from_generation_submit", "generation_id": generation_id})
             await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-            await sess._bring_sora_drafts_to_front(refresh_target=False)
-            await sess._raise_if_cloudflare_page_nonpenalized(sess.pw_ctx.page, stage="角色创建（from_generation 前）")
+            await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
+            await sess._raise_if_cloudflare_page_nonpenalized(
+                sess.pw_ctx.page, stage="角色创建（from_generation 前）", drafts_url=target_url
+            )
 
             cameo_obj = None
             for _from_gen_attempt in range(2):
@@ -3560,7 +3591,7 @@ async def sora_gen_video(
                     cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
                     break
                 except Exception as e:
-                    await sess._bring_sora_drafts_to_front()
+                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if _from_gen_attempt == 2:
                         raise
             cameo_id = str((cameo_obj or {}).get("id") or "").strip()
@@ -3586,7 +3617,7 @@ async def sora_gen_video(
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
-                    await sess._bring_sora_drafts_to_front();
+                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if consecutive_errors >= 5:
                         raise RuntimeError(f"轮询 cameo owned 状态失败{consecutive_errors}次：{e}")
                     continue
@@ -3651,7 +3682,7 @@ async def sora_gen_video(
                     )
                     break
                 except Exception as e:
-                    await sess._bring_sora_drafts_to_front()
+                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if _finalize_attempt == 2:
                         raise NonPenalizedTaskError(f"角色 finalize 失败：{e}", status_code=400)
 
@@ -3667,7 +3698,7 @@ async def sora_gen_video(
             await sess.api_cameo_update_v2(target_url=target_url, cameo_id=cameo_id, payload=update_payload)
 
             try:
-                await sess._bring_sora_drafts_to_front(refresh_target=False)
+                await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
             except Exception:
                 pass
 
@@ -3732,8 +3763,10 @@ async def sora_gen_video(
                 raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤16s）", status_code=400)
 
             await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-            await sess._bring_sora_drafts_to_front(refresh_target=False)
-            await sess._raise_if_cloudflare_page_nonpenalized(sess.pw_ctx.page, stage="角色创建（上传角色视频前）")
+            await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
+            await sess._raise_if_cloudflare_page_nonpenalized(
+                sess.pw_ctx.page, stage="角色创建（上传角色视频前）", drafts_url=target_url
+            )
 
             await progress_cb(10, {"stage": "character_upload_video"})
 
@@ -3761,7 +3794,7 @@ async def sora_gen_video(
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
-                    await sess._bring_sora_drafts_to_front()
+                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if consecutive_errors >= 4:
                         raise RuntimeError(f"轮询 cameo 状态失败{consecutive_errors}次数过多：{e}")
                     continue
@@ -3823,7 +3856,7 @@ async def sora_gen_video(
                     )
                     break
                 except Exception as e:
-                    await sess._bring_sora_drafts_to_front()
+                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if _finalize_attempt == 2:
                         raise NonPenalizedTaskError(f"角色 finalize 失败：{e}", status_code=400)
 
@@ -3831,7 +3864,7 @@ async def sora_gen_video(
             await sess.api_character_set_public(target_url=target_url, cameo_id=cameo_id)
 
             try:
-                await sess._bring_sora_drafts_to_front(refresh_target=False)
+                await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
             except Exception:
                 pass
 
@@ -3870,7 +3903,7 @@ async def sora_gen_video(
         browser_force_open=False,
         browser_headless=headless,
     )
-    await sess._bring_sora_drafts_to_front(refresh_target=False);
+    await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
     await progress_cb(10, {"stage": "created", "task_id": task_id})
     await progress_cb(10, {"stage": "monitor_progress", "task_id": task_id})
     progress_result = await sess.watch_task_progress(
@@ -3891,7 +3924,7 @@ async def sora_gen_video(
         drafts_limit=int(payload.get("sora_drafts_limit") or 15),
     )
 
-    await sess._bring_sora_drafts_to_front(refresh_target=False);
+    await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
 
     await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
     _ = progress_result
