@@ -1031,6 +1031,135 @@ def get_or_create_veo_session(
 
 
 # ---------------------------------------------------------------------------
+# 获取 access_token（从指纹浏览器读取 __Secure-next-auth.session-token 并转换）
+# ---------------------------------------------------------------------------
+async def veo_fetch_access_token_in_window(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+) -> Dict[str, Any]:
+    """在指纹浏览器窗口中读取 __Secure-next-auth.session-token cookie，
+    并通过 /fx/api/auth/session 端点获取 access_token。
+
+    流程：
+    1. 打开/复用指纹浏览器窗口，导航到 target_url
+    2. 通过 Playwright context.cookies() 读取 __Secure-next-auth.session-token
+    3. 在页面上下文中 fetch /fx/api/auth/session（credentials: include，自动携带 cookie）
+    4. 解析返回的 accessToken / expires / user 信息
+    """
+    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
+    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+    sess._cancel_idle_close()
+
+    async with sess._bring_drafts_lock:
+        if sess.pw_ctx.page is None:
+            raise RuntimeError("page 未初始化")
+
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+
+        # ── Step 1：从浏览器 cookie 中读取 __Secure-next-auth.session-token ──
+        session_token = None
+        try:
+            context = sess.pw_ctx.context
+            if context:
+                try:
+                    parsed = urlparse(target_url)
+                    cookie_url = f"{parsed.scheme}://{parsed.netloc}"
+                except Exception:
+                    cookie_url = target_url
+                cookies = await context.cookies(cookie_url)
+                for cookie in (cookies or []):
+                    if cookie.get("name") == "__Secure-next-auth.session-token":
+                        session_token = str(cookie.get("value") or "").strip() or None
+                        break
+        except Exception as e:
+            append_log(log_file, f"[veo][token] context.cookies() failed: {e}")
+
+        if not session_token:
+            # HttpOnly cookie 无法通过 document.cookie 读取，但仍尝试兜底
+            try:
+                session_token = await sess.pw_ctx.page.evaluate("""
+                    () => {
+                        try {
+                            for (const part of document.cookie.split(';')) {
+                                const p = part.trim();
+                                if (p.startsWith('__Secure-next-auth.session-token=')) {
+                                    return p.split('=').slice(1).join('=');
+                                }
+                            }
+                        } catch(e) {}
+                        return null;
+                    }
+                """)
+                if session_token:
+                    session_token = str(session_token).strip() or None
+            except Exception as e:
+                append_log(log_file, f"[veo][token] document.cookie fallback failed: {e}")
+
+        if not session_token:
+            raise RuntimeError(
+                "未找到 __Secure-next-auth.session-token cookie（请确认窗口已登录 Google/VEO）"
+            )
+
+        append_log(log_file, f"[veo][token] session_token found, length={len(session_token)}")
+
+        # ── Step 2：通过 /fx/api/auth/session 端点将 ST 转换为 AT ──
+        # 参考 flow2api: flow_client.st_to_at()
+        #   GET https://labs.google/fx/api/auth/session  (Cookie: __Secure-next-auth.session-token={st})
+        #   返回: {"access_token": "AT", "expires": "...", "user": {"email": "..."}}
+        # 这里用 page_fetch_json (credentials: include) 自动携带 cookie，效果等价。
+        try:
+            parsed = urlparse(target_url)
+            auth_session_url = f"{parsed.scheme}://{parsed.netloc}/fx/api/auth/session"
+        except Exception:
+            auth_session_url = "https://labs.google/fx/api/auth/session"
+
+        access_token = None
+        expires = None
+        email = None
+
+        try:
+            tx = await page_fetch_json(
+                sess.pw_ctx.page,
+                url=auth_session_url,
+                method="GET",
+                headers={"Accept": "application/json"},
+                json_data=None,
+                log_file=log_file,
+            )
+            data = tx.get("_json")
+            if isinstance(data, dict):
+                # flow2api 返回 snake_case "access_token"
+                access_token = (
+                    str(data.get("access_token") or data.get("accessToken") or "").strip() or None
+                )
+                expires = str(data.get("expires") or "").strip() or None
+                user = data.get("user") if isinstance(data.get("user"), dict) else {}
+                email = str((user or {}).get("email") or "").strip() or None
+        except Exception as e:
+            append_log(log_file, f"[veo][token] auth/session fetch failed: {e}")
+
+        if access_token:
+            append_log(log_file, f"[veo][token] access_token obtained via auth/session, email={email}")
+            return {
+                "access_token": access_token,
+                "expires": expires,
+                "email": email,
+                "session_token": session_token,
+            }
+
+        # auth/session 未返回有效 access_token 时，直接返回 session_token（ST）作为凭证
+        # 与 flow2api 一致：ST 本身可用于后续 API 调用（通过 Cookie 方式认证）
+        append_log(log_file, "[veo][token] auth/session did not return access_token, using session_token directly")
+        return {
+            "access_token": session_token,
+            "expires": None,
+            "email": None,
+            "session_token": session_token,
+        }
+
+
+# ---------------------------------------------------------------------------
 # 入口函数
 # ---------------------------------------------------------------------------
 async def veo_workflow(

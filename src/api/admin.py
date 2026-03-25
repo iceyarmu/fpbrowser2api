@@ -2353,8 +2353,6 @@ async def convert_sora_session_token_to_access_token(
         raise HTTPException(status_code=404, detail="mapping not found")
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
-    if handler == "veo_workflow":
-        raise HTTPException(status_code=400, detail="veo_workflow 类型不支持获取 access_token")
 
     vendor = str(ctx_row.get("vendor") or "roxy")
     base_url = str(ctx_row.get("lan_addr") or "")
@@ -2364,26 +2362,54 @@ async def convert_sora_session_token_to_access_token(
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    try:
-        from ..services.sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window  # type: ignore
+    if handler == "veo_workflow":
+        default_target_url = str(ctx_row.get("default_target_url") or "").strip()
+        target_url = default_target_url or "https://labs.google/fx"
 
-        sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
-        sora_ctx.browser_headless = headless
-        info = await sora_fetch_access_token_in_window(sess=sora_ctx, target_url="https://sora.chatgpt.com/drafts")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
+        try:
+            from ..services.veo_workflow_executor import get_or_create_veo_session, veo_fetch_access_token_in_window  # type: ignore
 
-    access_token = str((info or {}).get("access_token") or "").strip() or None
-    expires = str((info or {}).get("expires") or "").strip() or None
-    if not access_token:
-        raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 access_token")
+            veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+            veo_ctx.browser_headless = headless
+            info = await veo_fetch_access_token_in_window(sess=veo_ctx, target_url=target_url)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
 
-    await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
-    try:
-        sora_ctx.set_access_token(access_token, expires)
-    except Exception:
-        pass
-    return {"success": True, "mapping_id": mapping_id, "access_token": access_token, "expires": expires, "source": "window"}
+        access_token = str((info or {}).get("access_token") or "").strip() or None
+        expires = str((info or {}).get("expires") or "").strip() or None
+        if not access_token:
+            raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 access_token / session_token")
+
+        await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "access_token": access_token,
+            "expires": expires,
+            "session_token": str((info or {}).get("session_token") or "").strip() or None,
+            "source": "window",
+        }
+    else:
+        try:
+            from ..services.sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window  # type: ignore
+
+            sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+            sora_ctx.browser_headless = headless
+            info = await sora_fetch_access_token_in_window(sess=sora_ctx, target_url="https://sora.chatgpt.com/drafts")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
+
+        access_token = str((info or {}).get("access_token") or "").strip() or None
+        expires = str((info or {}).get("expires") or "").strip() or None
+        if not access_token:
+            raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 access_token")
+
+        await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
+        try:
+            sora_ctx.set_access_token(access_token, expires)
+        except Exception:
+            pass
+        return {"success": True, "mapping_id": mapping_id, "access_token": access_token, "expires": expires, "source": "window"}
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
