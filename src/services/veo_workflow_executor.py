@@ -1583,7 +1583,7 @@ async def veo_workflow(
     log_file = sess._log_file
     started_at = time.time()
     bring_prefix = _veo_labs_fx_prefix_url(labs_hint)
-    project_page = _veo_project_page_url(project_id=project_id, hint_url=labs_hint)
+    project_page = _veo_project_page_url(project_id=None, hint_url=labs_hint)
 
     if project_id_from_db and task_type_window_id:
         append_log(
@@ -1599,7 +1599,7 @@ async def veo_workflow(
     await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
     sess._cancel_idle_close()
     nav_timeout_ms = int(max(15_000, min(120_000, float(timeout_seconds) * 1000)))
-    await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
+    #await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
     await progress_cb(5, {"stage": "navigate", "url": project_page})
     append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
 
@@ -1669,7 +1669,7 @@ async def veo_workflow(
             if attempt + 1 < max_submit_retries:
                 await asyncio.sleep(2.0)
                 try:
-                    await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
+                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
                 except Exception:
                     pass
             continue
