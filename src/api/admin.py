@@ -2099,12 +2099,23 @@ async def refresh_mapping_remaining_quota(
     if not task_type:
         raise HTTPException(status_code=404, detail="task_type not found")
 
-    from ..services.task_handler_registry import RefreshQuotaContext, get_refresh_quota_handler
+    from ..services.task_handler_registry import (
+        RefreshQuotaContext,
+        get_refresh_quota_handler,
+        refresh_quota__veo_flow_credits,
+    )
 
-    try:
-        fn = get_refresh_quota_handler(task_type.refresh_quota_handler)
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    create_handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
+    # veo_workflow：始终走指纹窗口内 fetch credits（与刷新会员信息一致），不依赖任务类型上选的 refresh_quota_handler
+    if create_handler == "veo_workflow":
+        fn = refresh_quota__veo_flow_credits
+        handler_used = "veo_flow_credits"
+    else:
+        try:
+            fn = get_refresh_quota_handler(task_type.refresh_quota_handler)
+        except KeyError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        handler_used = (task_type.refresh_quota_handler or "").strip() or "noop"
 
     ctx_row["_headless"] = headless
     try:
@@ -2169,7 +2180,7 @@ async def refresh_mapping_remaining_quota(
         await db.mark_mapping_success(mapping_id=mapping_id)
     except Exception:
         pass
-    return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": task_type.refresh_quota_handler}
+    return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": handler_used}
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-subscription-info")
@@ -2183,8 +2194,6 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         raise HTTPException(status_code=404, detail="mapping not found")
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
-    if handler == "veo_workflow":
-        raise HTTPException(status_code=400, detail="veo_workflow 类型不支持刷新会员信息")
 
     vendor = str(ctx_row.get("vendor") or "roxy")
     base_url = str(ctx_row.get("lan_addr") or "")
@@ -2193,6 +2202,49 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
     window_key = str(ctx_row.get("window_key") or "")
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    if handler == "veo_workflow":
+        # 在指纹浏览器页面内请求 credits（与 Sora 的 page_fetch_json 一致，走窗口网络栈）
+        from ..services.veo_workflow_executor import (  # type: ignore
+            get_or_create_veo_session,
+            veo_fetch_credits_in_window,
+            veo_format_paygate_tier_label,
+        )
+
+        at = str(ctx_row.get("sora_access_token") or "").strip()
+        if not at:
+            raise HTTPException(status_code=400, detail="缺少 access_token，请先获取并保存")
+
+        default_target_url = str(ctx_row.get("default_target_url") or "").strip()
+        target_url = default_target_url or "https://labs.google/fx"
+
+        veo_ctx = get_or_create_veo_session(
+            vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
+        )
+        veo_ctx.browser_headless = headless
+
+        try:
+            info = await veo_fetch_credits_in_window(sess=veo_ctx, target_url=target_url, access_token=at)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
+
+        tier = str((info or {}).get("user_paygate_tier") or "").strip() or None
+        plan_title = veo_format_paygate_tier_label(tier)
+        credits = int((info or {}).get("credits") or 0)
+        await db.update_task_type_window(
+            mapping_id=mapping_id,
+            sora_plan_title=plan_title,
+            remaining_quota=credits,
+            sora_remaining_count=credits,
+        )
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "plan_title": plan_title,
+            "subscription_end": None,
+            "credits": credits,
+            "user_paygate_tier": tier,
+        }
 
     from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 

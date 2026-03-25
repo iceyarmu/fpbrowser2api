@@ -2768,10 +2768,14 @@
           setBtnBusy(refreshSubBtn, true, { loadingText: "刷新中", keepWidth: false });
           const hl = getMappingHeadless(mappingId);
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" });
-          updateMappingRowUI(mappingId, {
+          const patch = {
             sora_plan_title: d?.plan_title || "",
-            sora_subscription_end: d?.subscription_end || "",
-          });
+            sora_subscription_end: d?.subscription_end != null ? d.subscription_end : "",
+          };
+          if (d && typeof d.credits === "number") {
+            patch.remaining_quota = d.credits;
+          }
+          updateMappingRowUI(mappingId, patch);
           toast("会员信息已刷新", "success");
         } catch (e) {
           toast(e.message, "error");

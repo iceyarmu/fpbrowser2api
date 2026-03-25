@@ -19,7 +19,7 @@ from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
 from .sora_wm_remove_executor import sora_wm_remove
 from .sora_plus_register_executor import sora_plus_register
-from .veo_workflow_executor import veo_workflow
+from .veo_workflow_executor import get_or_create_veo_session, veo_fetch_credits_in_window, veo_workflow
 
 
 @dataclass
@@ -39,6 +39,7 @@ class PickedWindow:
     space_id: str
     sora_access_token: Optional[str] = None
     sora_access_expires: Optional[str] = None
+    default_target_url: Optional[str] = None
     window_ip: Optional[str] = None
     headless: bool = False
     error_retry_count: int = 0
@@ -289,6 +290,7 @@ class TaskService:
             space_id=str(r.get("space_id") or ""),
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+            default_target_url=(str(r.get("default_target_url") or "").strip() or None),
             headless=bool(r.get("headless")),
             error_retry_count=int(r.get("error_retry_count") or 0),
         )
@@ -330,6 +332,7 @@ class TaskService:
             space_id=str(r.get("space_id") or ""),
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+            default_target_url=(str(r.get("default_target_url") or "").strip() or None),
             headless=bool(r.get("headless")),
             error_retry_count=int(r.get("error_retry_count") or 0),
         )
@@ -370,6 +373,7 @@ class TaskService:
             space_id=str(r.get("space_id") or ""),
             sora_access_token=(str(r.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(r.get("sora_access_expires") or "").strip() or None),
+            default_target_url=(str(r.get("default_target_url") or "").strip() or None),
             headless=bool(r.get("headless")),
             error_retry_count=int(r.get("error_retry_count") or 0),
         )
@@ -710,6 +714,66 @@ class TaskService:
                         e,
                     )
 
+            async def _refresh_veo_balance() -> Optional[Dict[str, Any]]:
+                """VEO：在指纹窗口内 fetch aisandbox credits，与 admin 刷新额度一致。"""
+                if str(picked.create_task_handler or "").strip().lower() != "veo_workflow":
+                    return None
+
+                at = str(picked.sora_access_token or "").strip()
+                if not at:
+                    return None
+
+                try:
+                    veo_sess = get_or_create_veo_session(
+                        vendor=picked.browser_vendor,
+                        base_url=picked.browser_base_url,
+                        access_key=picked.browser_access_key,
+                        space_id=picked.space_id,
+                        window_key=picked.window_key,
+                    )
+                    veo_sess.browser_headless = picked.headless
+                except Exception:
+                    return None
+
+                veo_target = str(picked.default_target_url or "").strip() or "https://labs.google/fx"
+                veo_info: Optional[Dict[str, Any]] = None
+                try:
+                    veo_info = await veo_fetch_credits_in_window(
+                        sess=veo_sess,
+                        target_url=veo_target,
+                        access_token=at,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "refresh_veo_balance failed: task=%s mapping=%s err=%s",
+                        task_id,
+                        picked.mapping_id,
+                        e,
+                    )
+                    return None
+
+                try:
+                    if veo_info is not None and veo_info.get("credits") is not None:
+                        await self.db.update_task_type_window(
+                            mapping_id=picked.mapping_id,
+                            remaining_quota=int(veo_info.get("credits") or 0),
+                            sora_remaining_count=int(veo_info.get("credits") or 0),
+                        )
+                except Exception:
+                    pass
+                return veo_info
+
+            async def _refresh_veo_balance_best_effort() -> None:
+                try:
+                    await asyncio.wait_for(_refresh_veo_balance(), timeout=refresh_timeout_seconds)
+                except Exception as e:
+                    logger.warning(
+                        "refresh_veo_balance skipped: task=%s mapping=%s err=%s",
+                        task_id,
+                        picked.mapping_id,
+                        e,
+                    )
+
             try:
                 # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
                 if picked.create_task_handler == "sora_gen_video":
@@ -789,7 +853,10 @@ class TaskService:
                 except Exception:
                     pass
 
-                await _refresh_sora_balance_best_effort()
+                if picked.create_task_handler == "veo_workflow":
+                    await _refresh_veo_balance_best_effort()
+                elif picked.create_task_handler == "sora_gen_video":
+                    await _refresh_sora_balance_best_effort()
                 try:
                     if isinstance(result, dict) and result.get("drafts_count") is not None:
                         await self.db.update_task_type_window(
@@ -806,7 +873,10 @@ class TaskService:
                 await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
             except Exception as e:
-                await _refresh_sora_balance_best_effort()
+                if picked.create_task_handler == "veo_workflow":
+                    await _refresh_veo_balance_best_effort()
+                elif picked.create_task_handler == "sora_gen_video":
+                    await _refresh_sora_balance_best_effort()
                 # 失败：尽量把“是否不扣罚(no_penalty)”等信息写入 result_json，便于上游做退款/分类。
                 no_penalty = bool(getattr(e, "no_penalty", False))
                 status_code = getattr(e, "status_code", None)

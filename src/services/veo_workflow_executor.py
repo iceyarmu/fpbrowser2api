@@ -1031,6 +1031,82 @@ def get_or_create_veo_session(
 
 
 # ---------------------------------------------------------------------------
+# Google Labs / Flow：余额与档位（与 flow2api flow_client.get_credits 对齐）
+# ---------------------------------------------------------------------------
+FLOW_LABS_CREDITS_URL = "https://aisandbox-pa.googleapis.com/v1/credits"
+
+
+def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
+    """将 userPaygateTier 转为可读套餐名（与 flow2api manage.html formatAccountType 一致）。"""
+    t = str(tier or "").strip()
+    if not t or t == "PAYGATE_TIER_NOT_PAID":
+        return "Google Labs · 普通"
+    if t == "PAYGATE_TIER_ONE":
+        return "Google Labs · Pro"
+    if t == "PAYGATE_TIER_TWO":
+        return "Google Labs · Ult"
+    return f"Google Labs · {t}"
+
+
+def _veo_normalize_credits_payload(data: Any) -> Dict[str, Any]:
+    """解析 aisandbox /v1/credits 的 JSON（与 flow2api get_credits 字段一致）。"""
+    if not isinstance(data, dict):
+        raise RuntimeError("credits 返回格式异常")
+    try:
+        credits_i = int(data.get("credits") if data.get("credits") is not None else 0)
+    except Exception:
+        credits_i = 0
+    tier_raw = data.get("userPaygateTier") or data.get("user_paygate_tier")
+    tier_s = str(tier_raw).strip() if tier_raw is not None else None
+    if tier_s == "":
+        tier_s = None
+    return {"credits": credits_i, "user_paygate_tier": tier_s, "raw": data}
+
+
+async def veo_fetch_credits_in_window(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+    access_token: str,
+) -> Dict[str, Any]:
+    """在指纹浏览器页面上下文中 GET aisandbox /v1/credits（与 Sora 的 page_fetch_json 一致）。
+
+    使用窗口所在页面的 fetch（credentials: include + Bearer），走指纹浏览器网络栈/代理。
+    """
+    tok = str(access_token or "").strip()
+    if not tok:
+        raise RuntimeError("缺少 access_token（请先获取并保存 access_token）")
+
+    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
+    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+    sess._cancel_idle_close()
+
+    async with sess._bring_drafts_lock:
+        if sess.pw_ctx.page is None:
+            raise RuntimeError("page 未初始化")
+
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+
+        tx = await page_fetch_json(
+            sess.pw_ctx.page,
+            url=FLOW_LABS_CREDITS_URL,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {tok}",
+            },
+            json_data=None,
+            log_file=log_file,
+        )
+        status = tx.get("status")
+        if status is not None and int(status) >= 400:
+            body = safe_trim(str(tx.get("response_body") or ""), 400)
+            raise RuntimeError(f"查询 credits 失败：HTTP {status} {body}")
+
+        return _veo_normalize_credits_payload(tx.get("_json"))
+
+
+# ---------------------------------------------------------------------------
 # 获取 access_token（从指纹浏览器读取 __Secure-next-auth.session-token 并转换）
 # ---------------------------------------------------------------------------
 async def veo_fetch_access_token_in_window(

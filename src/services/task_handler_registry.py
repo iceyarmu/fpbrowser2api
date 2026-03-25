@@ -166,10 +166,48 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
     return remaining
 
 
+async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
+    """VEO / Google Labs：在指纹浏览器页面内 fetch aisandbox /v1/credits（需已保存 AT）。"""
+    row = ctx.mapping_row or {}
+    at = str(row.get("sora_access_token") or "").strip()
+    if not at:
+        raise RuntimeError("缺少 access_token（请先获取并保存 access_token）")
+
+    vendor = str(row.get("vendor") or "roxy")
+    base_url = str(row.get("lan_addr") or "")
+    access_key = row.get("access_key")
+    space_id = str(row.get("space_id") or "")
+    window_key = str(row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise RuntimeError("mapping 缺少 vendor/lan_addr/space_id/window_key，无法打开指纹窗口")
+
+    default_target_url = str(row.get("default_target_url") or "").strip()
+    target_url = default_target_url or "https://labs.google/fx"
+
+    from .veo_workflow_executor import get_or_create_veo_session, veo_fetch_credits_in_window  # type: ignore
+
+    veo_ctx = get_or_create_veo_session(
+        vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
+    )
+    if "_headless" in row:
+        veo_ctx.browser_headless = bool(row["_headless"])
+
+    info = await veo_fetch_credits_in_window(sess=veo_ctx, target_url=target_url, access_token=at)
+    credits = int(info.get("credits") or 0)
+
+    await ctx.db.update_task_type_window(
+        mapping_id=int(row.get("id") or 0),
+        remaining_quota=credits,
+        sora_remaining_count=credits,
+    )
+    return credits
+
+
 REFRESH_QUOTA_HANDLERS: Dict[str, Tuple[str, RefreshQuotaHandler]] = {
     "noop": ("默认：不刷新（保持当前值）", refresh_quota__noop),
     "reset_to_daily": ("示例：重置为 daily_quota", refresh_quota__reset_to_daily),
     "sora_nf_check": ("Sora：读取余额 backend/nf/check", refresh_quota__sora_nf_check),
+    "veo_flow_credits": ("VEO/Labs：指纹窗口内读取 credits（aisandbox，需 AT）", refresh_quota__veo_flow_credits),
 }
 
 
