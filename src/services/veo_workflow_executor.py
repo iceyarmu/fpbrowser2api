@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import random
 import re
 import time
@@ -29,6 +30,7 @@ from .playwright_broswer_context import (
     pick_working_page_from_context,
     safe_trim,
 )
+from .sora_task_executor import _download_bytes_local_async, _prepare_first_frame_image_for_upload_async
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 
@@ -1036,6 +1038,9 @@ def get_or_create_veo_session(
 # ---------------------------------------------------------------------------
 FLOW_LABS_CREDITS_URL = "https://aisandbox-pa.googleapis.com/v1/credits"
 FLOW_VIDEO_SUBMIT_T2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText"
+FLOW_FLOW_UPLOAD_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/uploadImage"
+FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartImage"
+FLOW_VIDEO_SUBMIT_I2V_START_END_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartAndEndImage"
 FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
 VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 
@@ -1121,46 +1126,407 @@ def _veo_payload_looks_like_i2v(payload: Dict[str, Any]) -> bool:
     return False
 
 
-def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
-    """返回 (videoModelKey, aspectRatio)，默认 Veo 3.1 横屏。"""
-    raw = (
-        str(
-            payload.get("model")
-            or payload.get("veo_model")
-            or payload.get("video_model")
-            or payload.get("videoModelKey")
-            or ""
+def _veo_pick_orientation_from_ratio(ratio: Optional[str]) -> Optional[str]:
+    """与 `sora_task_executor._pick_orientation_from_ratio` 一致：16:9→landscape，9:16→portrait。"""
+    if not ratio:
+        return None
+    s = str(ratio).strip().lower().replace("：", ":")
+    if "16:9" in s:
+        return "landscape"
+    if "9:16" in s:
+        return "portrait"
+    return None
+
+
+def _veo_parse_pixel_pair_from_payload(payload: Dict[str, Any]) -> Optional[tuple[int, int]]:
+    """从 payload 的宽高字段解析像素尺寸（宽×高）。"""
+    pairs = (
+        ("width", "height"),
+        ("video_width", "video_height"),
+        ("w", "h"),
+    )
+    for wk, hk in pairs:
+        try:
+            if payload.get(wk) is None or payload.get(hk) is None:
+                continue
+            w = int(float(payload.get(wk)))
+            h = int(float(payload.get(hk)))
+            if w > 0 and h > 0:
+                return w, h
+        except Exception:
+            continue
+    return None
+
+
+def _veo_orientation_from_pixel_dimensions(w: int, h: int) -> Optional[str]:
+    if w > h:
+        return "landscape"
+    if h > w:
+        return "portrait"
+    return None
+
+
+def _veo_try_parse_wh_in_ratio_string(ratio: str) -> Optional[tuple[int, int]]:
+    """比例串中的 `1920x1080` / `1080*1920` / `1080×1920` → (宽, 高)。"""
+    s = str(ratio or "").strip()
+    if not s:
+        return None
+    m = re.search(r"(\d+)\s*[xX*×]\s*(\d+)", s)
+    if not m:
+        return None
+    try:
+        a = int(m.group(1))
+        b = int(m.group(2))
+        if a > 0 and b > 0:
+            return a, b
+    except Exception:
+        pass
+    return None
+
+
+def _veo_resolve_orientation_str(payload: Dict[str, Any]) -> Optional[str]:
+    """横竖屏语义 `portrait` / `landscape`，与 Sora 一致优先「比例/宽高」，再 `orientation` / 显式 API 字段。
+
+    顺序：
+    1. `width`×`height`（及 video_width / w、h 等）
+    2. `size_ratio` / `aspect_ratio` / `ratio` / `尺寸` 中的 `WxH` 子串
+    3. 同上字段中的 `16:9` / `9:16`（与 Sora `_pick_orientation_from_ratio` 一致）
+    4. `orientation`
+    5. `video_aspect_ratio` / `aspectRatio` / `veo_aspect_ratio`（含横竖、PORTRAIT/LANDSCAPE）
+    """
+    payload = payload or {}
+
+    wh = _veo_parse_pixel_pair_from_payload(payload)
+    if wh:
+        o = _veo_orientation_from_pixel_dimensions(wh[0], wh[1])
+        if o:
+            return o
+
+    ratio = str(
+        payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or ""
+    ).strip() or None
+    if ratio:
+        wh2 = _veo_try_parse_wh_in_ratio_string(ratio)
+        if wh2:
+            o2 = _veo_orientation_from_pixel_dimensions(wh2[0], wh2[1])
+            if o2:
+                return o2
+        lo = _veo_pick_orientation_from_ratio(ratio)
+        if lo:
+            return lo
+
+    ori = str(payload.get("orientation") or "").strip().lower()
+    if ori in ("portrait", "landscape"):
+        return ori
+
+    raw_ar = str(
+        payload.get("video_aspect_ratio") or payload.get("aspectRatio") or payload.get("veo_aspect_ratio") or ""
+    ).strip()
+    if raw_ar:
+        u = raw_ar.upper()
+        if "PORTRAIT" in u or "竖" in raw_ar:
+            return "portrait"
+        if "LANDSCAPE" in u or "横" in raw_ar:
+            return "landscape"
+
+    return None
+
+
+VIDEO_ASPECT_RATIO_LANDSCAPE = "VIDEO_ASPECT_RATIO_LANDSCAPE"
+VIDEO_ASPECT_RATIO_PORTRAIT = "VIDEO_ASPECT_RATIO_PORTRAIT"
+
+# 与 flow2api generation_handler MODEL_CONFIG 中 veo_3_1_i2v_s_fast_*_fl 对齐
+VEO_I2V_MODEL_LANDSCAPE_FL = "veo_3_1_i2v_s_fast_fl"
+VEO_I2V_MODEL_PORTRAIT_FL = "veo_3_1_i2v_s_fast_portrait_fl"
+
+
+def _veo_resolve_i2v_aspect_ratio(payload: Dict[str, Any]) -> str:
+    """I2V 的 aisandbox aspectRatio：与 T2V 相同规则，默认横屏。"""
+    o = _veo_resolve_orientation_str(payload)
+    if o == "portrait":
+        return VIDEO_ASPECT_RATIO_PORTRAIT
+    if o == "landscape":
+        return VIDEO_ASPECT_RATIO_LANDSCAPE
+    return VIDEO_ASPECT_RATIO_LANDSCAPE
+
+
+def _veo_extract_url_from_image_item(item: Any) -> Optional[str]:
+    if isinstance(item, str):
+        u = item.strip()
+        return u or None
+    if isinstance(item, dict):
+        for k in ("url", "image_url", "imageUrl", "src", "first_image_url", "firstImageUrl"):
+            v = str(item.get(k) or "").strip()
+            if v:
+                return v
+    return None
+
+
+def _veo_collect_i2v_image_urls(payload: Dict[str, Any]) -> List[str]:
+    """解析 1～2 张图 URL：优先 `images` 数组（顺序=首帧、尾帧），否则 first_image_url / image_url + last/end。"""
+    payload = payload or {}
+    imgs = payload.get("images")
+    if isinstance(imgs, list) and len(imgs) > 0:
+        if len(imgs) > 2:
+            raise NonPenalizedTaskError("图生视频最多支持 2 张图片（首帧与尾帧）", status_code=400)
+        out: List[str] = []
+        for it in imgs:
+            u = _veo_extract_url_from_image_item(it)
+            if not u:
+                raise NonPenalizedTaskError("images 数组中存在无法解析的图片地址", status_code=400)
+            out.append(u)
+        return out
+
+    first = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip()
+    if not first:
+        first = str(payload.get("image_url") or payload.get("imageUrl") or "").strip()
+    last = str(
+        payload.get("last_image_url")
+        or payload.get("lastImageUrl")
+        or payload.get("end_image_url")
+        or payload.get("endImageUrl")
+        or ""
+    ).strip()
+    if last and not first:
+        raise NonPenalizedTaskError(
+            "图生视频不能只提供尾图：请提供首图 first_image_url（或 images[0]），"
+            "顺序为 [首帧, 尾帧]",
+            status_code=400,
         )
-        .strip()
-        .lower()
+    urls: List[str] = []
+    if first:
+        urls.append(first)
+    if last:
+        urls.append(last)
+    return urls
+
+
+def _veo_strip_i2v_fl_for_single_frame(model_key: str) -> str:
+    """与 flow2api generation_handler 单首帧分支一致：去掉 model_key 中的 _fl 后缀（含 _fl_ 在中间的情况）。"""
+    mk = str(model_key or "")
+    actual = mk.replace("_fl_", "_")
+    if actual.endswith("_fl"):
+        actual = actual[:-3]
+    return actual
+
+
+def _veo_detect_image_mime_type(image_bytes: bytes) -> str:
+    if len(image_bytes) < 12:
+        return "image/jpeg"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes[:4] == b"\x89PNG":
+        return "image/png"
+    if image_bytes[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if image_bytes[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if image_bytes[:2] == b"BM":
+        return "image/bmp"
+    if image_bytes[:6] == b"\x00\x00\x00\x0cjP":
+        return "image/jp2"
+    return "image/jpeg"
+
+
+async def _veo_download_image_bytes_for_i2v(
+    url: str,
+    *,
+    label: str,
+    timeout_seconds: float,
+    user_agent: Optional[str],
+) -> bytes:
+    try:
+        img_bytes, img_headers = await _download_bytes_local_async(
+            url, timeout_seconds=timeout_seconds, user_agent=user_agent
+        )
+    except Exception as e:
+        raise NonPenalizedTaskError(
+            f"{label}下载失败（请检查地址是否可访问）：url={safe_trim(str(url), 400)!r} err={e}",
+            status_code=400,
+        ) from e
+    if not img_bytes:
+        raise NonPenalizedTaskError(
+            f"{label}下载结果为空：url={safe_trim(str(url), 400)!r}",
+            status_code=400,
+        )
+    ct = ""
+    try:
+        ct = str((img_headers or {}).get("content-type") or (img_headers or {}).get("Content-Type") or "").lower()
+    except Exception:
+        ct = ""
+    if ("text/html" in ct) or ("application/json" in ct):
+        raise NonPenalizedTaskError(
+            f"{label}响应疑似非图片（Content-Type={safe_trim(ct, 120)!r}）：url={safe_trim(str(url), 400)!r}",
+            status_code=400,
+        )
+    prepared, _fn, _mt = await _prepare_first_frame_image_for_upload_async(img_bytes)
+    return prepared
+
+
+async def _veo_flow_upload_image_in_window(
+    *,
+    page: Any,
+    access_token: str,
+    project_id: str,
+    image_bytes: bytes,
+    log_file: Path,
+) -> str:
+    """在指纹浏览器页面内调用 aisandbox `flow/uploadImage`（与 flow2api flow_client.upload_image 新版接口一致）。"""
+    mime_type = _veo_detect_image_mime_type(image_bytes)
+    ext = "png" if "png" in mime_type else "jpg"
+    upload_file_name = f"fpbrowser2api_veo_{int(time.time() * 1000)}.{ext}"
+    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+    json_data: Dict[str, Any] = {
+        "clientContext": {"tool": "PINHOLE", "projectId": str(project_id)},
+        "fileName": upload_file_name,
+        "imageBytes": image_base64,
+        "isHidden": False,
+        "isUserUploaded": True,
+        "mimeType": mime_type,
+    }
+    tx = await page_fetch_json(
+        page,
+        url=FLOW_FLOW_UPLOAD_IMAGE_URL,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
+        json_data=json_data,
+        log_file=log_file,
     )
-    portrait_aliases = (
-        "veo_3_1_t2v_fast_portrait",
-        "portrait",
-        "竖",
-        "竖屏",
-        "9:16",
-        "portrait_ultra",
-        "t2v_portrait",
+    st = tx.get("status")
+    if st is not None and int(st) >= 400:
+        body = safe_trim(str(tx.get("response_body") or ""), 500)
+        raise NonPenalizedTaskError(f"上传参考图失败：HTTP {st} {body}", status_code=502)
+    resp = tx.get("_json")
+    if not isinstance(resp, dict):
+        raise NonPenalizedTaskError("上传参考图返回格式异常", status_code=502)
+    media_id = (resp.get("media") or {}).get("name") or (resp.get("mediaGenerationId") or {}).get(
+        "mediaGenerationId"
     )
-    landscape_aliases = (
-        "veo_3_1_t2v_fast",
-        "veo_3_1_t2v_fast_landscape",
-        "landscape",
-        "横",
-        "横屏",
-        "16:9",
-        "t2v_landscape",
-    )
-    if raw in portrait_aliases or ("portrait" in raw and "landscape" not in raw):
-        return "veo_3_1_t2v_fast_portrait", "VIDEO_ASPECT_RATIO_PORTRAIT"
-    if raw in landscape_aliases or "landscape" in raw:
-        return "veo_3_1_t2v_fast", "VIDEO_ASPECT_RATIO_LANDSCAPE"
-    if not raw:
-        return "veo_3_1_t2v_fast", "VIDEO_ASPECT_RATIO_LANDSCAPE"
-    if "portrait" in raw:
-        return "veo_3_1_t2v_fast_portrait", "VIDEO_ASPECT_RATIO_PORTRAIT"
-    return "veo_3_1_t2v_fast", "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    if not media_id:
+        raise NonPenalizedTaskError(
+            f"上传参考图未返回 mediaId：{safe_trim(str(resp), 300)}",
+            status_code=502,
+        )
+    return str(media_id)
+
+
+async def _veo_poll_operations_until_video_url(
+    *,
+    page: Any,
+    access_token: str,
+    log_file: Path,
+    progress_cb: ProgressCB,
+    operations: List[Dict[str, Any]],
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    poll_progress_base: int = 25,
+) -> str:
+    """轮询 batchCheckAsyncVideoGenerationStatus，成功则返回 fifeUrl。"""
+    max_attempts = max(3, int(max_wait_seconds / max(0.5, poll_interval_seconds)) + 3)
+    consecutive_poll_errors = 0
+    video_url: Optional[str] = None
+
+    for attempt in range(max_attempts):
+        await asyncio.sleep(poll_interval_seconds)
+        pct = poll_progress_base + min(70, int((attempt + 1) / max(1, max_attempts) * 70))
+        try:
+            ptx = await page_fetch_json(
+                page,
+                url=FLOW_VIDEO_POLL_URL,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+                json_data={"operations": operations},
+                log_file=log_file,
+            )
+        except Exception as e:
+            consecutive_poll_errors += 1
+            append_log(log_file, f"[veo] poll error: {e}")
+            if consecutive_poll_errors >= 3:
+                raise NonPenalizedTaskError(f"视频状态轮询失败: {_short_err_msg(e)}", status_code=502) from e
+            await progress_cb(pct, {"stage": "polling", "error": _short_err_msg(e)})
+            continue
+
+        consecutive_poll_errors = 0
+        pst = ptx.get("status")
+        if pst is not None and int(pst) >= 400:
+            consecutive_poll_errors += 1
+            body = safe_trim(str(ptx.get("response_body") or ""), 400)
+            append_log(log_file, f"[veo] poll HTTP {pst} {body}")
+            if consecutive_poll_errors >= 3:
+                raise NonPenalizedTaskError(f"视频状态查询被拒绝: HTTP {pst}", status_code=502)
+            continue
+
+        checked = ptx.get("_json")
+        checked_ops = checked.get("operations") if isinstance(checked, dict) else None
+        if not isinstance(checked_ops, list) or len(checked_ops) == 0:
+            await progress_cb(pct, {"stage": "polling", "upstream_status": None})
+            continue
+
+        op0 = checked_ops[0]
+        status = op0.get("status")
+        await progress_cb(pct, {"stage": "polling", "upstream_status": status})
+
+        if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
+            meta = (op0.get("operation") or {}).get("metadata") or {}
+            vinfo = meta.get("video") or {}
+            video_url = str(vinfo.get("fifeUrl") or "").strip() or None
+            if not video_url:
+                raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
+            break
+
+        if status == "MEDIA_GENERATION_STATUS_FAILED":
+            err = ((op0.get("operation") or {}).get("error") or {})
+            msg = str(err.get("message") or "未知错误")
+            code = str(err.get("code") or "")
+            raise NonPenalizedTaskError(f"视频生成失败: {msg}" + (f" ({code})" if code else ""), status_code=502)
+
+        if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
+            raise NonPenalizedTaskError(f"视频生成错误状态: {status}", status_code=502)
+
+    else:
+        raise NonPenalizedTaskError(
+            f"视频生成超时（已轮询约 {max_attempts} 次，间隔 {poll_interval_seconds}s）",
+            status_code=504,
+        )
+
+    return str(video_url)
+
+
+def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
+    """返回 (videoModelKey, aspectRatio)。横竖屏与 Sora 一致：优先宽高/比例字段，再 model 显式指定。
+
+    与 `sora_gen_video` 对齐的输入：`size_ratio` / `aspect_ratio` / `ratio` / `尺寸`、`width`×`height`、
+    比例串内 `WxH`、`16:9`/`9:16`、`orientation`；另支持 `video_aspect_ratio` 等 API 字段。
+    若以上均未判定，则回退解析 `model` / `videoModelKey` 是否含 `t2v_fast_portrait`。
+    默认横屏 `veo_3_1_t2v_fast`。
+    """
+    o = _veo_resolve_orientation_str(payload)
+    if o is None:
+        raw = (
+            str(
+                payload.get("model")
+                or payload.get("veo_model")
+                or payload.get("video_model")
+                or payload.get("videoModelKey")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if "t2v_fast_portrait" in raw or raw == "veo_3_1_t2v_fast_portrait":
+            o = "portrait"
+
+    if o == "portrait":
+        return "veo_3_1_t2v_fast_portrait", VIDEO_ASPECT_RATIO_PORTRAIT
+    return "veo_3_1_t2v_fast", VIDEO_ASPECT_RATIO_LANDSCAPE
 
 
 def _veo_generate_session_id() -> str:
@@ -1517,13 +1883,17 @@ async def veo_workflow(
     db: Any = None,
     task_type_window_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """VEO 文生视频（T2V）：指纹浏览器页面内 fetch aisandbox API + 轮询状态。
+    """VEO 视频：指纹浏览器页面内 fetch aisandbox API + 轮询状态。
+
+    - 文生视频（T2V）：无参考图 payload 时，逻辑同前。
+    - 图生视频（I2V）：1～2 张图（first_image_url + 可选尾图，或 images 数组），
+      横竖屏与 Sora 一致（size_ratio / aspect_ratio / ratio / 尺寸 → 16:9/9:16，或 orientation），
+      模型与 flow2api 一致：横屏 `veo_3_1_i2v_s_fast_fl`、竖屏 `veo_3_1_i2v_s_fast_portrait_fl`；
+      先 `flow/uploadImage`，再 `batchAsyncGenerateVideoStartImage` 或 `batchAsyncGenerateVideoStartAndEndImage`。
 
     project_id 解析顺序：payload（veo_project_id / project_id / current_project_id）
     → veo_url 中的 /tools/flow/project/{id}
     → 若传入 db 与 task_type_window_id（task_type_windows.id），则从 veo_flow_projects 随机一条。
-
-    图生视频（I2V）仅占位：若 payload 含参考图相关字段则返回 501。
     """
     _ = access_expires
     payload = payload or {}
@@ -1532,12 +1902,15 @@ async def veo_workflow(
     if not prompt:
         raise NonPenalizedTaskError("payload.prompt 不能为空", status_code=400)
 
-    if _veo_payload_looks_like_i2v(payload):
-        raise NonPenalizedTaskError(
-            "图生视频（I2V）尚未实现，请暂时仅使用文生视频（T2V）；"
-            "请勿传 first_image_url / images 或 video_type=i2v",
-            status_code=501,
-        )
+    want_i2v = _veo_payload_looks_like_i2v(payload)
+    i2v_urls: List[str] = []
+    if want_i2v:
+        i2v_urls = _veo_collect_i2v_image_urls(payload)
+        if len(i2v_urls) == 0:
+            raise NonPenalizedTaskError(
+                "图生视频需要提供 1-2 张图片（first_image_url / image_url / images 等）",
+                status_code=400,
+            )
 
     labs_hint = str(payload.get("veo_url") or payload.get("target_url") or "").strip() or "https://labs.google/fx"
     project_id = str(
@@ -1590,8 +1963,22 @@ async def veo_workflow(
             log_file,
             f"[veo] project_id from DB random pick mapping_id={int(task_type_window_id)} -> {project_id!r}",
         )
-    append_log(log_file, f"[veo] workflow T2V start project_id={project_id!r} prompt={safe_trim(prompt, 200)!r}")
-    await progress_cb(1, {"stage": "init", "prompt": safe_trim(prompt, 200), "project_id": project_id})
+    _mode = "I2V" if want_i2v else "T2V"
+    append_log(
+        log_file,
+        f"[veo] workflow {_mode} start project_id={project_id!r} prompt={safe_trim(prompt, 200)!r} "
+        f"images={len(i2v_urls) if want_i2v else 0}",
+    )
+    await progress_cb(
+        1,
+        {
+            "stage": "init",
+            "video_mode": "i2v" if want_i2v else "t2v",
+            "prompt": safe_trim(prompt, 200),
+            "project_id": project_id,
+            "image_count": len(i2v_urls) if want_i2v else 0,
+        },
+    )
 
     await sess.ensure_open(headless=headless)
     append_log(log_file, "[veo] browser open / CDP connected")
@@ -1636,7 +2023,15 @@ async def veo_workflow(
     except Exception as e:
         append_log(log_file, f"[veo] credits tier probe skipped: {e}")
 
-    base_model_key, aspect_ratio = _veo_resolve_t2v_model(payload)
+    if want_i2v:
+        aspect_ratio = _veo_resolve_i2v_aspect_ratio(payload)
+        base_model_key = (
+            VEO_I2V_MODEL_PORTRAIT_FL
+            if aspect_ratio == VIDEO_ASPECT_RATIO_PORTRAIT
+            else VEO_I2V_MODEL_LANDSCAPE_FL
+        )
+    else:
+        base_model_key, aspect_ratio = _veo_resolve_t2v_model(payload)
     model_key = _veo_adjust_model_key_for_tier(base_model_key, user_tier)
     if model_key != base_model_key:
         append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
@@ -1653,6 +2048,43 @@ async def veo_workflow(
     page = sess.pw_ctx.page
     if page is None:
         raise RuntimeError("page 未初始化")
+
+    download_timeout = float(
+        payload.get("i2v_image_download_timeout_seconds")
+        or payload.get("veo_image_download_timeout_seconds")
+        or 60.0
+    )
+    user_agent: Optional[str] = None
+    try:
+        user_agent = await page.evaluate("() => navigator.userAgent")
+    except Exception:
+        user_agent = None
+
+    start_media_id: Optional[str] = None
+    end_media_id: Optional[str] = None
+    if want_i2v:
+        await progress_cb(6, {"stage": "download_images", "count": len(i2v_urls)})
+        media_ids: List[str] = []
+        for i, u in enumerate(i2v_urls):
+            label = "首帧图片" if i == 0 else "尾帧图片"
+            raw_b = await _veo_download_image_bytes_for_i2v(
+                u,
+                label=label,
+                timeout_seconds=download_timeout,
+                user_agent=user_agent,
+            )
+            await progress_cb(7 + i, {"stage": "upload_image", "index": i + 1, "total": len(i2v_urls)})
+            mid = await _veo_flow_upload_image_in_window(
+                page=page,
+                access_token=str(at),
+                project_id=project_id,
+                image_bytes=raw_b,
+                log_file=log_file,
+            )
+            media_ids.append(mid)
+            append_log(log_file, f"[veo][i2v] uploaded {label} mediaId={safe_trim(mid, 80)!r}")
+        start_media_id = media_ids[0]
+        end_media_id = media_ids[1] if len(media_ids) > 1 else None
 
     operations: List[Dict[str, Any]] = []
     last_submit_err: Optional[str] = None
@@ -1676,6 +2108,45 @@ async def veo_workflow(
 
         session_id = _veo_generate_session_id()
         scene_id = str(uuid.uuid4())
+
+        if want_i2v:
+            assert start_media_id is not None
+            if end_media_id:
+                submit_url = FLOW_VIDEO_SUBMIT_I2V_START_END_URL
+                req_item: Dict[str, Any] = {
+                    "aspectRatio": aspect_ratio,
+                    "seed": random.randint(1, 99999),
+                    "textInput": {"prompt": prompt},
+                    "videoModelKey": model_key,
+                    "startImage": {"mediaId": start_media_id},
+                    "endImage": {"mediaId": end_media_id},
+                    "metadata": {"sceneId": scene_id},
+                }
+            else:
+                submit_url = FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL
+                single_mk = _veo_strip_i2v_fl_for_single_frame(model_key)
+                append_log(
+                    log_file,
+                    f"[veo][i2v] single-frame model_key: {model_key!r} -> {single_mk!r}",
+                )
+                req_item = {
+                    "aspectRatio": aspect_ratio,
+                    "seed": random.randint(1, 99999),
+                    "textInput": {"prompt": prompt},
+                    "videoModelKey": single_mk,
+                    "startImage": {"mediaId": start_media_id},
+                    "metadata": {"sceneId": scene_id},
+                }
+        else:
+            submit_url = FLOW_VIDEO_SUBMIT_T2V_URL
+            req_item = {
+                "aspectRatio": aspect_ratio,
+                "seed": random.randint(1, 99999),
+                "textInput": {"prompt": prompt},
+                "videoModelKey": model_key,
+                "metadata": {"sceneId": scene_id},
+            }
+
         json_data: Dict[str, Any] = {
             "clientContext": {
                 "recaptchaContext": {
@@ -1687,22 +2158,21 @@ async def veo_workflow(
                 "tool": "PINHOLE",
                 "userPaygateTier": user_tier,
             },
-            "requests": [
-                {
-                    "aspectRatio": aspect_ratio,
-                    "seed": random.randint(1, 99999),
-                    "textInput": {"prompt": prompt},
-                    "videoModelKey": model_key,
-                    "metadata": {"sceneId": scene_id},
-                }
-            ],
+            "requests": [req_item],
         }
 
-        await progress_cb(10, {"stage": "submit_task", "attempt": attempt + 1})
+        await progress_cb(
+            10,
+            {
+                "stage": "submit_task",
+                "attempt": attempt + 1,
+                "video_mode": "i2v" if want_i2v else "t2v",
+            },
+        )
         try:
             tx = await page_fetch_json(
                 page,
-                url=FLOW_VIDEO_SUBMIT_T2V_URL,
+                url=submit_url,
                 method="POST",
                 headers={
                     "Accept": "application/json",
@@ -1736,91 +2206,37 @@ async def veo_workflow(
         append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
         break
     else:
-        raise NonPenalizedTaskError(last_submit_err or "文生视频提交失败", status_code=502)
+        _submit_fail = "图生视频提交失败" if want_i2v else "文生视频提交失败"
+        raise NonPenalizedTaskError(last_submit_err or _submit_fail, status_code=502)
 
     await progress_cb(25, {"stage": "polling", "operations": len(operations)})
-    max_attempts = max(3, int(max_wait_seconds / max(0.5, poll_interval_seconds)) + 3)
-    consecutive_poll_errors = 0
-    video_url: Optional[str] = None
-
-    for attempt in range(max_attempts):
-        await asyncio.sleep(poll_interval_seconds)
-        pct = 25 + min(70, int((attempt + 1) / max(1, max_attempts) * 70))
-        try:
-            ptx = await page_fetch_json(
-                page,
-                url=FLOW_VIDEO_POLL_URL,
-                method="POST",
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {at}",
-                },
-                json_data={"operations": operations},
-                log_file=log_file,
-            )
-        except Exception as e:
-            consecutive_poll_errors += 1
-            append_log(log_file, f"[veo] poll error: {e}")
-            if consecutive_poll_errors >= 3:
-                raise NonPenalizedTaskError(f"视频状态轮询失败: {_short_err_msg(e)}", status_code=502) from e
-            await progress_cb(pct, {"stage": "polling", "error": _short_err_msg(e)})
-            continue
-
-        consecutive_poll_errors = 0
-        pst = ptx.get("status")
-        if pst is not None and int(pst) >= 400:
-            consecutive_poll_errors += 1
-            body = safe_trim(str(ptx.get("response_body") or ""), 400)
-            append_log(log_file, f"[veo] poll HTTP {pst} {body}")
-            if consecutive_poll_errors >= 3:
-                raise NonPenalizedTaskError(f"视频状态查询被拒绝: HTTP {pst}", status_code=502)
-            continue
-
-        checked = ptx.get("_json")
-        checked_ops = checked.get("operations") if isinstance(checked, dict) else None
-        if not isinstance(checked_ops, list) or len(checked_ops) == 0:
-            await progress_cb(pct, {"stage": "polling", "upstream_status": None})
-            continue
-
-        op0 = checked_ops[0]
-        status = op0.get("status")
-        await progress_cb(pct, {"stage": "polling", "upstream_status": status})
-
-        if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
-            meta = (op0.get("operation") or {}).get("metadata") or {}
-            vinfo = meta.get("video") or {}
-            video_url = str(vinfo.get("fifeUrl") or "").strip() or None
-            if not video_url:
-                raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
-            break
-
-        if status == "MEDIA_GENERATION_STATUS_FAILED":
-            err = ((op0.get("operation") or {}).get("error") or {})
-            msg = str(err.get("message") or "未知错误")
-            code = str(err.get("code") or "")
-            raise NonPenalizedTaskError(f"视频生成失败: {msg}" + (f" ({code})" if code else ""), status_code=502)
-
-        if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
-            raise NonPenalizedTaskError(f"视频生成错误状态: {status}", status_code=502)
-
-    else:
-        raise NonPenalizedTaskError(
-            f"视频生成超时（已轮询约 {max_attempts} 次，间隔 {poll_interval_seconds}s）",
-            status_code=504,
-        )
+    video_url = await _veo_poll_operations_until_video_url(
+        page=page,
+        access_token=str(at),
+        log_file=log_file,
+        progress_cb=progress_cb,
+        operations=operations,
+        max_wait_seconds=max_wait_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
 
     elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
     await progress_cb(100, {"stage": "done", "elapsed_ms": elapsed_ms, "video_url": video_url})
-    append_log(log_file, f"[veo] workflow T2V done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}")
+    append_log(
+        log_file,
+        f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}",
+    )
 
-    return {
+    out: Dict[str, Any] = {
         "type": "veo_workflow",
-        "message": "VEO 文生视频完成",
+        "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
         "video_url": video_url,
-        "video_type": "t2v",
+        "video_type": "i2v" if want_i2v else "t2v",
         "model_key": model_key,
         "aspect_ratio": aspect_ratio,
         "project_id": project_id,
         "elapsed_ms": elapsed_ms,
     }
+    if want_i2v:
+        out["i2v_image_count"] = len(i2v_urls)
+    return out
