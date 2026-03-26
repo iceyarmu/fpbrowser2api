@@ -969,7 +969,7 @@ class TaskService:
                         await self.db.update_task(
                             archive_id,
                             status="failed",
-                            error_message=f"[retry {_retry_attempt + 1}/{max_retries}] {e}",
+                            error_message=f"[{_retry_attempt + 1}|{max_retries}]{e}",
                             result=err_result,
                             content_violation=_is_violation if _is_violation else None,
                             set_completed=True,
