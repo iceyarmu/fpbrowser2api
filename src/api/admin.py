@@ -2181,7 +2181,15 @@ async def refresh_mapping_remaining_quota(
         await db.mark_mapping_success(mapping_id=mapping_id)
     except Exception:
         pass
-    return {"success": True, "mapping_id": mapping_id, "remaining_quota": new_remaining, "handler": handler_used}
+    ctx_after = await db.get_task_type_window_context(mapping_id)
+    cooldown_until_out = (ctx_after or {}).get("cooldown_until")
+    return {
+        "success": True,
+        "mapping_id": mapping_id,
+        "remaining_quota": new_remaining,
+        "handler": handler_used,
+        "cooldown_until": cooldown_until_out,
+    }
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-subscription-info")

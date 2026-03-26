@@ -800,11 +800,15 @@ class TaskService:
 
                 try:
                     if veo_info is not None and veo_info.get("credits") is not None:
-                        await self.db.update_task_type_window(
-                            mapping_id=picked.mapping_id,
-                            remaining_quota=int(veo_info.get("credits") or 0),
-                            sora_remaining_count=int(veo_info.get("credits") or 0),
-                        )
+                        _kw: Dict[str, Any] = {
+                            "mapping_id": picked.mapping_id,
+                            "remaining_quota": int(veo_info.get("credits") or 0),
+                            "sora_remaining_count": int(veo_info.get("credits") or 0),
+                        }
+                        _cu = veo_info.get("cooldown_until")
+                        if _cu:
+                            _kw["cooldown_until"] = str(_cu)
+                        await self.db.update_task_type_window(**_kw)
                 except Exception:
                     pass
                 return veo_info

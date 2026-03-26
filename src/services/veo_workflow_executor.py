@@ -16,6 +16,7 @@ import random
 import re
 import time
 import uuid
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -1041,6 +1042,30 @@ def get_or_create_veo_session(
 # Google Labs / Flow：余额与档位（与 flow2api flow_client.get_credits 对齐）
 # ---------------------------------------------------------------------------
 FLOW_LABS_CREDITS_URL = "https://aisandbox-pa.googleapis.com/v1/credits"
+# 刷新 VEO 额度时：新开标签页读取「Next update: Apr 22」或「Next update: Tomorrow」作为额度重置日
+VEO_ONE_GOOGLE_AI_ACTIVITY_URL = "https://one.google.com/ai/activity?g1_landing_page=0"
+_VEO_NEXT_UPDATE_TOMORROW_RE = re.compile(
+    r"Next\s+update\s*:\s*tomorrow\b",
+    re.IGNORECASE,
+)
+_VEO_NEXT_UPDATE_RE = re.compile(
+    r"Next\s+update\s*:\s*([A-Za-z]{3,9})\s+(\d{1,2})(?:\s*,\s*(\d{4}))?",
+    re.IGNORECASE,
+)
+_VEO_MONTH_PREFIX_TO_NUM = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
 FLOW_VIDEO_SUBMIT_T2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText"
 FLOW_FLOW_UPLOAD_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/uploadImage"
 FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartImage"
@@ -1601,6 +1626,143 @@ def _veo_normalize_credits_payload(data: Any) -> Dict[str, Any]:
     if tier_s == "":
         tier_s = None
     return {"credits": credits_i, "user_paygate_tier": tier_s, "raw": data}
+
+
+def _veo_month_token_to_num(month_tok: str) -> Optional[int]:
+    t = (month_tok or "").strip().lower()
+    if len(t) < 3:
+        return None
+    return _VEO_MONTH_PREFIX_TO_NUM.get(t[:3])
+
+
+def _veo_next_update_text_to_cooldown_str(page_text: str) -> Optional[str]:
+    """从页面文本解析「Next update: Tomorrow」为本地明天 0 点，或「Next update: Apr 22」等与当年月日组合为本地 0 点。"""
+    if not (page_text or "").strip():
+        return None
+    if _VEO_NEXT_UPDATE_TOMORROW_RE.search(page_text):
+        tomorrow_d = date.today() + timedelta(days=1)
+        dt_local = datetime(tomorrow_d.year, tomorrow_d.month, tomorrow_d.day, 13, 5, 0)
+        return dt_local.strftime("%Y-%m-%d %H:%M:%S")
+    m = _VEO_NEXT_UPDATE_RE.search(page_text)
+    if not m:
+        return None
+    mon = _veo_month_token_to_num(m.group(1) or "")
+    if mon is None:
+        return None
+    try:
+        dnum = int(m.group(2))
+    except Exception:
+        return None
+    if dnum < 1 or dnum > 31:
+        return None
+
+    now = datetime.now()
+    year_s = (m.group(3) or "").strip()
+    if year_s:
+        try:
+            y = int(year_s)
+        except Exception:
+            return None
+        try:
+            final_d = date(y, mon, dnum)
+        except ValueError:
+            return None
+    else:
+        y = now.year
+        try:
+            cand = date(y, mon, dnum)
+        except ValueError:
+            return None
+        if cand < now.date():
+            y += 1
+        try:
+            final_d = date(y, mon, dnum)
+        except ValueError:
+            return None
+
+    dt_local = datetime(final_d.year, final_d.month, final_d.day, 13, 5, 0)
+    return dt_local.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def _veo_scrape_one_google_next_update_cooldown(
+    sess: "VeoSession",
+    *,
+    log_file: Path,
+    goto_timeout_ms: int = 90_000,
+    settle_seconds: float = 4.0,
+) -> Optional[str]:
+    """新开标签页打开 one.google.com AI 活动页，读取 Next update 作为 cooldown_until（与 Sora nf_check 格式一致）。"""
+    ctx = getattr(sess.pw_ctx, "context", None)
+    if ctx is None:
+        append_log(log_file, "[veo][activity] 无 browser context，跳过 Next update")
+        return None
+
+    page = None
+    try:
+        page = await ctx.new_page()
+        await page.goto(
+            VEO_ONE_GOOGLE_AI_ACTIVITY_URL,
+            wait_until="domcontentloaded",
+            timeout=int(goto_timeout_ms),
+        )
+        await asyncio.sleep(max(0.0, float(settle_seconds)))
+        text = ""
+        try:
+            text = await page.inner_text("body")
+        except Exception:
+            try:
+                text = await page.content()
+            except Exception as e2:
+                append_log(log_file, f"[veo][activity] 读取页面正文失败: {e2}")
+                return None
+
+        cu = _veo_next_update_text_to_cooldown_str(text)
+        if cu:
+            append_log(log_file, f"[veo][activity] Next update -> cooldown_until={cu}")
+        else:
+            append_log(log_file, "[veo][activity] 未匹配到 Next update（可能未登录或文案变更）")
+        return cu
+    except Exception as e:
+        append_log(log_file, f"[veo][activity] 打开活动页失败: {e}")
+        return None
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+
+async def veo_fetch_next_update_cooldown_from_one_google_activity(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+) -> Optional[str]:
+    """在指纹浏览器中另开标签页打开 Google AI 活动页，从正文匹配「Next update: Apr 22」等文案，解析为额度重置时间字符串（与 sora nf_check 的 cooldown_until 格式一致：本地日期 0 点）。
+
+    需已能正常使用该窗口（与 veo_fetch_credits_in_window 相同的前置：开窗、labs 目标页上下文）；失败返回 None，不抛错。
+    """
+    try:
+        await sess.ensure_open(
+            args=sess.browser_open_args,
+            force_open=sess.browser_force_open,
+            headless=sess.browser_headless,
+        )
+        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+        sess._cancel_idle_close()
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        async with sess._bring_drafts_lock:
+            if sess.pw_ctx.page is None:
+                append_log(log_file, "[veo][activity] page 未初始化，跳过 Next update")
+                return None
+            return await _veo_scrape_one_google_next_update_cooldown(sess, log_file=log_file)
+    except Exception as e:
+        try:
+            lf = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            append_log(lf, f"[veo][activity] veo_fetch_next_update_cooldown_from_one_google_activity 失败: {e}")
+        except Exception:
+            pass
+        return None
 
 
 async def veo_fetch_credits_in_window(

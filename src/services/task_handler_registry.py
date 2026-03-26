@@ -184,7 +184,11 @@ async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
     default_target_url = str(row.get("default_target_url") or "").strip()
     target_url = default_target_url or "https://labs.google/fx"
 
-    from .veo_workflow_executor import get_or_create_veo_session, veo_fetch_credits_in_window  # type: ignore
+    from .veo_workflow_executor import (  # type: ignore
+        get_or_create_veo_session,
+        veo_fetch_credits_in_window,
+        veo_fetch_next_update_cooldown_from_one_google_activity,
+    )
 
     veo_ctx = get_or_create_veo_session(
         vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
@@ -195,11 +199,16 @@ async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
     info = await veo_fetch_credits_in_window(sess=veo_ctx, target_url=target_url, access_token=at)
     credits = int(info.get("credits") or 0)
 
-    await ctx.db.update_task_type_window(
-        mapping_id=int(row.get("id") or 0),
-        remaining_quota=credits,
-        sora_remaining_count=credits,
-    )
+    cu = await veo_fetch_next_update_cooldown_from_one_google_activity(sess=veo_ctx, target_url=target_url)
+
+    kwargs: Dict[str, Any] = {
+        "mapping_id": int(row.get("id") or 0),
+        "remaining_quota": credits,
+        "sora_remaining_count": credits,
+    }
+    if cu:
+        kwargs["cooldown_until"] = str(cu)
+    await ctx.db.update_task_type_window(**kwargs)
     return credits
 
 

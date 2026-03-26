@@ -4319,8 +4319,13 @@
           const hl = getMappingHeadless(mappingId);
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota?headless=${hl}`, { method: "POST" });
           const v = (d?.remaining_quota ?? 0);
-          updateMappingRowUI(mappingId, { remaining_quota: v });
-          toast(`已刷新：remaining_quota=${v}`, "success");
+          const patch = { remaining_quota: v };
+          if (d && Object.prototype.hasOwnProperty.call(d, "cooldown_until")) {
+            patch.cooldown_until = d.cooldown_until ?? null;
+          }
+          updateMappingRowUI(mappingId, patch);
+          const cuHint = patch.cooldown_until != null && patch.cooldown_until !== "" ? `，重置时间=${patch.cooldown_until}` : "";
+          toast(`已刷新：remaining_quota=${v}${cuHint}`, "success");
         } catch (e) {
           // 如果后端提示“已禁用”，这里同步 UI（兼容定时/手动场景）
           try {
@@ -4459,7 +4464,11 @@
             params.set("headless", String(hl));
             const d = await postJson(`/api/admin/task-type-windows/${ids[i]}/refresh-remaining-quota?${params}`, { method: "POST" });
             const v = (d?.remaining_quota ?? 0);
-            updateMappingRowUI(ids[i], { remaining_quota: v });
+            const patch = { remaining_quota: v };
+            if (d && Object.prototype.hasOwnProperty.call(d, "cooldown_until")) {
+              patch.cooldown_until = d.cooldown_until ?? null;
+            }
+            updateMappingRowUI(ids[i], patch);
             ok += 1;
           } catch (e) {
             try {
