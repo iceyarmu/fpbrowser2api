@@ -299,6 +299,38 @@ class FPBrowserClient:
 
         return await self._roxy_clear_local_cache(base_url=base_url, token=access_key, dir_ids=keys)
 
+    async def browser_clear_server_cache(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        window_keys: List[str],
+    ) -> Dict[str, Any]:
+        """清空窗口服务器缓存（RoxyBrowser：POST /browser/clear_server_cache）。
+
+        参考文档：
+        - https://faq.roxybrowser.com/zh/api-documentation/api-endpoint.html#%E6%B8%85%E7%A9%BA%E7%AA%97%E5%8F%A3%E6%9C%8D%E5%8A%A1%E5%99%A8%E7%BC%93%E5%AD%98
+        """
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        keys = [str(x or "").strip() for x in (window_keys or [])]
+        keys = [x for x in keys if x]
+        if not base_url or not keys:
+            raise RuntimeError("browser_clear_server_cache 参数不足：base_url/window_keys 不能为空")
+        try:
+            workspace_id = int(str(space_id or "").strip())
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_clear_server_cache，请设置为 roxy")
+
+        return await self._roxy_clear_server_cache(
+            base_url=base_url, token=access_key, workspace_id=workspace_id, dir_ids=keys
+        )
+
     async def browser_mdf(
         self,
         *,
@@ -852,6 +884,17 @@ class FPBrowserClient:
             token,
             "/browser/clear_local_cache",
             {"dirIds": [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()]},
+        )
+
+    async def _roxy_clear_server_cache(
+        self, *, base_url: str, token: Optional[str], workspace_id: int, dir_ids: List[str]
+    ) -> Dict[str, Any]:
+        ids = [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()]
+        return await self._roxy_post(
+            base_url,
+            token,
+            "/browser/clear_server_cache",
+            {"workspaceId": int(workspace_id), "dirIds": ids},
         )
 
     async def _roxy_browser_mdf(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:

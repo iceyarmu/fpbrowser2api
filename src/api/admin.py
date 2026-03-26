@@ -2555,6 +2555,69 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
     return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": False}
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/clear-browser-cache")
+async def clear_mapping_browser_cache(mapping_id: int, token: str = Depends(verify_admin_token)):
+    """依次调用 Roxy：清空窗口本地缓存、清空窗口服务器缓存（dirId=window_key）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    keys = [window_key]
+
+    try:
+        local_rsp = await client.browser_clear_local_cache(
+            vendor=vendor,
+            base_url=base_url,
+            access_key=access_key,
+            window_keys=keys,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=f"清空本地缓存失败：{e}")
+
+    if int(local_rsp.get("code") if local_rsp.get("code") is not None else -1) != 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"清空本地缓存失败：{local_rsp.get('msg') or local_rsp}",
+        )
+
+    try:
+        server_rsp = await client.browser_clear_server_cache(
+            vendor=vendor,
+            base_url=base_url,
+            access_key=access_key,
+            space_id=space_id,
+            window_keys=keys,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=f"清空服务器缓存失败（本地已清空）：{e}")
+
+    if int(server_rsp.get("code") if server_rsp.get("code") is not None else -1) != 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"清空服务器缓存失败（本地已清空）：{server_rsp.get('msg') or server_rsp}",
+        )
+
+    return {
+        "success": True,
+        "mapping_id": mapping_id,
+        "local": local_rsp,
+        "server": server_rsp,
+    }
+
+
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-start")
 async def manual_start_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
     """启用窗口 + 立刻关闭指纹浏览器窗口，然后重新打开并进入 Sora drafts。
