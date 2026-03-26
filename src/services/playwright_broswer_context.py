@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from ..core.database import Database
 from .fp_browser_client import FPBrowserClient
@@ -283,6 +283,94 @@ async def page_fetch_tx(
     append_log(log_file, f"[browser][page_fetch] {tx['method']} url={url!r} status={tx['status']}")
     append_log(log_file, f"[browser][page_fetch] body={safe_trim(str(tx.get('response_body') or ''), 800)!r}")
     return tx
+
+
+async def page_resolve_redirect_url(
+    page,
+    *,
+    url: str,
+    log_file: Path,
+    max_hops: int = 8,
+) -> Optional[str]:
+    """用 Playwright `page.request`（与页面共享 Cookie / UA）解析重定向，读取 302 的 Location。
+
+    页面内 `fetch(..., redirect: 'manual')` 对跨站请求常得到 status=0（opaque / 被策略拦截），
+    而 `page.request` 走浏览器网络栈且不受页面 CORS 限制，更适合 labs.google → GCS 这类跳转。
+    """
+    if page is None:
+        raise RuntimeError("page 为 None，无法解析重定向")
+    u = str(url or "").strip()
+    if not u:
+        return None
+    current = u
+    n_hops = int(max(1, max_hops))
+    for hop in range(n_hops):
+        extra_headers: Dict[str, str] = {}
+        try:
+            pu = str(getattr(page, "url", "") or "").strip()
+            if pu.startswith(("http://", "https://")):
+                extra_headers["Referer"] = pu
+        except Exception:
+            pass
+        try:
+            _req_kw: Dict[str, Any] = {"max_redirects": 0}
+            if extra_headers:
+                _req_kw["headers"] = extra_headers
+            resp = await page.request.get(current, **_req_kw)
+        except Exception as e:
+            append_log(
+                log_file,
+                f"[browser][page_resolve_redirect] request.get err hop={hop} url={current!r} err={e}",
+            )
+            return None
+        try:
+            status = int(resp.status)
+            if 300 <= status < 400:
+                loc = ""
+                try:
+                    h = resp.headers
+                    if h:
+                        loc = str(h.get("location") or h.get("Location") or "").strip()
+                except Exception:
+                    loc = ""
+                if not loc:
+                    append_log(
+                        log_file,
+                        f"[browser][page_resolve_redirect] no Location hop={hop} status={status} url={current!r}",
+                    )
+                    return None
+                nxt = urljoin(current, loc)
+                cur_host = (urlparse(current).hostname or "").lower()
+                nex_host = (urlparse(nxt).hostname or "").lower()
+                if nex_host and nex_host != cur_host:
+                    append_log(
+                        log_file,
+                        f"[browser][page_resolve_redirect] ok url={u!r} -> {safe_trim(nxt, 120)!r}",
+                    )
+                    return nxt
+                current = nxt
+                continue
+            if 200 <= status < 300:
+                final_u = str(getattr(resp, "url", None) or current).strip()
+                if final_u:
+                    append_log(
+                        log_file,
+                        f"[browser][page_resolve_redirect] ok(200) url={u!r} -> {safe_trim(final_u, 120)!r}",
+                    )
+                    return final_u
+                return None
+            append_log(
+                log_file,
+                f"[browser][page_resolve_redirect] bad status={status} hop={hop} url={current!r}",
+            )
+            return None
+        finally:
+            try:
+                await resp.dispose()
+            except Exception:
+                pass
+    append_log(log_file, f"[browser][page_resolve_redirect] too_many_hops url={u!r}")
+    return None
 
 
 async def page_fetch_json(

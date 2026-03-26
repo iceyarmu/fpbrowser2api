@@ -28,6 +28,7 @@ from .playwright_broswer_context import (
     get_or_create_ctx as get_or_create_playwright_ctx,
     page_fetch_json,
     page_fetch_tx,
+    page_resolve_redirect_url,
     pick_working_page_from_context,
     safe_trim,
 )
@@ -2256,9 +2257,9 @@ async def _veo_execute_image_mode(
             f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms}",
         )
         out: Dict[str, Any] = {
-            "type": "veo_workflow",
+            "type": "veo_workflow_image",
             "message": "VEO 图生图完成" if want_i2i else "VEO 文生图完成",
-            "image_url": fife_url,
+            "share_url": fife_url,
             "workflow_kind": "image",
             "image_mode": "i2i" if want_i2i else "t2i",
             "model_name": model_name,
@@ -2521,6 +2522,7 @@ async def veo_workflow(
         end_media_id = media_ids[1] if len(media_ids) > 1 else None
 
     operations: List[Dict[str, Any]] = []
+    t2v_thumb_media_name: Optional[str] = None
     last_submit_err: Optional[str] = None
 
     for attempt in range(max_submit_retries):
@@ -2637,6 +2639,10 @@ async def veo_workflow(
             continue
 
         operations = ops
+        if not want_i2v:
+            op0 = ops[0] if isinstance(ops[0], dict) else {}
+            raw_name = (op0.get("operation") or {}).get("name")
+            t2v_thumb_media_name = str(raw_name or "").strip() or None
         append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
         break
     else:
@@ -2661,10 +2667,32 @@ async def veo_workflow(
         f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}",
     )
 
+    if want_i2v:
+        thumb_url = i2v_urls[0]
+    else:
+        thumb_url = ""
+        """
+        redirect_thumb = (
+            f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?"
+            f"name={t2v_thumb_media_name}&mediaUrlType=MEDIA_URL_TYPE_THUMBNAIL"
+        )
+        thumb_url = redirect_thumb
+        if t2v_thumb_media_name:
+            resolved = await page_resolve_redirect_url(page, url=redirect_thumb, log_file=log_file)
+            if resolved:
+                thumb_url = resolved
+            else:
+                append_log(
+                    log_file,
+                    "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
+                )
+        """
+
     out: Dict[str, Any] = {
-        "type": "veo_workflow",
+        "type": "veo_workflow_video",
         "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
-        "video_url": video_url,
+        "share_url": video_url,
+        "thumb_url": thumb_url,
         "video_type": "i2v" if want_i2v else "t2v",
         "model_key": model_key,
         "aspect_ratio": aspect_ratio,
