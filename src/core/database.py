@@ -4385,7 +4385,7 @@ class Database:
                 LEFT JOIN windows w ON w.id = t.window_pk
                 LEFT JOIN spaces s ON s.id = w.space_pk
                 WHERE {' AND '.join(where)}
-                ORDER BY t.id DESC
+                ORDER BY t.created_at DESC, t.id DESC
                 LIMIT ? OFFSET ?
                 """,
                 params,
