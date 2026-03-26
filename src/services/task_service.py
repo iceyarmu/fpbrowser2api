@@ -24,6 +24,7 @@ from .veo_workflow_executor import (
     _veo_resolve_n_frames,
     get_or_create_veo_session,
     veo_fetch_credits_in_window,
+    veo_fetch_next_update_cooldown_from_one_google_activity,
     veo_workflow,
 )
 
@@ -60,6 +61,37 @@ class QueuedTask:
     retry_attempt: int = 0
     required_window_pk: Optional[int] = None
     is_dedicated_window: bool = False
+
+
+def _parse_mapping_cooldown_until_local(s: Any) -> Optional[datetime]:
+    """将 DB 中的 cooldown_until 字符串解析为 naive 本地时间，供与 datetime.now() 比较。"""
+    raw = str(s or "").strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) >= 19:
+            return datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(raw[:10], "%Y-%m-%d")
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(raw.replace(" ", "T", 1))
+    except ValueError:
+        return None
+
+
+def _veo_should_fetch_next_update_cooldown(cooldown_until_val: Any) -> bool:
+    """无记录、不可解析或当前时间已超过 cooldown_until 时，需要重新抓取 one.google 活动页上的重置时间。"""
+    raw = str(cooldown_until_val or "").strip()
+    if not raw:
+        return True
+    until = _parse_mapping_cooldown_until_local(raw)
+    if until is None:
+        return True
+    return datetime.now() > until
 
 
 def _remaining_quota_exclusive_floor_for_pick(
@@ -800,15 +832,26 @@ class TaskService:
 
                 try:
                     if veo_info is not None and veo_info.get("credits") is not None:
+                        st0 = await self.db.get_mapping_runtime_state(mapping_id=picked.mapping_id)
+                        need_next_update = _veo_should_fetch_next_update_cooldown((st0 or {}).get("cooldown_until"))
+                        new_cu: Optional[str] = None
+                        if need_next_update:
+                            new_cu = await veo_fetch_next_update_cooldown_from_one_google_activity(
+                                sess=veo_sess,
+                                target_url=veo_target,
+                            )
+
                         _kw: Dict[str, Any] = {
                             "mapping_id": picked.mapping_id,
                             "remaining_quota": int(veo_info.get("credits") or 0),
                             "sora_remaining_count": int(veo_info.get("credits") or 0),
                         }
-                        _cu = veo_info.get("cooldown_until")
-                        if _cu:
-                            _kw["cooldown_until"] = str(_cu)
+                        if new_cu:
+                            _kw["cooldown_until"] = str(new_cu)
                         await self.db.update_task_type_window(**_kw)
+                        if new_cu:
+                            veo_info = dict(veo_info)
+                            veo_info["cooldown_until"] = str(new_cu)
                 except Exception:
                     pass
                 return veo_info
