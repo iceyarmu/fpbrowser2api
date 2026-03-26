@@ -97,7 +97,7 @@ def _veo_should_fetch_next_update_cooldown(cooldown_until_val: Any) -> bool:
 def _remaining_quota_exclusive_floor_for_pick(
     task_type_code: str, payload: Optional[Dict[str, Any]]
 ) -> int:
-    """与 pick 时 remaining_quota > floor 及预扣额度对齐（见 _consume_quota_after_window_pick）。"""
+    """与 pick 时 remaining_quota >= floor 及预扣额度对齐（见 _consume_quota_after_window_pick）。"""
     code = (task_type_code or "").strip()
     if code == "sora_gen_video":
         return 2

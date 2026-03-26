@@ -3476,10 +3476,10 @@ class Database:
         目标：
         - 避免 TaskService “先查一批候选 -> 再循环 try_reserve” 的高并发抖动
         - 把“排序挑选 + 并发预占”压缩为单次 DB 写入（单条 SQL）
-        - remaining_quota 只代表额度：remaining_quota == 3 表示不可用；并发限制以 task_types.concurrency 为准
+        - remaining_quota 只代表额度；并发限制以 task_types.concurrency 为准
 
         remaining_quota_exclusive_floor:
-        - 候选/预占条件之一为 remaining_quota > floor（或与冷却窗口 OR）；由调用方按任务预扣额度传入。
+        - 候选/预占条件之一为 remaining_quota >= floor（或与冷却窗口 OR）；由调用方按任务预扣额度传入。
 
         返回：
         - 成功：返回 join 后的窗口信息 dict（与 list_available_windows_for_pick 字段一致）
@@ -3536,7 +3536,7 @@ class Database:
                             b.*,
                             CASE
                               WHEN (
-                                ((b.remaining_quota > ?)
+                                ((b.remaining_quota >= ?)
                                   OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                 AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                 AND (b.consecutive_errors < b.continuous_error_threshold)
@@ -3549,7 +3549,7 @@ class Database:
                              OR (
                                   b.window_status = 0
                                   AND (
-                                    ((b.remaining_quota > ?)
+                                    ((b.remaining_quota >= ?)
                                       OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                     AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                     AND (b.consecutive_errors < b.continuous_error_threshold)
@@ -3604,7 +3604,7 @@ class Database:
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
-                            (remaining_quota > ?)
+                            (remaining_quota >= ?)
                             OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
                           AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
