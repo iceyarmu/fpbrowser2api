@@ -30,7 +30,11 @@ from .playwright_broswer_context import (
     pick_working_page_from_context,
     safe_trim,
 )
-from .sora_task_executor import _download_bytes_local_async, _prepare_first_frame_image_for_upload_async
+from .sora_task_executor import (
+    _download_bytes_local_async,
+    _pick_n_frames,
+    _prepare_first_frame_image_for_upload_async,
+)
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 
@@ -1044,6 +1048,11 @@ FLOW_VIDEO_SUBMIT_I2V_START_END_URL = "https://aisandbox-pa.googleapis.com/v1/vi
 FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
 VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 
+# 与 flow2api generation_handler gemini-3.1-flash-image-*（NARWHAL）一致
+IMAGE_ASPECT_RATIO_LANDSCAPE = "IMAGE_ASPECT_RATIO_LANDSCAPE"
+IMAGE_ASPECT_RATIO_PORTRAIT = "IMAGE_ASPECT_RATIO_PORTRAIT"
+VEO_IMAGE_MODEL_NARWHAL = "NARWHAL"
+
 PAYGATE_TIER_NOT_PAID = "PAYGATE_TIER_NOT_PAID"
 PAYGATE_TIER_ONE = "PAYGATE_TIER_ONE"
 PAYGATE_TIER_TWO = "PAYGATE_TIER_TWO"
@@ -1864,6 +1873,245 @@ async def veo_create_flow_project_in_window(
         return pid
 
 
+def _veo_resolve_n_frames(payload: Dict[str, Any]) -> int:
+    """与 Sora 一致读取时长字段；显式为 1 时表示单帧 → 走文生图/图生图，其它值交给 `_pick_n_frames`（视频帧数语义）。"""
+    duration_v = payload.get("n_frames") or payload.get("duration_frames") or payload.get("duration") or payload.get("时长")
+    try:
+        iv = int(float(duration_v))
+    except Exception:
+        iv = 0
+    if iv == 1:
+        return 1
+    return _pick_n_frames(duration_v)
+
+
+def _veo_resolve_image_aspect_ratio(payload: Dict[str, Any]) -> str:
+    """文生图/图生图：横竖屏规则与 I2V/T2V 一致，默认横版。"""
+    o = _veo_resolve_orientation_str(payload)
+    if o == "portrait":
+        return IMAGE_ASPECT_RATIO_PORTRAIT
+    return IMAGE_ASPECT_RATIO_LANDSCAPE
+
+
+def _veo_flow_media_batch_generate_images_url(project_id: str) -> str:
+    return f"https://aisandbox-pa.googleapis.com/v1/projects/{str(project_id).strip()}/flowMedia:batchGenerateImages"
+
+
+def _veo_parse_batch_generate_images_fife_url(resp: Any) -> tuple[str, Optional[str]]:
+    if not isinstance(resp, dict):
+        raise NonPenalizedTaskError("图片生成返回格式异常", status_code=502)
+    media = resp.get("media")
+    m0: Optional[Dict[str, Any]] = None
+    if isinstance(media, list) and len(media) > 0 and isinstance(media[0], dict):
+        m0 = media[0]
+    if m0 is None:
+        reqs = resp.get("responses")
+        if isinstance(reqs, list) and len(reqs) > 0 and isinstance(reqs[0], dict):
+            media2 = reqs[0].get("media")
+            if isinstance(media2, list) and len(media2) > 0 and isinstance(media2[0], dict):
+                m0 = media2[0]
+    if m0 is None:
+        raise NonPenalizedTaskError(
+            f"图片生成结果为空：{safe_trim(str(resp), 320)}",
+            status_code=502,
+        )
+    img_block = m0.get("image")
+    if not isinstance(img_block, dict):
+        img_block = {}
+    gen = img_block.get("generatedImage")
+    if not isinstance(gen, dict):
+        gen = {}
+    fife = str(gen.get("fifeUrl") or "").strip()
+    if not fife:
+        raise NonPenalizedTaskError(
+            f"图片生成未返回 fifeUrl：{safe_trim(str(resp), 400)}",
+            status_code=502,
+        )
+    name_v = m0.get("name")
+    mid = str(name_v).strip() if name_v else None
+    return fife, mid
+
+
+async def _veo_execute_image_mode(
+    *,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    prompt: str,
+    project_id: str,
+    page: Any,
+    access_token: str,
+    log_file: Path,
+    started_at: float,
+    max_submit_retries: int,
+    download_timeout: float,
+    user_agent: Optional[str],
+    sess: "VeoSession",
+    bring_prefix: str,
+) -> Dict[str, Any]:
+    """n_frames==1：页面内调用 `flowMedia:batchGenerateImages`（对齐 flow2api `FlowClient.generate_image`）。"""
+    image_aspect = _veo_resolve_image_aspect_ratio(payload)
+    model_name = VEO_IMAGE_MODEL_NARWHAL
+    want_i2i = _veo_payload_looks_like_i2v(payload)
+    image_inputs: List[Dict[str, Any]] = []
+
+    if want_i2i:
+        i2i_urls = _veo_collect_i2v_image_urls(payload)
+        if len(i2i_urls) < 1:
+            raise NonPenalizedTaskError(
+                "图生图需要提供至少一张参考图（first_image_url / image_url / images 等）",
+                status_code=400,
+            )
+        first_u = i2i_urls[0]
+        await progress_cb(8, {"stage": "download_images", "count": 1, "workflow_kind": "image"})
+        raw_b = await _veo_download_image_bytes_for_i2v(
+            first_u,
+            label="参考图",
+            timeout_seconds=download_timeout,
+            user_agent=user_agent,
+        )
+        await progress_cb(12, {"stage": "upload_image", "index": 1, "total": 1, "workflow_kind": "image"})
+        mid = await _veo_flow_upload_image_in_window(
+            page=page,
+            access_token=str(access_token),
+            project_id=project_id,
+            image_bytes=raw_b,
+            log_file=log_file,
+        )
+        image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
+        append_log(log_file, f"[veo][image] i2i uploaded reference mediaId={safe_trim(mid, 80)!r}")
+    else:
+        await progress_cb(8, {"stage": "text_to_image", "workflow_kind": "image"})
+        append_log(log_file, "[veo][image] t2i (no reference images)")
+
+    recaptcha_override = str(
+        payload.get("recaptcha_token")
+        or payload.get("veo_recaptcha_token")
+        or payload.get("recaptchaContextToken")
+        or ""
+    ).strip() or None
+
+    submit_url = _veo_flow_media_batch_generate_images_url(project_id)
+    last_submit_err: Optional[str] = None
+
+    for attempt in range(max_submit_retries):
+        recaptcha_token = recaptcha_override
+        if not recaptcha_token:
+            recaptcha_token = await _veo_try_recaptcha_token_in_page(
+                page, action="IMAGE_GENERATION", log_file=log_file
+            )
+        if not recaptcha_token:
+            last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
+            append_log(log_file, f"[veo][image] submit attempt {attempt + 1}: no recaptcha token")
+            if attempt + 1 < max_submit_retries:
+                await asyncio.sleep(2.0)
+                try:
+                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
+                except Exception:
+                    pass
+            continue
+
+        session_id = _veo_generate_session_id()
+        client_context: Dict[str, Any] = {
+            "recaptchaContext": {
+                "token": recaptcha_token,
+                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+            },
+            "sessionId": session_id,
+            "projectId": str(project_id),
+            "tool": "PINHOLE",
+        }
+        request_data: Dict[str, Any] = {
+            "clientContext": client_context,
+            "seed": random.randint(1, 999999),
+            "imageModelName": model_name,
+            "imageAspectRatio": image_aspect,
+            "structuredPrompt": {"parts": [{"text": prompt}]},
+            "imageInputs": image_inputs,
+        }
+        json_data: Dict[str, Any] = {
+            "clientContext": client_context,
+            "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+            "useNewMedia": True,
+            "requests": [request_data],
+        }
+
+        await progress_cb(
+            18,
+            {
+                "stage": "submit_image_task",
+                "attempt": attempt + 1,
+                "workflow_kind": "image",
+                "image_mode": "i2i" if want_i2i else "t2i",
+            },
+        )
+
+        try:
+            tx = await page_fetch_json(
+                page,
+                url=submit_url,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+                json_data=json_data,
+                log_file=log_file,
+            )
+        except Exception as e:
+            last_submit_err = _short_err_msg(e, max_len=200)
+            append_log(log_file, f"[veo][image] submit fetch error: {e}")
+            continue
+
+        st = tx.get("status")
+        if st is not None and int(st) >= 400:
+            body = safe_trim(str(tx.get("response_body") or ""), 500)
+            last_submit_err = f"HTTP {st} {body}"
+            append_log(log_file, f"[veo][image] submit rejected: {last_submit_err}")
+            recaptcha_override = None
+            continue
+
+        resp = tx.get("_json")
+        try:
+            fife_url, media_name = _veo_parse_batch_generate_images_fife_url(resp)
+        except NonPenalizedTaskError as e:
+            last_submit_err = str(e)
+            append_log(log_file, f"[veo][image] bad response: {last_submit_err}")
+            recaptcha_override = None
+            continue
+
+        append_log(
+            log_file,
+            f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} media={safe_trim(str(media_name or ''), 60)!r}",
+        )
+        elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
+        await progress_cb(
+            100,
+            {"stage": "done", "elapsed_ms": elapsed_ms, "image_url": fife_url, "workflow_kind": "image"},
+        )
+        append_log(
+            log_file,
+            f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms}",
+        )
+        out: Dict[str, Any] = {
+            "type": "veo_workflow",
+            "message": "VEO 图生图完成" if want_i2i else "VEO 文生图完成",
+            "image_url": fife_url,
+            "workflow_kind": "image",
+            "image_mode": "i2i" if want_i2i else "t2i",
+            "model_name": model_name,
+            "image_aspect_ratio": image_aspect,
+            "project_id": str(project_id),
+            "elapsed_ms": elapsed_ms,
+            "n_frames": 1,
+        }
+        if media_name:
+            out["generated_media_id"] = media_name
+        return out
+
+    raise NonPenalizedTaskError(last_submit_err or "图片生成提交失败", status_code=502)
+
+
 # ---------------------------------------------------------------------------
 # 入口函数
 # ---------------------------------------------------------------------------
@@ -1883,13 +2131,13 @@ async def veo_workflow(
     db: Any = None,
     task_type_window_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """VEO 视频：指纹浏览器页面内 fetch aisandbox API + 轮询状态。
+    """VEO：指纹浏览器页面内 fetch aisandbox API。
 
-    - 文生视频（T2V）：无参考图 payload 时，逻辑同前。
-    - 图生视频（I2V）：1～2 张图（first_image_url + 可选尾图，或 images 数组），
-      横竖屏与 Sora 一致（size_ratio / aspect_ratio / ratio / 尺寸 → 16:9/9:16，或 orientation），
-      模型与 flow2api 一致：横屏 `veo_3_1_i2v_s_fast_fl`、竖屏 `veo_3_1_i2v_s_fast_portrait_fl`；
-      先 `flow/uploadImage`，再 `batchAsyncGenerateVideoStartImage` 或 `batchAsyncGenerateVideoStartAndEndImage`。
+    - 视频：`n_frames`（或 duration / duration_frames / 时长）经 `_pick_n_frames` 归一后 **>1**（如 300/450）
+      时走文生视频 / 图生视频，轮询 `batchCheckAsyncVideoGenerationStatus`。
+    - 图片：当上述字段 **显式为 1** 时走文生图 / 图生图：`flow/uploadImage`（图生图仅首张）
+      + `projects/{id}/flowMedia:batchGenerateImages`，模型为 NARWHAL，横竖版对应
+      `IMAGE_ASPECT_RATIO_LANDSCAPE` / `IMAGE_ASPECT_RATIO_PORTRAIT`（与 flow2api gemini-3.1-flash-image-* 一致）。
 
     project_id 解析顺序：payload（veo_project_id / project_id / current_project_id）
     → veo_url 中的 /tools/flow/project/{id}
@@ -1902,13 +2150,18 @@ async def veo_workflow(
     if not prompt:
         raise NonPenalizedTaskError("payload.prompt 不能为空", status_code=400)
 
+    n_frames = _veo_resolve_n_frames(payload)
+    image_mode = n_frames == 1
+
     want_i2v = _veo_payload_looks_like_i2v(payload)
     i2v_urls: List[str] = []
     if want_i2v:
         i2v_urls = _veo_collect_i2v_image_urls(payload)
         if len(i2v_urls) == 0:
             raise NonPenalizedTaskError(
-                "图生视频需要提供 1-2 张图片（first_image_url / image_url / images 等）",
+                "图生图需要提供至少一张参考图（first_image_url / image_url / images 等）"
+                if image_mode
+                else "图生视频需要提供 1-2 张图片（first_image_url / image_url / images 等）",
                 status_code=400,
             )
 
@@ -1963,16 +2216,18 @@ async def veo_workflow(
             log_file,
             f"[veo] project_id from DB random pick mapping_id={int(task_type_window_id)} -> {project_id!r}",
         )
-    _mode = "I2V" if want_i2v else "T2V"
+    _mode = "IMAGE" if image_mode else ("I2V" if want_i2v else "T2V")
     append_log(
         log_file,
-        f"[veo] workflow {_mode} start project_id={project_id!r} prompt={safe_trim(prompt, 200)!r} "
-        f"images={len(i2v_urls) if want_i2v else 0}",
+        f"[veo] workflow {_mode} n_frames={n_frames} start project_id={project_id!r} "
+        f"prompt={safe_trim(prompt, 200)!r} images={len(i2v_urls) if want_i2v else 0}",
     )
     await progress_cb(
         1,
         {
             "stage": "init",
+            "workflow_kind": "image" if image_mode else "video",
+            "n_frames": n_frames,
             "video_mode": "i2v" if want_i2v else "t2v",
             "prompt": safe_trim(prompt, 200),
             "project_id": project_id,
@@ -1990,14 +2245,14 @@ async def veo_workflow(
     await progress_cb(5, {"stage": "navigate", "url": project_page})
     append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
 
-    at = str(access_token or "").strip() or None
-    if not at:
-        try:
-            tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
-            at = str((tok_info or {}).get("access_token") or "").strip() or None
-        except Exception as e:
-            append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
-            at = None
+    #at = str(access_token or "").strip() or None
+    #if not at:
+    try:
+        tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
+        at = str((tok_info or {}).get("access_token") or "").strip() or None
+    except Exception as e:
+        append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
+        at = None
     if not at:
         raise NonPenalizedTaskError(
             "缺少可用的 access_token：请在任务窗口映射中配置 Labs access_token，或确保指纹窗口已登录并可取得凭证",
@@ -2023,19 +2278,6 @@ async def veo_workflow(
     except Exception as e:
         append_log(log_file, f"[veo] credits tier probe skipped: {e}")
 
-    if want_i2v:
-        aspect_ratio = _veo_resolve_i2v_aspect_ratio(payload)
-        base_model_key = (
-            VEO_I2V_MODEL_PORTRAIT_FL
-            if aspect_ratio == VIDEO_ASPECT_RATIO_PORTRAIT
-            else VEO_I2V_MODEL_LANDSCAPE_FL
-        )
-    else:
-        base_model_key, aspect_ratio = _veo_resolve_t2v_model(payload)
-    model_key = _veo_adjust_model_key_for_tier(base_model_key, user_tier)
-    if model_key != base_model_key:
-        append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
-
     recaptcha_override = str(
         payload.get("recaptcha_token")
         or payload.get("veo_recaptcha_token")
@@ -2059,6 +2301,36 @@ async def veo_workflow(
         user_agent = await page.evaluate("() => navigator.userAgent")
     except Exception:
         user_agent = None
+
+    if image_mode:
+        return await _veo_execute_image_mode(
+            payload=payload,
+            progress_cb=progress_cb,
+            prompt=prompt,
+            project_id=project_id,
+            page=page,
+            access_token=str(at),
+            log_file=log_file,
+            started_at=started_at,
+            max_submit_retries=max_submit_retries,
+            download_timeout=download_timeout,
+            user_agent=user_agent,
+            sess=sess,
+            bring_prefix=bring_prefix,
+        )
+
+    if want_i2v:
+        aspect_ratio = _veo_resolve_i2v_aspect_ratio(payload)
+        base_model_key = (
+            VEO_I2V_MODEL_PORTRAIT_FL
+            if aspect_ratio == VIDEO_ASPECT_RATIO_PORTRAIT
+            else VEO_I2V_MODEL_LANDSCAPE_FL
+        )
+    else:
+        base_model_key, aspect_ratio = _veo_resolve_t2v_model(payload)
+    model_key = _veo_adjust_model_key_for_tier(base_model_key, user_tier)
+    if model_key != base_model_key:
+        append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
 
     start_media_id: Optional[str] = None
     end_media_id: Optional[str] = None

@@ -20,7 +20,12 @@ from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
 from .sora_wm_remove_executor import sora_wm_remove
 from .sora_plus_register_executor import sora_plus_register
-from .veo_workflow_executor import get_or_create_veo_session, veo_fetch_credits_in_window, veo_workflow
+from .veo_workflow_executor import (
+    _veo_resolve_n_frames,
+    get_or_create_veo_session,
+    veo_fetch_credits_in_window,
+    veo_workflow,
+)
 
 
 @dataclass
@@ -196,9 +201,13 @@ class TaskService:
         _is_dedicated_window = False
         # 指定窗口优先级：mapping_id > window_pk > 默认自动挑选
         if mapping_id is not None:
-            picked = await self._pick_window_by_mapping(task_type_code, mapping_id=int(mapping_id))
+            picked = await self._pick_window_by_mapping(
+                task_type_code, mapping_id=int(mapping_id), payload=payload
+            )
         elif window_pk is not None:
-            picked = await self._pick_window_by_window_pk(task_type_code, window_pk=int(window_pk))
+            picked = await self._pick_window_by_window_pk(
+                task_type_code, window_pk=int(window_pk), payload=payload
+            )
         else:
             # 若 payload 满足“基于 generation_id 创建角色”分支，则尝试按 generation_id 绑定窗口
             if payload_generation_id and payload_head_url:
@@ -226,13 +235,13 @@ class TaskService:
                     )
                 _is_dedicated_window = True
 
-                picked = await self._pick_window_by_window_pk(task_type_code, win_pk)
+                picked = await self._pick_window_by_window_pk(task_type_code, win_pk, payload=payload)
                 if not picked:
                     async with self._dedicated_window_lock:
                         self._dedicated_window_inflight = max(0, self._dedicated_window_inflight - 1)
                     raise RuntimeError("该视频不属于我们的账号，请先生成视频再使用返回的generation_id创建角色")
             if not picked:
-                picked = await self._pick_window(task_type_code)
+                picked = await self._pick_window(task_type_code, payload=payload)
         if not picked:
             if mapping_id is not None or window_pk is not None:
                 raise RuntimeError("指定窗口不可用：请确认该窗口已绑定该任务类型、未删除、已启用")
@@ -269,7 +278,24 @@ class TaskService:
                 pass
             raise
 
-    async def _pick_window(self, task_type_code: str) -> Optional[PickedWindow]:
+    async def _consume_quota_after_window_pick(
+        self, picked: PickedWindow, payload: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """挑选窗口成功后按 handler 预扣 mapping 额度（与真实消耗对齐）。"""
+        handler = (picked.create_task_handler or "").strip()
+        if handler == "sora_gen_video":
+            try:
+                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
+            except Exception:
+                pass
+        elif handler == "veo_workflow":
+            try:
+                if _veo_resolve_n_frames(payload or {}) > 1:
+                    await self.db.consume_mapping_quota(picked.mapping_id, amount=20)
+            except Exception:
+                pass
+
+    async def _pick_window(self, task_type_code: str, payload: Optional[Dict[str, Any]] = None) -> Optional[PickedWindow]:
         """从 DB 候选中挑选窗口，并在 DB 中原子预占并发槽位。
 
         说明：
@@ -311,14 +337,12 @@ class TaskService:
             except Exception:
                 pass
             return None
-        if picked.create_task_handler == "sora_gen_video":
-            try:
-                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
-            except Exception:
-                pass
+        await self._consume_quota_after_window_pick(picked, payload)
         return picked
 
-    async def _pick_window_by_mapping(self, task_type_code: str, mapping_id: int) -> Optional[PickedWindow]:
+    async def _pick_window_by_mapping(
+        self, task_type_code: str, mapping_id: int, payload: Optional[Dict[str, Any]] = None
+    ) -> Optional[PickedWindow]:
         """指定 mapping_id（task_type_windows.id）预占并发槽位并返回窗口上下文。"""
         # 显式指定窗口：不按“额度/冷却/熔断/并发上限”等资源约束拒绝，直接选中该窗口
         r = await self.db.force_reserve_mapping_for_task(task_type_code=task_type_code, mapping_id=int(mapping_id))
@@ -353,14 +377,12 @@ class TaskService:
             except Exception:
                 pass
             return None
-        if picked.create_task_handler == "sora_gen_video":
-            try:
-                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
-            except Exception:
-                pass
+        await self._consume_quota_after_window_pick(picked, payload)
         return picked
 
-    async def _pick_window_by_window_pk(self, task_type_code: str, window_pk: int) -> Optional[PickedWindow]:
+    async def _pick_window_by_window_pk(
+        self, task_type_code: str, window_pk: int, payload: Optional[Dict[str, Any]] = None
+    ) -> Optional[PickedWindow]:
         """指定 window_pk 预占并发槽位并返回窗口上下文。"""
         # 显式指定窗口：不按“额度/冷却/熔断/并发上限”等资源约束拒绝，直接选中该窗口
         r = await self.db.force_reserve_window_for_task(task_type_code=task_type_code, window_pk=int(window_pk))
@@ -394,11 +416,7 @@ class TaskService:
             except Exception:
                 pass
             return None
-        if picked.create_task_handler == "sora_gen_video":
-            try:
-                await self.db.consume_mapping_quota(picked.mapping_id, amount=2)
-            except Exception:
-                pass
+        await self._consume_quota_after_window_pick(picked, payload)
         return picked
 
     # ---- 排队与调度 ----
@@ -535,9 +553,11 @@ class TaskService:
                         _dedicated_acquired = True
 
                 if item.required_window_pk is not None:
-                    picked = await self._pick_window_by_window_pk(item.task_type_code, item.required_window_pk)
+                    picked = await self._pick_window_by_window_pk(
+                        item.task_type_code, item.required_window_pk, payload=item.payload
+                    )
                 else:
-                    picked = await self._pick_window(item.task_type_code)
+                    picked = await self._pick_window(item.task_type_code, payload=item.payload)
                 if picked:
                     try:
                         await self.db.update_task(
@@ -965,7 +985,7 @@ class TaskService:
                     _need_retry = True
                     _retry_error_msg = str(e)
                     logger.warning(
-                        "task will retry %d/%d: %s err=%s, picking new window",
+                        "task will retry %d/%d: %s err=%s, enqueue for dispatch",
                         _retry_attempt + 1, max_retries, task_id, e,
                     )
                 else:
@@ -1037,7 +1057,6 @@ class TaskService:
             self._dispatch_event.set()
 
             if _need_retry:
-                _retry_slot_acquired = False
                 try:
                     payload = self._task_payloads.get(task_id) or {}
                     _retry_gen_id = str(payload.get("generation_id") or "").strip() or None
@@ -1046,40 +1065,29 @@ class TaskService:
                     if _retry_gen_id and _retry_head_url:
                         _bind_window_pk = picked.window_pk
 
-                    # 专用窗口重试：需要重新获取并发槽位
-                    _retry_over_limit = False
-                    if _is_dedicated_window:
-                        async with self._dedicated_window_lock:
-                            if self._dedicated_window_inflight >= self._browser_open_concurrency:
-                                _retry_over_limit = True
-                            else:
-                                self._dedicated_window_inflight += 1
-                                _retry_slot_acquired = True
-
-                    new_picked: Optional[PickedWindow] = None
-                    if not _retry_over_limit:
-                        if _bind_window_pk is not None:
-                            new_picked = await self._pick_window_by_window_pk(picked.task_code, _bind_window_pk)
+                    self._ensure_dispatcher()
+                    await self._refresh_queue_config()
+                    _retry_enqueued = False
+                    _retry_queue_size = 0
+                    async with self._queue_lock:
+                        if len(self._pending_queue) >= self._queue_max_size:
+                            try:
+                                await self.db.update_task(
+                                    task_id,
+                                    status="failed",
+                                    error_message=f"任务重试时队列已满，请稍后重试。原错误: {_retry_error_msg}",
+                                    set_completed=True,
+                                )
+                            except Exception:
+                                pass
+                            self._task_payloads.pop(task_id, None)
+                            logger.warning(
+                                "task retry dropped (queue full): %s attempt=%d/%d",
+                                task_id,
+                                _retry_attempt + 1,
+                                picked.error_retry_count,
+                            )
                         else:
-                            new_picked = await self._pick_window(picked.task_code)
-
-                    if new_picked:
-                        try:
-                            await self.db.update_task(task_id, window_pk=new_picked.window_pk, window_ip=new_picked.window_ip)
-                        except Exception:
-                            pass
-                        logger.info(
-                            "task retry dispatched: %s attempt=%d/%d new_window=%s bind_window=%s",
-                            task_id, _retry_attempt + 1, picked.error_retry_count, new_picked.window_pk, _bind_window_pk,
-                        )
-                        asyncio.create_task(self._run_task(task_id, new_picked, _retry_attempt=_retry_attempt + 1, _is_dedicated_window=_is_dedicated_window))
-                    else:
-                        if _retry_slot_acquired:
-                            async with self._dedicated_window_lock:
-                                self._dedicated_window_inflight = max(0, self._dedicated_window_inflight - 1)
-                            _retry_slot_acquired = False
-                        self._ensure_dispatcher()
-                        async with self._queue_lock:
                             self._pending_queue.append(
                                 QueuedTask(
                                     task_id=task_id,
@@ -1091,18 +1099,19 @@ class TaskService:
                                     is_dedicated_window=_is_dedicated_window,
                                 )
                             )
+                            _retry_queue_size = len(self._pending_queue)
+                            _retry_enqueued = True
+                    if _retry_enqueued:
                         self._dispatch_event.set()
                         logger.info(
-                            "task retry enqueued (no window now): %s attempt=%d/%d queue_size=%d bind_window=%s",
-                            task_id, _retry_attempt + 1, picked.error_retry_count, len(self._pending_queue), _bind_window_pk,
+                            "task retry enqueued: %s attempt=%d/%d queue_size=%d bind_window=%s",
+                            task_id,
+                            _retry_attempt + 1,
+                            picked.error_retry_count,
+                            _retry_queue_size,
+                            _bind_window_pk,
                         )
                 except Exception as retry_err:
-                    if _retry_slot_acquired:
-                        try:
-                            async with self._dedicated_window_lock:
-                                self._dedicated_window_inflight = max(0, self._dedicated_window_inflight - 1)
-                        except Exception:
-                            pass
                     try:
                         await self.db.update_task(
                             task_id,
