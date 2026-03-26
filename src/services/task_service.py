@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -103,6 +104,16 @@ class TaskService:
         if keep <= 0:
             return suffix[:max_chars]
         return s[:keep] + suffix
+
+    @staticmethod
+    def _task_created_at_for_sql(v: Any) -> Optional[str]:
+        """将任务行的 created_at 转为 SQLite 可接受的本地时间字符串（用于 INSERT 覆盖）。"""
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        s = str(v).strip()
+        return s or None
 
     def _payload_to_prompt_text(self, payload: Dict[str, Any]) -> str:
         """把 payload 序列化成可落库的 prompt 文本（尽量是 JSON，且控制长度）。"""
@@ -916,6 +927,10 @@ class TaskService:
                 if can_retry:
                     archive_id = uuid.uuid4().hex
                     try:
+                        _orig_row = await self.db.get_task(task_id)
+                        _archive_created_at = self._task_created_at_for_sql(
+                            getattr(_orig_row, "created_at", None) if _orig_row else None
+                        )
                         prompt_text = self._payload_to_prompt_text(payload)
                         await self.db.create_task(
                             Task(
@@ -928,7 +943,8 @@ class TaskService:
                                 image_path=None,
                                 window_pk=picked.window_pk,
                                 window_ip=picked.window_ip,
-                            )
+                            ),
+                            insert_created_at=_archive_created_at,
                         )
                         await self.db.update_task(
                             archive_id,
@@ -941,7 +957,9 @@ class TaskService:
                     except Exception:
                         pass
                     try:
-                        await self.db.update_task(task_id, status="queued", progress=0)
+                        await self.db.update_task(
+                            task_id, status="queued", progress=0, touch_created_at=True
+                        )
                     except Exception:
                         pass
                     _need_retry = True

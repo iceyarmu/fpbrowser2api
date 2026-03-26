@@ -4180,25 +4180,46 @@ class Database:
             await db.commit()
             return {"tasks_failed": tasks_failed, "mapping_slots_reset": mapping_slots_reset}
 
-    async def create_task(self, task: Task) -> int:
+    async def create_task(self, task: Task, *, insert_created_at: Optional[str] = None) -> int:
+        """insert_created_at: 显式写入 created_at（如重试归档行沿用主任务创建时间）；为空则使用当前本地时间。"""
         async with self._write_conn() as db:
-            cur = await db.execute(
-                """
-                INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, window_ip, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
-                """,
-                (
-                    task.task_id,
-                    task.task_type_code,
-                    (str(task.generation_id).strip() if task.generation_id else None),
-                    task.status,
-                    int(task.progress or 0),
-                    task.prompt,
-                    task.image_path,
-                    task.window_pk,
-                    (str(task.window_ip).strip() if task.window_ip else None),
-                ),
-            )
+            if insert_created_at and str(insert_created_at).strip():
+                cur = await db.execute(
+                    """
+                    INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, window_ip, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task.task_id,
+                        task.task_type_code,
+                        (str(task.generation_id).strip() if task.generation_id else None),
+                        task.status,
+                        int(task.progress or 0),
+                        task.prompt,
+                        task.image_path,
+                        task.window_pk,
+                        (str(task.window_ip).strip() if task.window_ip else None),
+                        str(insert_created_at).strip(),
+                    ),
+                )
+            else:
+                cur = await db.execute(
+                    """
+                    INSERT INTO tasks (task_id, task_type_code, generation_id, status, progress, prompt, image_path, window_pk, window_ip, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                    """,
+                    (
+                        task.task_id,
+                        task.task_type_code,
+                        (str(task.generation_id).strip() if task.generation_id else None),
+                        task.status,
+                        int(task.progress or 0),
+                        task.prompt,
+                        task.image_path,
+                        task.window_pk,
+                        (str(task.window_ip).strip() if task.window_ip else None),
+                    ),
+                )
             await db.commit()
             return int(cur.lastrowid)
 
@@ -4677,6 +4698,7 @@ class Database:
         content_violation: Optional[int] = None,
         set_started: bool = False,
         set_completed: bool = False,
+        touch_created_at: bool = False,
     ) -> None:
         updates: List[str] = []
         params: List[Any] = []
@@ -4710,6 +4732,8 @@ class Database:
             updates.append("started_at=datetime('now','localtime')")
         if set_completed:
             updates.append("completed_at=datetime('now','localtime')")
+        if touch_created_at:
+            updates.append("created_at=datetime('now','localtime')")
 
         updates.append("updated_at=datetime('now','localtime')")
 
