@@ -62,6 +62,18 @@ class QueuedTask:
     is_dedicated_window: bool = False
 
 
+def _remaining_quota_exclusive_floor_for_pick(
+    task_type_code: str, payload: Optional[Dict[str, Any]]
+) -> int:
+    """与 pick 时 remaining_quota > floor 及预扣额度对齐（见 _consume_quota_after_window_pick）。"""
+    code = (task_type_code or "").strip()
+    if code == "sora_gen_video":
+        return 2
+    if code == "veo_workflow":
+        return 19 if _veo_resolve_n_frames(payload or {}) > 1 else 0
+    return 2
+
+
 class TaskService:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -305,6 +317,9 @@ class TaskService:
         r = await self.db.pick_and_reserve_window_for_task(
             task_type_code=task_type_code,
             browser_pool_limit=self._browser_pool_limit,
+            remaining_quota_exclusive_floor=_remaining_quota_exclusive_floor_for_pick(
+                task_type_code, payload
+            ),
         )
         if not r:
             return None

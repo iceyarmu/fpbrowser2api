@@ -3466,7 +3466,10 @@ class Database:
                 raise
 
     async def pick_and_reserve_window_for_task(
-        self, task_type_code: str, browser_pool_limit: int = 100
+        self,
+        task_type_code: str,
+        browser_pool_limit: int = 100,
+        remaining_quota_exclusive_floor: int = 2,
     ) -> Optional[Dict[str, Any]]:
         """挑选 1 个窗口并原子预占 1 个并发槽位（一步完成）。
 
@@ -3474,6 +3477,9 @@ class Database:
         - 避免 TaskService “先查一批候选 -> 再循环 try_reserve” 的高并发抖动
         - 把“排序挑选 + 并发预占”压缩为单次 DB 写入（单条 SQL）
         - remaining_quota 只代表额度：remaining_quota == 3 表示不可用；并发限制以 task_types.concurrency 为准
+
+        remaining_quota_exclusive_floor:
+        - 候选/预占条件之一为 remaining_quota > floor（或与冷却窗口 OR）；由调用方按任务预扣额度传入。
 
         返回：
         - 成功：返回 join 后的窗口信息 dict（与 list_available_windows_for_pick 字段一致）
@@ -3483,6 +3489,7 @@ class Database:
         if not code:
             return None
         pool_limit = max(1, int(browser_pool_limit or 100))
+        quota_floor = max(0, int(remaining_quota_exclusive_floor))
 
         _lock = self._get_write_lock()
         for _attempt in range(5):
@@ -3529,7 +3536,7 @@ class Database:
                             b.*,
                             CASE
                               WHEN (
-                                ((b.remaining_quota > 2)
+                                ((b.remaining_quota > ?)
                                   OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                 AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                 AND (b.consecutive_errors < b.continuous_error_threshold)
@@ -3542,7 +3549,7 @@ class Database:
                              OR (
                                   b.window_status = 0
                                   AND (
-                                    ((b.remaining_quota > 2)
+                                    ((b.remaining_quota > ?)
                                       OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                     AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                     AND (b.consecutive_errors < b.continuous_error_threshold)
@@ -3570,11 +3577,12 @@ class Database:
                         FROM ranked
                         WHERE browser_pool_rank <= effective_pool_limit
                           AND is_runnable = 1
-                        ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
+                        ORDER BY consecutive_errors ASC,remaining_quota DESC
                         LIMIT 1
                         """,
-                        (pool_limit, code),
+                        (pool_limit, code, quota_floor, quota_floor),
                     )
+                    #ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                     picked = await cur.fetchone()
                     if not picked:
                         await db.execute("ROLLBACK")
@@ -3589,19 +3597,19 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            error_cooldown_until = datetime('now','localtime', '+20 seconds'),
+                            error_cooldown_until = datetime('now','localtime', '+60 seconds'),
                             updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
-                            (remaining_quota > 2)
+                            (remaining_quota > ?)
                             OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
                           AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
                         """,
-                        (mapping_id, threshold, task_concurrency),
+                        (mapping_id, threshold, task_concurrency, quota_floor),
                     )
                     if int(cur2.rowcount or 0) <= 0:
                         # 理论上在 IMMEDIATE 事务内不太会发生，但为了稳健性（以及未来条件调整）保留兜底
