@@ -285,6 +285,82 @@ async def page_fetch_tx(
     return tx
 
 
+def _api_response_location_header(resp: Any) -> str:
+    """从 Playwright APIResponse 取 Location（headers 多为小写 key；必要时用 headers_array）。"""
+    try:
+        h = getattr(resp, "headers", None)
+        if isinstance(h, dict):
+            for k, v in h.items():
+                if str(k or "").lower() == "location" and v:
+                    return str(v).strip()
+    except Exception:
+        pass
+    try:
+        arr = getattr(resp, "headers_array", None) or []
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "").lower() != "location":
+                continue
+            v = str(item.get("value") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return ""
+
+
+async def _resolve_redirect_via_page_goto(
+    context: Any,
+    url: str,
+    *,
+    referer: Optional[str],
+    log_file: Path,
+) -> Optional[str]:
+    """APIRequestContext.get 在部分环境会优先连 IPv6 导致 ETIMEDOUT；用真实页面 goto 跟随重定向，与地址栏一致。"""
+    u = str(url or "").strip()
+    if not u:
+        return None
+    p2: Any = None
+    try:
+        p2 = await context.new_page()
+        kw: Dict[str, Any] = {"wait_until": "commit", "timeout": 60_000}
+        ref = str(referer or "").strip()
+        if ref.startswith(("http://", "https://")):
+            kw["referer"] = ref
+        await p2.goto(u, **kw)
+        final_u = str(getattr(p2, "url", None) or "").strip()
+        if not final_u or urlparse(final_u).scheme not in ("http", "https"):
+            append_log(
+                log_file,
+                f"[browser][page_resolve_redirect] goto_fallback 无效 final url={safe_trim(final_u, 80)!r}",
+            )
+            return None
+        if final_u.rstrip("/") == u.rstrip("/"):
+            append_log(
+                log_file,
+                f"[browser][page_resolve_redirect] goto_fallback 未发生跳转 url={safe_trim(u, 100)!r}",
+            )
+            return None
+        append_log(
+            log_file,
+            f"[browser][page_resolve_redirect] goto_fallback ok -> {safe_trim(final_u, 120)!r}",
+        )
+        return final_u
+    except Exception as e:
+        append_log(
+            log_file,
+            f"[browser][page_resolve_redirect] goto_fallback err url={safe_trim(u, 90)!r} err={e!r}",
+        )
+        return None
+    finally:
+        if p2 is not None:
+            try:
+                await p2.close()
+            except Exception:
+                pass
+
+
 async def page_resolve_redirect_url(
     page,
     *,
@@ -295,23 +371,37 @@ async def page_resolve_redirect_url(
     """用 Playwright `page.request`（与页面共享 Cookie / UA）解析重定向，读取 302 的 Location。
 
     页面内 `fetch(..., redirect: 'manual')` 对跨站请求常得到 status=0（opaque / 被策略拦截），
-    而 `page.request` 走浏览器网络栈且不受页面 CORS 限制，更适合 labs.google → GCS 这类跳转。
+    而 `page.request` 不受页面 CORS 限制；但若其底层连 IPv6 超时，则回退为同上下文新建标签页 `goto`
+    自动跟随重定向，取最终地址栏 URL。
     """
     if page is None:
         raise RuntimeError("page 为 None，无法解析重定向")
     u = str(url or "").strip()
     if not u:
         return None
+    context = getattr(page, "context", None)
+    if context is None:
+        append_log(log_file, "[browser][page_resolve_redirect] page.context 为 None")
+        return None
+
+    referer = ""
+    try:
+        pu = str(getattr(page, "url", "") or "").strip()
+        if pu.startswith(("http://", "https://")):
+            referer = pu
+    except Exception:
+        pass
+
     current = u
     n_hops = int(max(1, max_hops))
     for hop in range(n_hops):
         extra_headers: Dict[str, str] = {}
-        try:
-            pu = str(getattr(page, "url", "") or "").strip()
-            if pu.startswith(("http://", "https://")):
-                extra_headers["Referer"] = pu
-        except Exception:
-            pass
+        if referer:
+            extra_headers["Referer"] = referer
+        extra_headers.setdefault(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        )
         try:
             _req_kw: Dict[str, Any] = {"max_redirects": 0}
             if extra_headers:
@@ -320,23 +410,24 @@ async def page_resolve_redirect_url(
         except Exception as e:
             append_log(
                 log_file,
-                f"[browser][page_resolve_redirect] request.get err hop={hop} url={current!r} err={e}",
+                f"[browser][page_resolve_redirect] request.get 失败 hop={hop}，尝试 goto 回退: {e!r}",
             )
-            return None
+            return await _resolve_redirect_via_page_goto(
+                context, current, referer=referer or None, log_file=log_file
+            )
+
         try:
             status = int(resp.status)
             if 300 <= status < 400:
-                loc = ""
-                try:
-                    h = resp.headers
-                    if h:
-                        loc = str(h.get("location") or h.get("Location") or "").strip()
-                except Exception:
-                    loc = ""
+                loc = _api_response_location_header(resp)
                 if not loc:
+                    try:
+                        hk = list((getattr(resp, "headers", None) or {}).keys())
+                    except Exception:
+                        hk = []
                     append_log(
                         log_file,
-                        f"[browser][page_resolve_redirect] no Location hop={hop} status={status} url={current!r}",
+                        f"[browser][page_resolve_redirect] no Location hop={hop} status={status} header_keys={hk!r}",
                     )
                     return None
                 nxt = urljoin(current, loc)
@@ -345,7 +436,7 @@ async def page_resolve_redirect_url(
                 if nex_host and nex_host != cur_host:
                     append_log(
                         log_file,
-                        f"[browser][page_resolve_redirect] ok url={u!r} -> {safe_trim(nxt, 120)!r}",
+                        f"[browser][page_resolve_redirect] ok url={safe_trim(u, 80)!r} -> {safe_trim(nxt, 120)!r}",
                     )
                     return nxt
                 current = nxt
@@ -355,13 +446,13 @@ async def page_resolve_redirect_url(
                 if final_u:
                     append_log(
                         log_file,
-                        f"[browser][page_resolve_redirect] ok(200) url={u!r} -> {safe_trim(final_u, 120)!r}",
+                        f"[browser][page_resolve_redirect] ok(200) url={safe_trim(u, 80)!r} -> {safe_trim(final_u, 120)!r}",
                     )
                     return final_u
                 return None
             append_log(
                 log_file,
-                f"[browser][page_resolve_redirect] bad status={status} hop={hop} url={current!r}",
+                f"[browser][page_resolve_redirect] bad status={status} hop={hop} url={safe_trim(current, 100)!r}",
             )
             return None
         finally:
@@ -369,7 +460,8 @@ async def page_resolve_redirect_url(
                 await resp.dispose()
             except Exception:
                 pass
-    append_log(log_file, f"[browser][page_resolve_redirect] too_many_hops url={u!r}")
+
+    append_log(log_file, f"[browser][page_resolve_redirect] too_many_hops url={safe_trim(u, 80)!r}")
     return None
 
 

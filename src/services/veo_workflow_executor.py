@@ -19,7 +19,7 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
@@ -2671,13 +2671,15 @@ async def veo_workflow(
         thumb_url = i2v_urls[0]
     else:
         thumb_url = ""
-        """
-        redirect_thumb = (
-            f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?"
-            f"name={t2v_thumb_media_name}&mediaUrlType=MEDIA_URL_TYPE_THUMBNAIL"
-        )
-        thumb_url = redirect_thumb
         if t2v_thumb_media_name:
+            qs = urlencode(
+                {
+                    "name": t2v_thumb_media_name,
+                    "mediaUrlType": "MEDIA_URL_TYPE_THUMBNAIL",
+                }
+            )
+            redirect_thumb = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?{qs}"
+            thumb_url = redirect_thumb
             resolved = await page_resolve_redirect_url(page, url=redirect_thumb, log_file=log_file)
             if resolved:
                 thumb_url = resolved
@@ -2686,12 +2688,12 @@ async def veo_workflow(
                     log_file,
                     "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
                 )
-        """
 
     out: Dict[str, Any] = {
         "type": "veo_workflow_video",
         "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
         "share_url": video_url,
+        "watermark_free_url": video_url,
         "thumb_url": thumb_url,
         "video_type": "i2v" if want_i2v else "t2v",
         "model_key": model_key,
