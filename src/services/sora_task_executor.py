@@ -570,9 +570,10 @@ def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent
         raise ValueError("url 不能为空")
     # 对 URL 中的非 ASCII 字符（如中文文件名）进行百分号编码，避免 ascii codec 报错
     parts = urlsplit(u)
+    # quote 的 safe 必须包含 %，否则会把已存在的 %XX（如签名里的 %3D）二次编码成 %253D，导致 CDN 403。
     u = urlunsplit(parts._replace(
-        path=quote(parts.path, safe="/:@!$&'()*+,;=-._~"),
-        query=quote(parts.query, safe="/:@!$&'()*+,;=-._~?"),
+        path=quote(parts.path, safe="/:@!$&'()*+,;=-._~%"),
+        query=quote(parts.query, safe="/:@!$&'()*+,;=-._~?%"),
     ))
     headers = {"Accept": "*/*"}
     if user_agent:
