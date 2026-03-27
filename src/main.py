@@ -132,6 +132,7 @@ async def request_logger(request: Request, call_next):
                 r"^/api/admin/task-types/\d+/windows$",
                 r"^/api/admin/task-type-windows/\d+$",
                 r"^/api/admin/spaces/\d+/windows/[^/]+/set-proxy$",
+                r"^/api/admin/spaces/\d+/windows/[^/]+/set-core-version$",
                 r"^/api/admin/spaces/\d+/windows/[^/]+/move$",
                 r"^/api/admin/spaces/\d+/windows/[^/]+/remark$",
             ]

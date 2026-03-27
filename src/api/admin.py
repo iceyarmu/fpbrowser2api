@@ -270,6 +270,12 @@ class UpdateWindowProxyRequest(BaseModel):
     proxy_id: int = Field(ge=0, description="本地代理列表中的 proxy_id；0 表示不使用代理")
 
 
+class SetWindowCoreVersionRequest(BaseModel):
+    """在指纹浏览器侧修改窗口内核版本（Roxy POST /browser/mdf 的 coreVersion，字符串，如 125、138）。"""
+
+    core_version: str = Field(min_length=1, max_length=16, description="内核主版本号，数字字符串")
+
+
 class UpdateWindowAccountRequest(BaseModel):
     """在指纹浏览器侧修改某个窗口的平台账号（通过本地 account_id 选择）。"""
 
@@ -1466,6 +1472,86 @@ async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProx
         pass
 
     return {"success": True, "message": "已提交修改窗口代理请求", "roxy_response": rsp}
+
+
+@router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-core-version")
+async def set_window_core_version(
+    space_pk: int,
+    window_key: str,
+    req: SetWindowCoreVersionRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """修改指纹浏览器窗口内核版本（Roxy：/browser/mdf 的 coreVersion）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    wk = str(window_key or "").strip()
+    if not wk:
+        raise HTTPException(status_code=400, detail="window_key is required")
+
+    core_ver = str(req.core_version or "").strip()
+    if not core_ver:
+        raise HTTPException(status_code=400, detail="core_version is required")
+
+    target_win = await db.get_window_by_key(space_pk=space_pk, window_key=wk)
+    local_proxy_id = int(getattr(target_win, "proxy_id", 0) or 0) if target_win else 0
+    if local_proxy_id > 0:
+        proxy_info: Dict[str, Any] = {"moduleId": local_proxy_id, "proxyMethod": "choose"}
+    else:
+        proxy_info = {"moduleId": 0, "proxyMethod": "custom", "proxyCategory": "noproxy"}
+
+    local_account_id = int(getattr(target_win, "platform_account_id", 0) or 0) if target_win else 0
+    wpl: list = []
+    if local_account_id > 0:
+        acct = await db.get_platform_account(space_pk=space_pk, account_id=local_account_id)
+        if acct:
+            wpl = [{
+                "id": int(acct.account_id),
+                "platformUrl": str(acct.platform_url or "").strip(),
+                "platformUserName": str(acct.platform_username or "").strip(),
+                "platformPassword": str(acct.platform_password or "").strip(),
+                "platformEfa": str(acct.platform_efa or "").strip(),
+                "platformRemarks": str(acct.platform_remarks or "").strip(),
+            }]
+
+    mdf_payload: Dict[str, Any] = {"proxyInfo": proxy_info, "coreVersion": core_ver}
+    if wpl:
+        mdf_payload["windowPlatformList"] = wpl
+
+    syscfg = await db.get_system_config()
+    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    try:
+        rsp = await client.browser_mdf(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            window_key=wk,
+            data=mdf_payload,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        code = int((rsp or {}).get("code"))
+    except (TypeError, ValueError):
+        code = -1
+    if code != 0:
+        raise HTTPException(status_code=400, detail=str((rsp or {}).get("msg") or "指纹浏览器修改内核版本失败"))
+
+    try:
+        await db.update_window_raw_core_version(space_pk=space_pk, window_key=wk, core_version=core_ver)
+    except Exception:
+        pass
+
+    return {"success": True, "message": "已修改窗口内核版本", "roxy_response": rsp}
 
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-pure-mode")

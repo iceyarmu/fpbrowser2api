@@ -1744,6 +1744,44 @@ class Database:
             await db.commit()
             return int(cur.rowcount or 0)
 
+    async def update_window_raw_core_version(self, *, space_pk: int, window_key: str, core_version: str) -> int:
+        """在 windows.raw_json 的 raw 子对象中写入 coreVersion（供列表展示；与 Roxy /browser/mdf 一致）。"""
+        wk = str(window_key or "").strip()
+        cv = str(core_version or "").strip()
+        if not wk or not cv:
+            return 0
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                "SELECT raw_json FROM windows WHERE space_pk = ? AND window_key = ? AND deleted = 0 LIMIT 1",
+                (int(space_pk), wk),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return 0
+            raw_s = row[0]
+            try:
+                obj = json.loads(raw_s) if raw_s else {}
+            except Exception:
+                obj = {}
+            if not isinstance(obj, dict):
+                obj = {}
+            raw_inner = obj.get("raw")
+            if not isinstance(raw_inner, dict):
+                raw_inner = {}
+            raw_inner["coreVersion"] = cv
+            obj["raw"] = raw_inner
+            new_json = json.dumps(obj, ensure_ascii=False)
+            cur2 = await db.execute(
+                """
+                UPDATE windows
+                SET raw_json = ?, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND window_key = ? AND deleted = 0
+                """,
+                (new_json, int(space_pk), wk),
+            )
+            await db.commit()
+            return int(cur2.rowcount or 0)
+
     async def count_proxy_bindings(self, space_pk: int = 0) -> Dict[int, int]:
         """统计全局：每个 proxy_id 被多少个“本地未删除窗口”绑定（跨所有空间，代理是全局共用的）。
 
@@ -3250,7 +3288,11 @@ class Database:
                     SELECT COUNT(*)
                     FROM veo_flow_projects v
                     WHERE v.task_type_window_id = m.id AND v.deleted = 0
-                  ) AS veo_flow_project_count
+                  ) AS veo_flow_project_count,
+                  COALESCE(
+                    json_extract(w.raw_json, '$.raw.coreVersion'),
+                    json_extract(w.raw_json, '$.coreVersion')
+                  ) AS browser_core_version
                 FROM task_type_windows m
                 JOIN windows w ON m.window_pk = w.id
                 JOIN spaces s ON w.space_pk = s.id

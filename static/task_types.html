@@ -237,6 +237,8 @@
                     <button class="btn btn-outline-secondary" id="btnBulkHeadlessOff">批量关闭无头</button>
                     <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
+                    <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
+                    <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字">批量改内核</button>
                   </div>
                   <input class="form-control form-control-sm" id="mappingFilter" placeholder="搜索：窗口名 / 账号 / 空间 / 代理 / 邀请码" style="max-width: 360px;" />
                   <button class="btn btn-outline-secondary btn-sm" id="btnClearMappingFilter" title="清除搜索">✕</button>
@@ -294,6 +296,7 @@
                       <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>测IP</th>
+                      <th title="指纹浏览器窗口内核版本（Roxy /browser/mdf 的 coreVersion，参见官方文档）">内核</th>
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
                       <th id="thMappingInviteOrVeo">邀请码</th>
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
@@ -2047,7 +2050,7 @@
           ui.mappingList.page = 1;
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="17" class="text-muted small">请先选择任务类型</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="20" class="text-muted small">请先选择任务类型</td></tr>`;
           return;
         }
         const prevSelected = preserveSelection ? new Set(state.mapSelected || []) : new Set();
@@ -2404,14 +2407,14 @@
         updateQuotaSortHint();
         if (!state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="17" class="text-muted small">暂无绑定窗口</td></tr>`;
+          body.innerHTML = `<tr><td colspan="20" class="text-muted small">暂无绑定窗口</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
         const sortedItems = getFilteredMappings(getSortedMappings());
         if (!sortedItems.length && state.mappings.length) {
           updateMappingPaginationUI(0);
-          body.innerHTML = `<tr><td colspan="17" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
+          body.innerHTML = `<tr><td colspan="20" class="text-muted small">无匹配窗口（共 ${state.mappings.length} 个）</td></tr>`;
           updateMapSelectedCountUI();
           return;
         }
@@ -2532,6 +2535,33 @@
                 data-act="analyzeSelectedProxy"
                 data-mid="${m.id}"
               ><i class="bi bi-globe2" aria-hidden="true"></i></button>
+            </td>
+            <td class="small2" style="width: 108px; min-width: 100px;">
+              <div class="d-flex gap-1 align-items-center">
+                <input
+                  type="text"
+                  inputmode="numeric"
+                  class="form-control form-control-sm mono py-0 px-1 flex-grow-1"
+                  style="min-width: 0;"
+                  data-role="coreVersionInput"
+                  data-mid="${m.id}"
+                  value="${escapeHtml(String(m.browser_core_version != null && m.browser_core_version !== "" ? m.browser_core_version : ""))}"
+                  placeholder="如138"
+                  title="内核主版本号（Roxy /browser/mdf 的 coreVersion）；右侧按钮提交"
+                  ${canEditMapping ? "" : "disabled"}
+                />
+                <button
+                  type="button"
+                  class="btn btn-outline-secondary btn-sm btn-icon"
+                  title="应用内核版本修改"
+                  aria-label="应用内核版本"
+                  data-act="applyCoreVersion"
+                  data-mid="${m.id}"
+                  data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
+                  data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
+                  ${canEditMapping ? "" : "disabled"}
+                ><i class="bi bi-check-lg" aria-hidden="true"></i><span class="visually-hidden">应用</span></button>
+              </div>
             </td>
             <td class="mono">
               <button
@@ -2840,6 +2870,41 @@
         }
         if (act === "clearBrowserCache") {
           return clearBrowserCache(mappingId, el);
+        }
+        if (act === "applyCoreVersion") {
+          if (!canEditTaskTypeConfig()) {
+            toast("当前账号无权修改绑定窗口", "warning");
+            return;
+          }
+          const tr = el.closest?.("tr");
+          const inp = tr?.querySelector?.(`input[data-role="coreVersionInput"][data-mid="${mappingId}"]`);
+          const cv = String(inp?.value || "").trim();
+          if (!cv) {
+            toast("请填写内核版本号（数字，如 125、138）", "warning");
+            return;
+          }
+          const spacePk = parseInt(String(el.dataset.space_pk || ""), 10) || 0;
+          const wk = String(el.dataset.window_key || "").trim();
+          if (!spacePk || !wk) {
+            toast("缺少空间或窗口标识", "error");
+            return;
+          }
+          (async () => {
+            try {
+              setBtnBusy(el, true, { loadingText: "提交中" });
+              await postJson(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-core-version`, {
+                method: "POST",
+                body: { core_version: cv },
+              });
+              toast("内核版本已修改", "success");
+              await loadMappings({ preserveSelection: true });
+            } catch (e) {
+              toast(e.message || "修改失败", "error");
+            } finally {
+              setBtnBusy(el, false);
+            }
+          })();
+          return;
         }
         if (act === "refreshQuota") {
           return refreshQuota(mappingId);
@@ -4067,7 +4132,7 @@
         document.getElementById("typeSelect").value = "";
         updateMappingsHeaderSummaryUI();
         updateMappingPaginationUI(0);
-        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="17" class="text-muted small">请先保存任务类型</td></tr>`;
+        document.getElementById("mappingBody").innerHTML = `<tr><td colspan="20" class="text-muted small">请先保存任务类型</td></tr>`;
       });
       document.getElementById("btnSaveType").addEventListener("click", saveType);
       document.getElementById("btnDeleteType").addEventListener("click", deleteType);
@@ -4115,7 +4180,7 @@
           fillTypeForm(null);
           updateMappingsHeaderSummaryUI();
           updateMappingPaginationUI(0);
-          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="17" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
+          document.getElementById("mappingBody").innerHTML = `<tr><td colspan="20" class="text-muted small">请选择一个任务类型，或点击上方“新增”创建</td></tr>`;
           return;
         }
         selectType(parseInt(v, 10));
@@ -4364,6 +4429,7 @@
         setBtnDisabledById("btnBulkTransfer", true);
         setBtnDisabledById("btnBulkHeadlessOn", true);
         setBtnDisabledById("btnBulkHeadlessOff", true);
+        setBtnDisabledById("btnBulkSetCore", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
           let ok = 0, fail = 0;
@@ -4384,6 +4450,7 @@
           setBtnDisabledById("btnBulkTransfer", false);
           setBtnDisabledById("btnBulkHeadlessOn", false);
           setBtnDisabledById("btnBulkHeadlessOff", false);
+          setBtnDisabledById("btnBulkSetCore", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
         }
@@ -4446,6 +4513,35 @@
             updateMappingRowUI(mappingId, { headless: false });
           },
         });
+      }
+
+      async function bulkSetCoreVersionSelected() {
+        if (!canEditTaskTypeConfig()) {
+          toast("当前账号无权修改绑定窗口", "warning");
+          return;
+        }
+        const cv = String(document.getElementById("bulkCoreVersionInput")?.value || "").trim();
+        if (!cv) {
+          toast("请先在工具栏「内核版本」输入框填写数字（如 138）", "warning");
+          return;
+        }
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量改内核",
+          ids,
+          runner: async (mappingId) => {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            const spacePk = parseInt(String(m.space_pk || ""), 10) || 0;
+            const wk = String(m.window_key || "").trim();
+            if (!spacePk || !wk) throw new Error("缺少 space_pk 或 window_key");
+            await postJson(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-core-version`, {
+              method: "POST",
+              body: { core_version: cv },
+            });
+          },
+        });
+        await loadMappings({ preserveSelection: true });
       }
 
       async function bulkRefreshQuotaByIds(ids, { silent = false, source = "" } = {}) {
@@ -4683,6 +4779,7 @@
       document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
       document.getElementById("btnBulkHeadlessOn")?.addEventListener("click", bulkHeadlessOnSelected);
       document.getElementById("btnBulkHeadlessOff")?.addEventListener("click", bulkHeadlessOffSelected);
+      document.getElementById("btnBulkSetCore")?.addEventListener("click", bulkSetCoreVersionSelected);
       document.getElementById("btnSyncAllWindowStatus")?.addEventListener("click", (e) => syncAllWindowStatusForCurrentType(e.currentTarget));
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;

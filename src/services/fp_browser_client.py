@@ -1370,10 +1370,16 @@ class FPBrowserClient:
             except Exception:
                 window_sort_num = None
 
+            core_ver = detail.get("coreVersion")
+            if core_ver is None:
+                core_ver = r.get("coreVersion")
+            core_version_str = str(core_ver).strip() if core_ver not in (None, "") else None
+
             minimal_raw = {
                 "dirId": dir_id,
                 "windowSortNum": window_sort_num,
                 "windowName": window_name,
+                "coreVersion": core_version_str,
                 "platformAccountId": platform_account_id,
                 "platformUserName": platform_user,
                 "platformUrl": platform_url,
