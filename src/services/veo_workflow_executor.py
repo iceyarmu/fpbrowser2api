@@ -1072,12 +1072,16 @@ FLOW_FLOW_UPLOAD_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/upload
 FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartImage"
 FLOW_VIDEO_SUBMIT_I2V_START_END_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartAndEndImage"
 FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
+FLOW_FLOW_UPSAMPLE_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage"
 VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 
 # 与 flow2api generation_handler gemini-3.1-flash-image-*（NARWHAL）一致
 IMAGE_ASPECT_RATIO_LANDSCAPE = "IMAGE_ASPECT_RATIO_LANDSCAPE"
 IMAGE_ASPECT_RATIO_PORTRAIT = "IMAGE_ASPECT_RATIO_PORTRAIT"
 VEO_IMAGE_MODEL_NARWHAL = "NARWHAL"
+# 与 flow2api generation_handler gemini-3.0-pro-image-*（GEM_PIX_2）一致
+VEO_IMAGE_MODEL_GEM_PIX_2 = "GEM_PIX_2"
+UPSAMPLE_IMAGE_RESOLUTION_2K = "UPSAMPLE_IMAGE_RESOLUTION_2K"
 
 PAYGATE_TIER_NOT_PAID = "PAYGATE_TIER_NOT_PAID"
 PAYGATE_TIER_ONE = "PAYGATE_TIER_ONE"
@@ -2060,6 +2064,147 @@ def _veo_flow_media_batch_generate_images_url(project_id: str) -> str:
     return f"https://aisandbox-pa.googleapis.com/v1/projects/{str(project_id).strip()}/flowMedia:batchGenerateImages"
 
 
+def _veo_truthy_payload_flag(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    s = str(v or "").strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
+def _veo_resolve_image_model_name(payload: Dict[str, Any]) -> str:
+    """文生图/图生图模型：默认 NARWHAL；`use_gem_pix_2` 或显式模型名为 GEM_PIX_2 时用 GEM_PIX_2（对齐 flow2api）。"""
+    for key in ("veo_image_model", "image_model_name", "imageModelName"):
+        raw = payload.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        s = str(raw).strip().upper().replace("-", "_")
+        if s in ("GEM_PIX_2", "GEMPIX2", "GEM_PIX2"):
+            return VEO_IMAGE_MODEL_GEM_PIX_2
+        if s in ("NARWHAL",):
+            return VEO_IMAGE_MODEL_NARWHAL
+    if _veo_truthy_payload_flag(payload.get("use_gem_pix_2") or payload.get("veo_use_gem_pix_2")):
+        return VEO_IMAGE_MODEL_GEM_PIX_2
+    return VEO_IMAGE_MODEL_NARWHAL
+
+
+def _veo_resolve_image_output_resolution(payload: Dict[str, Any]) -> tuple[str, bool]:
+    """返回 (展示用标签 '1K'|'2K', 是否需要调用 flow/upsampleImage)。默认 1K，不放大。"""
+    raw = payload.get("resolution") or payload.get("image_resolution") or payload.get("veo_image_resolution")
+    if raw is None or str(raw).strip() == "":
+        return ("1K", False)
+    s = str(raw).strip().lower().replace(" ", "")
+    if s in ("2k", "2048", "2k_output", "uhd_2k"):
+        return ("2K", True)
+    return ("1K", False)
+
+
+def _veo_parse_upsample_encoded_image(resp: Any) -> str:
+    if not isinstance(resp, dict):
+        raise NonPenalizedTaskError("图片放大返回格式异常", status_code=502)
+    enc = resp.get("encodedImage")
+    if enc is None:
+        enc = ""
+    out = str(enc).strip()
+    if not out:
+        raise NonPenalizedTaskError(
+            f"图片放大未返回 encodedImage：{safe_trim(str(resp), 320)}",
+            status_code=502,
+        )
+    return out
+
+
+async def _veo_flow_upsample_image_in_window(
+    *,
+    page: Any,
+    access_token: str,
+    project_id: str,
+    media_id: str,
+    user_paygate_tier: str,
+    generation_session_id: str,
+    log_file: Path,
+    max_retries: int,
+    bring_prefix: str,
+    sess: "VeoSession",
+) -> str:
+    """页面内调用 `flow/upsampleImage`（对齐 flow2api `FlowClient.upsample_image`），返回 base64 图片数据。"""
+    last_err: Optional[str] = None
+    n = max(1, min(5, int(max_retries)))
+    for attempt in range(n):
+        recaptcha_token = await _veo_try_recaptcha_token_in_page(
+            page, action="IMAGE_GENERATION", log_file=log_file
+        )
+        if not recaptcha_token:
+            last_err = "无法获取 reCAPTCHA token（放大）"
+            append_log(log_file, f"[veo][image][upsample] attempt {attempt + 1}: no recaptcha")
+            if attempt + 1 < n:
+                await asyncio.sleep(2.0)
+                try:
+                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
+                except Exception:
+                    pass
+            continue
+
+        upsample_session_id = generation_session_id or _veo_generate_session_id()
+        json_data: Dict[str, Any] = {
+            "mediaId": str(media_id).strip(),
+            "targetResolution": UPSAMPLE_IMAGE_RESOLUTION_2K,
+            "clientContext": {
+                "recaptchaContext": {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                },
+                "sessionId": upsample_session_id,
+                "projectId": str(project_id).strip(),
+                "tool": "PINHOLE",
+                "userPaygateTier": _veo_normalize_user_paygate_tier(user_paygate_tier),
+            },
+        }
+        try:
+            tx = await page_fetch_json(
+                page,
+                url=FLOW_FLOW_UPSAMPLE_IMAGE_URL,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+                json_data=json_data,
+                log_file=log_file,
+            )
+        except Exception as e:
+            last_err = _short_err_msg(e, max_len=200)
+            append_log(log_file, f"[veo][image][upsample] fetch error: {e}")
+            continue
+
+        st = tx.get("status")
+        if st is not None and int(st) >= 400:
+            body = safe_trim(str(tx.get("response_body") or ""), 500)
+            last_err = f"HTTP {st} {body}"
+            append_log(log_file, f"[veo][image][upsample] rejected: {last_err}")
+            if attempt + 1 < n:
+                await asyncio.sleep(1.5)
+            continue
+
+        resp = tx.get("_json")
+        try:
+            b64 = _veo_parse_upsample_encoded_image(resp)
+        except NonPenalizedTaskError as e:
+            last_err = str(e)
+            append_log(log_file, f"[veo][image][upsample] bad response: {last_err}")
+            continue
+
+        append_log(
+            log_file,
+            f"[veo][image][upsample] ok mediaId={safe_trim(str(media_id), 60)!r} b64_len={len(b64)}",
+        )
+        return b64
+
+    raise NonPenalizedTaskError(last_err or "图片放大失败", status_code=502)
+
+
 def _veo_parse_batch_generate_images_fife_url(resp: Any) -> tuple[str, Optional[str]]:
     if not isinstance(resp, dict):
         raise NonPenalizedTaskError("图片生成返回格式异常", status_code=502)
@@ -2110,10 +2255,16 @@ async def _veo_execute_image_mode(
     user_agent: Optional[str],
     sess: "VeoSession",
     bring_prefix: str,
+    user_paygate_tier: str,
 ) -> Dict[str, Any]:
-    """n_frames==1：页面内调用 `flowMedia:batchGenerateImages`（对齐 flow2api `FlowClient.generate_image`）。"""
+    """n_frames==1：页面内调用 `flowMedia:batchGenerateImages`（对齐 flow2api `FlowClient.generate_image`）。
+
+    payload：`use_gem_pix_2` / `veo_use_gem_pix_2` 为真或 `image_model_name`/`veo_image_model` 为 GEM_PIX_2 时使用 GEM_PIX_2，否则 NARWHAL。
+    `resolution` / `image_resolution` / `veo_image_resolution` 为 2k 时在生成成功后调用 `flow/upsampleImage`，最终 `share_url` 为 data URL（与 flow2api 无缓存时一致）；`origin_image_url` 仍为 1K 的 fife 直链。
+    """
     image_aspect = _veo_resolve_image_aspect_ratio(payload)
-    model_name = VEO_IMAGE_MODEL_NARWHAL
+    model_name = _veo_resolve_image_model_name(payload)
+    res_label, want_2k = _veo_resolve_image_output_resolution(payload)
     want_i2i = _veo_payload_looks_like_i2v(payload)
     image_inputs: List[Dict[str, Any]] = []
 
@@ -2247,14 +2398,69 @@ async def _veo_execute_image_mode(
             log_file,
             f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} media={safe_trim(str(media_name or ''), 60)!r}",
         )
+
+        share_url = fife_url
+        origin_image_url = fife_url
+        upsample_ok = False
+        upsample_err: Optional[str] = None
+
+        if want_2k:
+            if not media_name:
+                upsample_err = "上游未返回 media name，无法放大，已返回 1K 原图"
+                append_log(log_file, f"[veo][image] 2K requested but no mediaId: {upsample_err}")
+                res_label = "1K"
+            else:
+                await progress_cb(
+                    72,
+                    {
+                        "stage": "upsample_image",
+                        "workflow_kind": "image",
+                        "target_resolution": "2K",
+                        "origin_image_url": fife_url,
+                    },
+                )
+                upsample_retries = max(1, min(5, int(payload.get("veo_image_upsample_max_retries") or 3)))
+                try:
+                    b64 = await _veo_flow_upsample_image_in_window(
+                        page=page,
+                        access_token=str(access_token),
+                        project_id=str(project_id),
+                        media_id=str(media_name),
+                        user_paygate_tier=user_paygate_tier,
+                        generation_session_id=str(session_id),
+                        log_file=log_file,
+                        max_retries=upsample_retries,
+                        bring_prefix=bring_prefix,
+                        sess=sess,
+                    )
+                    if b64:
+                        share_url = f"data:image/jpeg;base64,{b64}"
+                        upsample_ok = True
+                        res_label = "2K"
+                        append_log(log_file, "[veo][image] upsample done, share_url is data:image/jpeg;base64,...")
+                    else:
+                        upsample_err = "放大返回空数据，已返回 1K 原图"
+                except Exception as e:
+                    upsample_err = _short_err_msg(e, max_len=240)
+                    append_log(log_file, f"[veo][image] upsample failed, fallback 1K: {e}")
+                    share_url = fife_url
+                    res_label = "1K"
+
         elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
         await progress_cb(
             100,
-            {"stage": "done", "elapsed_ms": elapsed_ms, "image_url": fife_url, "workflow_kind": "image"},
+            {
+                "stage": "done",
+                "elapsed_ms": elapsed_ms,
+                "image_url": share_url,
+                "workflow_kind": "image",
+                "image_resolution": res_label,
+                "origin_image_url": origin_image_url,
+            },
         )
         append_log(
             log_file,
-            f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms}",
+            f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms} resolution={res_label}",
         )
         out: Dict[str, Any] = {
             "type": "veo_workflow_image",
@@ -2264,10 +2470,15 @@ async def _veo_execute_image_mode(
             "image_mode": "i2i" if want_i2i else "t2i",
             "model_name": model_name,
             "image_aspect_ratio": image_aspect,
+            "image_resolution": res_label,
             "project_id": str(project_id),
             "elapsed_ms": elapsed_ms,
             "n_frames": 1,
         }
+        if want_2k or upsample_ok:
+            out["upsample_url"] = share_url
+        if upsample_err:
+            out["upsample_error"] = upsample_err
         if media_name:
             out["generated_media_id"] = media_name
         return out
@@ -2299,8 +2510,9 @@ async def veo_workflow(
     - 视频：`n_frames`（或 duration / duration_frames / 时长）经 `_pick_n_frames` 归一后 **>1**（如 300/450）
       时走文生视频 / 图生视频，轮询 `batchCheckAsyncVideoGenerationStatus`。
     - 图片：当上述字段 **显式为 1** 时走文生图 / 图生图：`flow/uploadImage`（图生图仅首张）
-      + `projects/{id}/flowMedia:batchGenerateImages`，模型为 NARWHAL，横竖版对应
-      `IMAGE_ASPECT_RATIO_LANDSCAPE` / `IMAGE_ASPECT_RATIO_PORTRAIT`（与 flow2api gemini-3.1-flash-image-* 一致）。
+      + `projects/{id}/flowMedia:batchGenerateImages`；默认模型 NARWHAL，`use_gem_pix_2`（或 `image_model_name`=`GEM_PIX_2`）时用 GEM_PIX_2（与 flow2api 一致）。
+      横竖版对应 `IMAGE_ASPECT_RATIO_LANDSCAPE` / `IMAGE_ASPECT_RATIO_PORTRAIT`。
+      `resolution` / `veo_image_resolution` 等为 **2k** 时在生成后调用 `flow/upsampleImage`：`share_url` 为 2K 的 `data:image/jpeg;base64,...`，`origin_image_url` 为 1K fife 直链；放大失败时回退为 1K 并写入 `upsample_error`。
 
     project_id 解析顺序：payload（veo_project_id / project_id / current_project_id）
     → veo_url 中的 /tools/flow/project/{id}
@@ -2480,6 +2692,7 @@ async def veo_workflow(
             user_agent=user_agent,
             sess=sess,
             bring_prefix=bring_prefix,
+            user_paygate_tier=user_tier,
         )
 
     if want_i2v:
