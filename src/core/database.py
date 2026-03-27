@@ -3577,7 +3577,7 @@ class Database:
                         FROM ranked
                         WHERE browser_pool_rank <= effective_pool_limit
                           AND is_runnable = 1
-                        ORDER BY consecutive_errors ASC,remaining_quota DESC
+                        ORDER BY consecutive_errors ASC, mapping_updated_at ASC,remaining_quota DESC
                         LIMIT 1
                         """,
                         (pool_limit, code, quota_floor, quota_floor),
