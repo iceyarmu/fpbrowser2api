@@ -1643,11 +1643,11 @@ def _veo_month_token_to_num(month_tok: str) -> Optional[int]:
 def _veo_local_next_1305_datetime() -> datetime:
     """本地「下一次 13:05」：当前时刻若已过当天 13:05 则为明天 13:05，否则为今天 13:05。"""
     now = datetime.now()
-    today_1305 = now.replace(hour=13, minute=5, second=0, microsecond=0)
-    if now > today_1305:
+    today_0105 = now.replace(hour=1, minute=5, second=0, microsecond=0)
+    if now > today_0105:
         nd = now.date() + timedelta(days=1)
-        return datetime(nd.year, nd.month, nd.day, 13, 5, 0)
-    return today_1305
+        return datetime(nd.year, nd.month, nd.day, 1, 5, 0)
+    return today_0105
 
 
 def _veo_next_update_text_to_cooldown_str(page_text: str) -> Optional[str]:
