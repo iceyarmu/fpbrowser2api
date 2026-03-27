@@ -4874,7 +4874,7 @@ class Database:
         mapping_id: int,
         threshold: int,
         cooldown_seconds: int = 7200,
-        cooldown_seconds_short: int = 900,
+        cooldown_seconds_short: int = 120,
         reset_on_threshold: bool = True,
     ) -> bool:
         """一次失败：累计错误；连续错误达阈值时进入长冷却（可选清零），否则短冷却。

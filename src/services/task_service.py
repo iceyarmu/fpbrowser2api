@@ -1066,7 +1066,7 @@ class TaskService:
                     await self.db.mark_mapping_error(
                         picked.mapping_id,
                         threshold=picked.threshold,
-                        cooldown_seconds=5400,
+                        cooldown_seconds=3600,
                         reset_on_threshold=False,
                     )
                     # 连续错误达到“关闭窗口阈值”的整数倍时，启动倒计时关闭窗口（不重置连续错误）
