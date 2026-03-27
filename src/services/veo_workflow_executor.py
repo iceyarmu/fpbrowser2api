@@ -1640,13 +1640,23 @@ def _veo_month_token_to_num(month_tok: str) -> Optional[int]:
     return _VEO_MONTH_PREFIX_TO_NUM.get(t[:3])
 
 
+def _veo_local_next_1305_datetime() -> datetime:
+    """本地「下一次 13:05」：当前时刻若已过当天 13:05 则为明天 13:05，否则为今天 13:05。"""
+    now = datetime.now()
+    today_1305 = now.replace(hour=13, minute=5, second=0, microsecond=0)
+    if now > today_1305:
+        nd = now.date() + timedelta(days=1)
+        return datetime(nd.year, nd.month, nd.day, 13, 5, 0)
+    return today_1305
+
+
 def _veo_next_update_text_to_cooldown_str(page_text: str) -> Optional[str]:
-    """从页面文本解析「Next update: Tomorrow」为本地明天 0 点，或「Next update: Apr 22」等与当年月日组合为本地 0 点。"""
+    """从页面文本解析「Next update: Tomorrow」等为本地下一次 13:05（见 _veo_local_next_1305_datetime），
+    或「Next update: Apr 22」等与当年月日组合为本地该日 13:05（若解析日为今天则同样按下一次 13:05 规则）。"""
     if not (page_text or "").strip():
         return None
     if _VEO_NEXT_UPDATE_TOMORROW_RE.search(page_text):
-        tomorrow_d = date.today() + timedelta(days=1)
-        dt_local = datetime(tomorrow_d.year, tomorrow_d.month, tomorrow_d.day, 13, 5, 0)
+        dt_local = _veo_local_next_1305_datetime()
         return dt_local.strftime("%Y-%m-%d %H:%M:%S")
     m = _VEO_NEXT_UPDATE_RE.search(page_text)
     if not m:
@@ -1685,7 +1695,10 @@ def _veo_next_update_text_to_cooldown_str(page_text: str) -> Optional[str]:
         except ValueError:
             return None
 
-    dt_local = datetime(final_d.year, final_d.month, final_d.day, 13, 5, 0)
+    if final_d == now.date():
+        dt_local = _veo_local_next_1305_datetime()
+    else:
+        dt_local = datetime(final_d.year, final_d.month, final_d.day, 13, 5, 0)
     return dt_local.strftime("%Y-%m-%d %H:%M:%S")
 
 
