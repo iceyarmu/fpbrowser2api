@@ -100,10 +100,10 @@ def _remaining_quota_exclusive_floor_for_pick(
     """与 pick 时 remaining_quota >= floor 及预扣额度对齐（见 _consume_quota_after_window_pick）。"""
     code = (task_type_code or "").strip()
     if code == "sora_gen_video":
-        return 2
+        return 3
     if code == "veo_workflow":
         return 20 if _veo_resolve_n_frames(payload or {}) > 1 else 0
-    return 2
+    return 3
 
 
 class TaskService:
