@@ -3465,6 +3465,28 @@ class Database:
                     continue
                 raise
 
+    async def _tx_mark_window_status_for_mapping(self, db: Any, mapping_id: int, window_status: int) -> None:
+        """在 BEGIN…COMMIT 同一事务内更新 mapping 对应 windows.window_status。
+
+        用于挑选预占后立即标记为 1，使按 browser 的 window_status 池化上限在“打开前”即生效。
+        """
+        st = 1 if int(window_status or 0) == 1 else 0
+        mid = int(mapping_id)
+        await db.execute(
+            """
+            UPDATE windows
+            SET window_status = ?,
+                updated_at = datetime('now','localtime')
+            WHERE id = (
+                SELECT m.window_pk FROM task_type_windows m
+                WHERE m.id = ? AND m.deleted = 0
+                LIMIT 1
+            )
+              AND deleted = 0
+            """,
+            (st, mid),
+        )
+
     async def pick_and_reserve_window_for_task(
         self,
         task_type_code: str,
@@ -3477,6 +3499,7 @@ class Database:
         - 避免 TaskService “先查一批候选 -> 再循环 try_reserve” 的高并发抖动
         - 把“排序挑选 + 并发预占”压缩为单次 DB 写入（单条 SQL）
         - remaining_quota 只代表额度；并发限制以 task_types.concurrency 为准
+        - 预占成功同时将 windows.window_status 置 1，使单浏览器并发池按“已占位”计数
 
         remaining_quota_exclusive_floor:
         - 候选/预占条件之一为 remaining_quota >= floor（或与冷却窗口 OR）；由调用方按任务预扣额度传入。
@@ -3616,6 +3639,8 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
+                    await self._tx_mark_window_status_for_mapping(db, mapping_id, 1)
+
                     # Step 3: 返回 join 后的上下文字段（与旧实现一致），含窗口绑定 IP
                     cur3 = await db.execute(
                         """
@@ -3738,6 +3763,8 @@ class Database:
                         await db.execute("ROLLBACK")
                         continue
 
+                    await self._tx_mark_window_status_for_mapping(db, mid, 1)
+
                     cur3 = await db.execute(
                         """
                         SELECT
@@ -3839,6 +3866,8 @@ class Database:
                     if int(cur2.rowcount or 0) <= 0:
                         await db.execute("ROLLBACK")
                         continue
+
+                    await self._tx_mark_window_status_for_mapping(db, mid, 1)
 
                     cur3 = await db.execute(
                         """
@@ -3943,6 +3972,8 @@ class Database:
                     if int(cur2.rowcount or 0) <= 0:
                         await db.execute("ROLLBACK")
                         continue
+
+                    await self._tx_mark_window_status_for_mapping(db, mid, 1)
 
                     cur3 = await db.execute(
                         """
@@ -4060,6 +4091,8 @@ class Database:
                     if int(cur2.rowcount or 0) <= 0:
                         await db.execute("ROLLBACK")
                         continue
+
+                    await self._tx_mark_window_status_for_mapping(db, mid, 1)
 
                     cur3 = await db.execute(
                         """

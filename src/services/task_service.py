@@ -315,7 +315,7 @@ class TaskService:
             if _is_dedicated_window:
                 async with self._dedicated_window_lock:
                     self._dedicated_window_inflight = max(0, self._dedicated_window_inflight - 1)
-            # 兜底：若创建任务失败，释放预占槽位避免泄漏
+            # 兜底：若创建任务失败，释放预占槽位避免泄漏，并撤销挑选时标记的 window_status=1
             try:
                 await self.db.release_mapping_slot(picked.mapping_id)
             except Exception:
@@ -344,6 +344,7 @@ class TaskService:
 
         说明：
         - 预占由 DB 字段 inflight_slots 完成（支持多进程/多实例，避免超卖）
+        - 预占成功同时将 windows.window_status 置 1，使单浏览器窗口池上限在打开指纹前即计数
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
         """
         r = await self.db.pick_and_reserve_window_for_task(

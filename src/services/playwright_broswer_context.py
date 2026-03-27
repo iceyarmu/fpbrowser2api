@@ -562,6 +562,7 @@ class PlaywrightBrowserContext:
         try:
             from playwright.async_api import async_playwright  # type: ignore
         except Exception as e:
+            await self._sync_window_status(False)
             raise RuntimeError(
                 f"Playwright 未安装或导入失败，请先安装依赖：pip install playwright；并执行：python -m playwright install chromium；错误：{e}"
             )
@@ -605,6 +606,7 @@ class PlaywrightBrowserContext:
                     except Exception:
                         pass
                     if not raw_endpoint:
+                        await self._sync_window_status(False)
                         raise RuntimeError(f"browser_open 失败：{rsp}")
 
                 if not raw_endpoint:
@@ -613,6 +615,7 @@ class PlaywrightBrowserContext:
 
                 debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
                 if not debugger_address:
+                    await self._sync_window_status(False)
                     raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
                 self.cdp_endpoint = debugger_address
                 await asyncio.sleep(3)
@@ -620,14 +623,20 @@ class PlaywrightBrowserContext:
         else:
             debugger_address = normalize_cdp_endpoint(raw_endpoint, base_url=self.base_url)
             if not debugger_address:
+                await self._sync_window_status(False)
                 raise RuntimeError(f"无法获取 http/ws(CDP endpoint)：raw={raw_endpoint!r}")
             self.cdp_endpoint = debugger_address
         if self.playwright is None:
-            self.playwright = await async_playwright().start()
+            try:
+                self.playwright = await async_playwright().start()
+            except Exception as e:
+                await self._sync_window_status(False)
+                raise RuntimeError(f"Playwright 启动失败：{e}") from e
 
         try:
             self.browser = await self.playwright.chromium.connect_over_cdp(debugger_address)
         except Exception as e:
+            await self._sync_window_status(False)
             try:
                 await self.playwright.stop()
             except Exception:
@@ -720,6 +729,7 @@ class PlaywrightBrowserContext:
                 except Exception:
                     pass
                 if not raw_endpoint:
+                    await self._sync_window_status(False)
                     raise RuntimeError(f"browser_open 失败：{rsp}")
         await self._sync_window_status(True)
 
