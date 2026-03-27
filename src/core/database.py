@@ -3602,7 +3602,7 @@ class Database:
                             CASE
                               WHEN (
                                 ((b.remaining_quota >= ?)
-                                  OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                                  OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                 AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                 AND (b.consecutive_errors < b.continuous_error_threshold)
                                 AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
@@ -3615,7 +3615,7 @@ class Database:
                                   b.window_status = 0
                                   AND (
                                     ((b.remaining_quota >= ?)
-                                      OR (b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                                      OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                     AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                     AND (b.consecutive_errors < b.continuous_error_threshold)
                                     AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
