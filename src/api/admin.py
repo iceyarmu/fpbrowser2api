@@ -2649,8 +2649,12 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/clear-browser-cache")
-async def clear_mapping_browser_cache(mapping_id: int, token: str = Depends(verify_admin_token)):
-    """依次调用 Roxy：清空窗口本地缓存、清空窗口服务器缓存（dirId=window_key）。"""
+async def clear_mapping_browser_cache(
+    mapping_id: int,
+    local_only: bool = Query(False, description="为 True 时仅清空本地缓存，不调用 clear_server_cache"),
+    token: str = Depends(verify_admin_token),
+):
+    """调用 Roxy 清空窗口本地缓存；默认再清空窗口服务器缓存（dirId=window_key）。local_only=true 时仅本地。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -2686,6 +2690,14 @@ async def clear_mapping_browser_cache(mapping_id: int, token: str = Depends(veri
             detail=f"清空本地缓存失败：{local_rsp.get('msg') or local_rsp}",
         )
 
+    if local_only:
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "local": local_rsp,
+            "local_only": True,
+        }
+
     try:
         server_rsp = await client.browser_clear_server_cache(
             vendor=vendor,
@@ -2708,6 +2720,7 @@ async def clear_mapping_browser_cache(mapping_id: int, token: str = Depends(veri
         "mapping_id": mapping_id,
         "local": local_rsp,
         "server": server_rsp,
+        "local_only": False,
     }
 
 

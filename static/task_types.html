@@ -238,7 +238,7 @@
                     <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
-                    <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字">批量改内核</button>
+                    <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
                   </div>
                   <input class="form-control form-control-sm" id="mappingFilter" placeholder="搜索：窗口名 / 账号 / 空间 / 代理 / 邀请码" style="max-width: 360px;" />
                   <button class="btn btn-outline-secondary btn-sm" id="btnClearMappingFilter" title="清除搜索">✕</button>
@@ -2553,7 +2553,7 @@
                 <button
                   type="button"
                   class="btn btn-outline-secondary btn-sm btn-icon"
-                  title="应用内核版本修改"
+                  title="应用内核版本修改（会先清空该窗口本地缓存）"
                   aria-label="应用内核版本"
                   data-act="applyCoreVersion"
                   data-mid="${m.id}"
@@ -2891,6 +2891,8 @@
           }
           (async () => {
             try {
+              setBtnBusy(el, true, { loadingText: "清本地缓存" });
+              await clearMappingBrowserLocalCache(mappingId);
               setBtnBusy(el, true, { loadingText: "提交中" });
               await postJson(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-core-version`, {
                 method: "POST",
@@ -3772,6 +3774,11 @@
         }
       }
 
+      /** 改内核前：仅清空指纹窗口本地缓存（不触达 clear_server_cache） */
+      async function clearMappingBrowserLocalCache(mappingId) {
+        await postJson(`/api/admin/task-type-windows/${mappingId}/clear-browser-cache?local_only=true`, { method: "POST" });
+      }
+
       async function manualCloseWindow(mappingId, fromEl) {
         const m = state.mappings.find(x => x.id === mappingId);
         const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
@@ -4535,6 +4542,7 @@
             const spacePk = parseInt(String(m.space_pk || ""), 10) || 0;
             const wk = String(m.window_key || "").trim();
             if (!spacePk || !wk) throw new Error("缺少 space_pk 或 window_key");
+            await clearMappingBrowserLocalCache(mappingId);
             await postJson(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-core-version`, {
               method: "POST",
               body: { core_version: cv },
