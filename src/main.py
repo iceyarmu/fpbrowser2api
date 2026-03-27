@@ -218,11 +218,6 @@ async def admin_tasks_page():
     return _page(static_dir / "tasks.html")
 
 
-@app.get("/admin/tasks-gantt", response_class=HTMLResponse)
-async def admin_tasks_gantt_page():
-    return _page(static_dir / "tasks_gantt.html")
-
-
 @app.get("/admin/test", response_class=HTMLResponse)
 async def admin_test_page():
     return _page(static_dir / "test.html")

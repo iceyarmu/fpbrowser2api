@@ -86,7 +86,6 @@ const PAGE_PATHS = {
   projects: "/admin/projects",
   task_types: "/admin/task-types",
   tasks: "/admin/tasks",
-  tasks_gantt: "/admin/tasks-gantt",
   test: "/admin/test",
   card_keys: "/admin/card-keys",
   logs: "/admin/logs",

@@ -30,7 +30,6 @@ PAGE_KEYS: Set[str] = {
     "projects",
     "task_types",
     "tasks",
-    "tasks_gantt",
     "test",
     "card_keys",
     "logs",
@@ -1973,7 +1972,7 @@ async def batch_delete_card_keys(req: BatchDeleteCardKeysRequest, token: str = D
 # -------------------- task types --------------------
 @router.get("/api/admin/task-types")
 async def list_task_types(include_all: bool = False, token: str = Depends(verify_admin_token)):
-    user = await _ensure_any_page_access(token, {"task_types", "tasks", "tasks_gantt", "test", "users"})
+    user = await _ensure_any_page_access(token, {"task_types", "tasks", "test", "users"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     allowed_ids = None if include_all else await _get_allowed_task_type_ids(user)
@@ -2949,7 +2948,7 @@ async def list_task_success_fail_timeline(
     end_at: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
-    await _ensure_page_access(token, "tasks_gantt")
+    await _ensure_page_access(token, "tasks")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -2977,7 +2976,7 @@ async def list_task_timeline_items(
     task_type_code: Optional[str] = None,
     token: str = Depends(verify_admin_token),
 ):
-    await _ensure_page_access(token, "tasks_gantt")
+    await _ensure_page_access(token, "tasks")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     if not str(bucket_start or "").strip():
