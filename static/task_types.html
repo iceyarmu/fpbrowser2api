@@ -2536,18 +2536,18 @@
                 data-mid="${m.id}"
               ><i class="bi bi-globe2" aria-hidden="true"></i></button>
             </td>
-            <td class="small2" style="width: 108px; min-width: 100px;">
-              <div class="d-flex gap-1 align-items-center">
+            <td class="small2" style="width: 72px; min-width: 68px;">
+              <div class="d-flex flex-column gap-1 align-items-start">
                 <input
                   type="text"
                   inputmode="numeric"
-                  class="form-control form-control-sm mono py-0 px-1 flex-grow-1"
-                  style="min-width: 0;"
+                  class="form-control form-control-sm mono py-0 px-1"
+                  style="width: 52px; max-width: 52px; font-size: 11px; height: 22px; line-height: 1.1;"
                   data-role="coreVersionInput"
                   data-mid="${m.id}"
                   value="${escapeHtml(String(m.browser_core_version != null && m.browser_core_version !== "" ? m.browser_core_version : ""))}"
-                  placeholder="如138"
-                  title="内核主版本号（Roxy /browser/mdf 的 coreVersion）；右侧按钮提交"
+                  placeholder="138"
+                  title="内核主版本号（Roxy /browser/mdf 的 coreVersion）；下行按钮提交"
                   ${canEditMapping ? "" : "disabled"}
                 />
                 <button
