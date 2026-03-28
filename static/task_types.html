@@ -2441,7 +2441,7 @@
           const _handler = String(state.current?.create_task_handler || "").trim().toLowerCase();
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
-          const _openTitle = "仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
+          const _openTitle = "会先清空该窗口本地缓存，再仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
           const _startTitle = _isVeo ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           return `
           <tr class="small2" data-mid="${m.id}">
@@ -3717,10 +3717,13 @@
           cancelCloseHintCountdown({ hideModal: true });
           const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
           // 防止重复点击：打开/关闭同时锁住
-          setBtnBusy(openBtn, true, { loadingText: "打开中" });
+          setBtnBusy(openBtn, true, { loadingText: "清本地缓存" });
           if (startBtn) startBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
 
+          await clearMappingBrowserLocalCache(mappingId);
+
+          setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
