@@ -18,6 +18,15 @@ from ..core.public_api_limits import DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT, ca
 from .image_task_executor import simulate_image_task
 from .video_task_executor import simulate_video_task
 from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
+
+
+def _sora_task_error_needs_forced_access_token_refresh(exc: BaseException) -> bool:
+    """sora_gen_video 失败时：在 exception 路径触发一次窗口内重抓 token，供后续队列重试用。"""
+    msg = str(exc or "")
+    ml = msg.lower()
+    if "token_expired" in ml or "token is expired" in ml:
+        return True
+    return False
 from .sora_wm_remove_executor import sora_wm_remove
 from .sora_plus_register_executor import sora_plus_register
 from .veo_workflow_executor import (
@@ -793,6 +802,57 @@ class TaskService:
                         e,
                     )
 
+            async def _force_refresh_sora_access_token() -> bool:
+                """窗口内强制重抓 Sora access_token 并写回 mapping（不依赖余额为 0）。"""
+                try:
+                    sess = get_or_create_sora_session(
+                        vendor=picked.browser_vendor,
+                        base_url=picked.browser_base_url,
+                        access_key=picked.browser_access_key,
+                        space_id=picked.space_id,
+                        window_key=picked.window_key,
+                    )
+                    sess.browser_headless = picked.headless
+                except Exception:
+                    return False
+                try:
+                    info = await asyncio.wait_for(
+                        sora_fetch_access_token_in_window(sess=sess, target_url=target_url),
+                        timeout=refresh_timeout_seconds,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "force_refresh_sora_access_token failed: task=%s mapping=%s err=%s",
+                        task_id,
+                        picked.mapping_id,
+                        e,
+                    )
+                    return False
+                access_token = str((info or {}).get("access_token") or "").strip() or None
+                expires = str((info or {}).get("expires") or "").strip() or None
+                if not access_token:
+                    return False
+                try:
+                    await self.db.update_task_type_window(
+                        mapping_id=picked.mapping_id,
+                        sora_access_token=access_token,
+                        sora_access_expires=expires,
+                    )
+                except Exception:
+                    return False
+                picked.sora_access_token = access_token
+                picked.sora_access_expires = expires
+                try:
+                    sess.set_access_token(access_token, expires)
+                except Exception:
+                    pass
+                logger.info(
+                    "sora access_token force-refreshed: task=%s mapping=%s",
+                    task_id,
+                    picked.mapping_id,
+                )
+                return True
+
             async def _refresh_veo_balance() -> Optional[Dict[str, Any]]:
                 """VEO：在指纹窗口内 fetch aisandbox credits，与 admin 刷新额度一致。"""
                 if str(picked.create_task_handler or "").strip().lower() != "veo_workflow":
@@ -980,6 +1040,8 @@ class TaskService:
                     await _refresh_veo_balance_best_effort()
                 elif picked.create_task_handler == "sora_gen_video":
                     await _refresh_sora_balance_best_effort()
+                    if _sora_task_error_needs_forced_access_token_refresh(e):
+                        await _force_refresh_sora_access_token()
                 # 失败：尽量把“是否不扣罚(no_penalty)”等信息写入 result_json，便于上游做退款/分类。
                 no_penalty = bool(getattr(e, "no_penalty", False))
                 status_code = getattr(e, "status_code", None)
