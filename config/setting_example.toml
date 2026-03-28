@@ -18,3 +18,14 @@ debug_enabled = false
 # 是否把日志写入本地文件（fpbrowser2api/app.log）
 log_to_file = false
 
+# VEO 2K 放大图为 JPEG 字节；启用后上传到 OSS，任务结果里 upsample_url 存公网 URL，避免大 base64 撑爆数据库
+[oss]
+enabled = false
+endpoint = "https://oss-cn-hangzhou.aliyuncs.com"
+region = "cn-hangzhou"
+bucket = "your-bucket"
+public_base_url = "https://your-cdn.example.com/"
+# 密钥可用 access_key_id / access_key_secret，或 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（与 comfyui_async_service 一致）
+# access_key_id = ""
+# access_key_secret = ""
+

@@ -70,6 +70,15 @@
               <div class="mb-3">
                 <label class="form-label">时长 duration（可选）</label>
                 <input class="form-control mono" id="duration" placeholder="5" />
+                <div class="text-muted small">上次填写会保存在本机浏览器。</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">图片输出分辨率（可选）</label>
+                <select class="form-select" id="imageResolution">
+                  <option value="">1K（默认）</option>
+                  <option value="2k">2K</option>
+                </select>
+                <div class="text-muted small">对应任务 JSON 中的 <span class="mono">resolution</span>；选 2K 时后端将走放大流程（与 veo 图片工作流一致）。选择会保存在本机浏览器。</div>
               </div>
               <div class="mb-3 form-check">
                 <input class="form-check-input" type="checkbox" id="headlessMode" />
@@ -128,6 +137,8 @@
         testPrompt: `${LS_PREFIX}test.prompt`,
         testVideoUrl: `${LS_PREFIX}test.video_url`,
         testFirstImageUrl: `${LS_PREFIX}test.first_image_url`,
+        testDuration: `${LS_PREFIX}test.duration`,
+        testImageResolution: `${LS_PREFIX}test.image_resolution`,
         testLastTaskId: `${LS_PREFIX}test.last_task_id`,
       };
       function mappingLsKey(taskTypeCode) {
@@ -302,6 +313,8 @@
             payload.card_key = String(selected.card_key);
           }
           if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
+          const imageResRaw = (document.getElementById("imageResolution")?.value || "").trim().toLowerCase();
+          if (imageResRaw === "2k") payload.resolution = "2k";
           const headlessChecked = document.getElementById("headlessMode")?.checked === true;
           if (headlessChecked) payload.headless = true;
 
@@ -396,6 +409,28 @@
         const savedFirstImageUrl = lsGet(LS_KEYS.testFirstImageUrl);
         if (savedFirstImageUrl !== null && firstImageUrlEl) firstImageUrlEl.value = savedFirstImageUrl;
         if (firstImageUrlEl) firstImageUrlEl.addEventListener("input", (e) => lsSet(LS_KEYS.testFirstImageUrl, e.target.value));
+
+        // duration 回填与缓存
+        const durationEl = document.getElementById("duration");
+        const savedDuration = lsGet(LS_KEYS.testDuration);
+        if (savedDuration !== null && durationEl) durationEl.value = savedDuration;
+        if (durationEl) {
+          durationEl.addEventListener("input", (e) => lsSet(LS_KEYS.testDuration, e.target.value));
+        }
+
+        // 图片输出分辨率回填与缓存（供 _veo_resolve_image_output_resolution 等读取 payload.resolution）
+        const imageResolutionEl = document.getElementById("imageResolution");
+        const savedImageRes = (lsGet(LS_KEYS.testImageResolution) || "").trim().toLowerCase();
+        if (imageResolutionEl && (savedImageRes === "2k" || savedImageRes === "")) {
+          imageResolutionEl.value = savedImageRes === "2k" ? "2k" : "";
+        }
+        if (imageResolutionEl) {
+          imageResolutionEl.addEventListener("change", (e) => {
+            const v = (e.target.value || "").trim().toLowerCase();
+            if (v === "2k") lsSet(LS_KEYS.testImageResolution, "2k");
+            else lsDel(LS_KEYS.testImageResolution);
+          });
+        }
 
         // 任务类型缓存（回填发生在 loadTaskTypes 之后）
         const typeEl = document.getElementById("taskType");

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urlparse
 
+from ..core.config import config as app_config
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
     acquire_browser_open_slot,
@@ -37,6 +38,7 @@ from .sora_task_executor import (
     _pick_n_frames,
     _prepare_first_frame_image_for_upload_async,
 )
+from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 
@@ -2447,10 +2449,48 @@ async def _veo_execute_image_mode(
                         sess=sess,
                     )
                     if b64:
-                        share_url = f"data:image/jpeg;base64,{b64}"
-                        upsample_ok = True
-                        res_label = "2K"
-                        append_log(log_file, "[veo][image] upsample done, share_url is data:image/jpeg;base64,...")
+                        oss_cfg = oss_config_from_setting_section(
+                            (app_config.get_raw_config() or {}).get("oss")
+                        )
+                        if oss_cfg.enabled:
+                            try:
+                                raw_jpeg = base64.b64decode(b64, validate=False)
+                                if not raw_jpeg:
+                                    raise ValueError("base64 解码后为空")
+                                object_key = build_veo_upsample_object_key(
+                                    project_id=str(project_id),
+                                    media_name=str(media_name) if media_name else None,
+                                )
+                                share_url = await asyncio.to_thread(
+                                    upload_bytes_to_oss,
+                                    cfg=oss_cfg,
+                                    data=raw_jpeg,
+                                    object_key=object_key,
+                                    content_type="image/jpeg",
+                                )
+                                upsample_ok = True
+                                res_label = "2K"
+                                append_log(
+                                    log_file,
+                                    f"[veo][image] upsample done, uploaded to oss object_key={object_key!r}",
+                                )
+                            except Exception as e:
+                                upsample_err = _short_err_msg(e, max_len=240)
+                                append_log(
+                                    log_file,
+                                    f"[veo][image] upsample ok but oss upload failed, fallback 1K: {e}",
+                                )
+                                share_url = fife_url
+                                res_label = "1K"
+                                upsample_ok = False
+                        else:
+                            share_url = f"data:image/jpeg;base64,{b64}"
+                            upsample_ok = True
+                            res_label = "2K"
+                            append_log(
+                                log_file,
+                                "[veo][image] upsample done, share_url is data:image/jpeg;base64,... (oss disabled)",
+                            )
                     else:
                         upsample_err = "放大返回空数据，已返回 1K 原图"
                 except Exception as e:

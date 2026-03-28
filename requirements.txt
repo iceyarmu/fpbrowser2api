@@ -10,4 +10,5 @@ python-dateutil==2.8.2
 selenium
 playwright==1.48.0
 Pillow
+oss2>=2.18.0
 
