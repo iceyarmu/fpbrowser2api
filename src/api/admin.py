@@ -2726,9 +2726,9 @@ async def clear_mapping_browser_cache(
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-start")
 async def manual_start_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
-    """启用窗口 + 立刻关闭指纹浏览器窗口，然后重新打开并进入 Sora drafts。
+    """立刻关闭指纹浏览器窗口并重新打开，进入 Sora drafts / Veo 目标页。
 
-    说明：用于管理台“启动”按钮，效果等价于“强制重启窗口并确保 drafts tab 置前”。
+    不修改绑定上的 enabled（启用）状态，仅做窗口重启与页面置前。
     """
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2766,10 +2766,6 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
         try:
             await veo_ctx.ensure_open(args=[], force_open=True, headless=headless)
             await veo_ctx._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
-            try:
-                await db.update_task_type_window(mapping_id=mapping_id, enabled=True)
-            except Exception:
-                pass
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
     else:
@@ -2790,14 +2786,11 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
         try:
             await sora_ctx.ensure_open(args=[], force_open=True, headless=headless)
             await sora_ctx._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
-            try:
-                await db.update_task_type_window(mapping_id=mapping_id, enabled=True)
-            except Exception:
-                pass
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
 
-    return {"success": True, "mapping_id": mapping_id, "enabled": True, "idle_close_disabled": True}
+    enabled_before = bool(int(ctx_row.get("enabled") or 0))
+    return {"success": True, "mapping_id": mapping_id, "enabled": enabled_before, "idle_close_disabled": True}
 
 
 @router.delete("/api/admin/task-types/{task_type_id}")

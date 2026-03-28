@@ -2442,7 +2442,7 @@
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
           const _openTitle = "仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
-          const _startTitle = _isVeo ? "启用 + 立刻重启窗口并进入目标页面" : "启用 + 立刻重启窗口并进入 Sora drafts";
+          const _startTitle = _isVeo ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -3740,16 +3740,16 @@
         try {
           cancelCloseHintCountdown({ hideModal: true });
           const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
-          setBtnBusy(startBtn, true, { loadingText: "启动中" });
+          setBtnBusy(startBtn, true, { loadingText: "重启中" });
           if (openBtn) openBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
 
           const hl = getMappingHeadless(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}`, { method: "POST" });
-          updateMappingRowUI(mappingId, { enabled: true, window_status: 1 }, { fromEl });
+          updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
           const _h2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(_h2 === "veo_workflow" ? "已启动：启用窗口 + 重启并进入目标页面" : "已启动：启用窗口 + 重启并进入 drafts", "success");
-          flashBtnText(startBtn, "已启动");
+          toast(_h2 === "veo_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
+          flashBtnText(startBtn, "已重启");
         } catch (e) {
           toast(e.message, "error");
         } finally {
