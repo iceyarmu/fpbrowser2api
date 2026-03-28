@@ -2518,7 +2518,7 @@ async def _veo_execute_image_mode(
         out: Dict[str, Any] = {
             "type": "veo_workflow_image",
             "message": "VEO 图生图完成" if want_i2i else "VEO 文生图完成",
-            "share_url": fife_url,
+            "share_url": share_url,
             "workflow_kind": "image",
             "image_mode": "i2i" if want_i2i else "t2i",
             "model_name": model_name,
