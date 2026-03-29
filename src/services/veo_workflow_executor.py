@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urlparse
 
 from ..core.config import config as app_config
+from ..core.database import Database
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
     acquire_browser_open_slot,
@@ -1039,6 +1040,123 @@ def get_or_create_veo_session(
     else:
         sess.pw_ctx.access_key = access_key
     return sess
+
+
+VEO_FLOW_OPEN_ACCOUNT_DEFAULT_URL = "https://labs.google/fx/ja/tools/flow"
+
+
+async def veo_flow_open_account(
+    progress_cb: ProgressCB,
+    *,
+    db: Database,
+    window_pk: int,
+    browser_vendor: str,
+    browser_base_url: str,
+    browser_access_key: Optional[str],
+    space_id: str,
+    window_key: str,
+    timeout_seconds: float,
+    flow_url: Optional[str] = None,
+    headless: bool = False,
+) -> Dict[str, Any]:
+    """按窗口凭据完成 Google 登录，打开 Google Flow，再断开本地 CDP（保留指纹浏览器窗口）。"""
+    from .sora_plus_register_executor import (
+        _do_login_flow,
+        _is_already_logged_in,
+        _pick_platform_domain_page,
+        _resolve_window_platform_credentials,
+    )
+
+    creds = await _resolve_window_platform_credentials(db, window_pk=int(window_pk))
+    platform_url = str(creds["platform_url"] or "").strip()
+    platform_username = str(creds["platform_username"] or "").strip()
+    platform_password = str(creds["platform_password"] or "").strip()
+    platform_efa = str(creds["platform_efa"] or "").strip()
+
+    target_flow = str(flow_url or "").strip() or VEO_FLOW_OPEN_ACCOUNT_DEFAULT_URL
+    timeout_ms = int(max(10_000, min(float(timeout_seconds) * 1000, 120_000)))
+
+    await progress_cb(1, {"stage": "resolve_credentials", "window_pk": int(window_pk)})
+
+    sess = get_or_create_veo_session(
+        vendor=browser_vendor,
+        base_url=browser_base_url,
+        access_key=browser_access_key,
+        space_id=space_id,
+        window_key=window_key,
+    )
+    sess.browser_headless = headless
+    sess.idle_close_disabled = True
+    try:
+        sess._cancel_idle_close()
+    except Exception:
+        pass
+
+    await sess.ensure_open(args=[], force_open=False, headless=headless)
+
+    ctx = sess.pw_ctx
+    async with ctx.driver_lock:
+        if ctx.context is None:
+            raise RuntimeError("浏览器上下文不可用：context is None")
+        page = await _pick_platform_domain_page(ctx.context, platform_url=platform_url)
+        ctx.page = page
+
+        await page.goto(platform_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        await progress_cb(10, {"stage": "page_loaded", "url": platform_url})
+
+        current_url = str(page.url or "").strip()
+        if _is_already_logged_in(current_url):
+            await progress_cb(55, {"stage": "already_logged_in", "current_url": current_url})
+        else:
+            await progress_cb(12, {"stage": "need_login", "current_url": current_url})
+            await _do_login_flow(
+                page,
+                platform_username=platform_username,
+                platform_password=platform_password,
+                platform_efa=platform_efa,
+                timeout_ms=timeout_ms,
+                progress_cb=progress_cb,
+            )
+
+        await page.goto(target_flow, wait_until="domcontentloaded", timeout=timeout_ms)
+        await progress_cb(90, {"stage": "flow_opened", "url": target_flow})
+
+    try:
+        br = getattr(ctx, "browser", None)
+        pw = getattr(ctx, "playwright", None)
+        try:
+            ctx.browser = None
+            ctx.context = None
+            ctx.page = None
+            ctx.cdp_endpoint = None
+        except Exception:
+            pass
+        try:
+            if br is not None:
+                await br.close()
+        except Exception:
+            pass
+        try:
+            if pw is not None:
+                await pw.stop()
+        except Exception:
+            pass
+        try:
+            ctx.playwright = None
+        except Exception:
+            pass
+        await progress_cb(99, {"stage": "cdp_disconnected"})
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "stage": "flow_ready",
+        "platform_url": platform_url,
+        "platform_username": platform_username,
+        "flow_url": target_flow,
+        "message": "已登录 Google 并打开 Flow，已断开 CDP",
+    }
 
 
 # ---------------------------------------------------------------------------

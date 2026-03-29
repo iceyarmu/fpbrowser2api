@@ -2724,6 +2724,79 @@ async def clear_mapping_browser_cache(
     }
 
 
+@router.post("/api/admin/task-type-windows/{mapping_id}/open-account")
+async def open_account_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
+    """开号：sora_gen_video 走 sora_plus_register；veo_workflow 走 Google 登录后打开 Flow 并断开 CDP。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
+    window_pk = int(ctx_row.get("window_pk") or 0)
+    if window_pk <= 0:
+        raise HTTPException(status_code=400, detail="mapping 缺少 window_pk")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    timeout_seconds = float(ctx_row.get("task_timeout_seconds") or 600)
+    timeout_seconds = max(120.0, min(timeout_seconds, 3600.0))
+
+    async def _progress_cb(_pct: int, _meta: Optional[Dict[str, Any]] = None) -> None:
+        return
+
+    try:
+        if handler == "sora_gen_video":
+            from ..services.sora_plus_register_executor import sora_plus_register
+
+            result = await sora_plus_register(
+                {"headless": headless},
+                _progress_cb,
+                db=db,
+                window_pk=window_pk,
+                browser_vendor=vendor,
+                browser_base_url=base_url,
+                browser_access_key=access_key,
+                space_id=space_id,
+                window_key=window_key,
+                timeout_seconds=timeout_seconds,
+            )
+        elif handler == "veo_workflow":
+            from ..services.veo_workflow_executor import veo_flow_open_account
+
+            result = await veo_flow_open_account(
+                _progress_cb,
+                db=db,
+                window_pk=window_pk,
+                browser_vendor=vendor,
+                browser_base_url=base_url,
+                browser_access_key=access_key,
+                space_id=space_id,
+                window_key=window_key,
+                timeout_seconds=timeout_seconds,
+                headless=headless,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="当前任务类型不支持开号（仅 sora_gen_video / veo_workflow）",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"开号失败：{e}")
+
+    return {"success": True, "mapping_id": mapping_id, "result": result}
+
+
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-start")
 async def manual_start_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
     """立刻关闭指纹浏览器窗口并重新打开，进入 Sora drafts / Veo 目标页。

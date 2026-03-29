@@ -2441,6 +2441,7 @@
           const _handler = String(state.current?.create_task_handler || "").trim().toLowerCase();
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
+          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow";
           const _openTitle = "会先清空该窗口本地缓存，再仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
           const _startTitle = _isVeo ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           return `
@@ -2459,6 +2460,7 @@
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                   <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
                   <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地与服务器缓存（Roxy：clear_local_cache + clear_server_cache）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
+                  ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="开号：Sora 走 Plus 注册自动化；Veo 为 Google 登录并打开 Flow（完成后断开 CDP）" aria-label="开号" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">开号</span></button>` : ""}
                 </div>
               </div>
             </td>
@@ -2870,6 +2872,9 @@
         }
         if (act === "clearBrowserCache") {
           return clearBrowserCache(mappingId, el);
+        }
+        if (act === "openAccount") {
+          return openAccountForMapping(mappingId, el);
         }
         if (act === "applyCoreVersion") {
           if (!canEditTaskTypeConfig()) {
@@ -3772,6 +3777,28 @@
           flashBtnText(btn, "已清除");
         } catch (e) {
           toast(e.message || "清除缓存失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      async function openAccountForMapping(mappingId, fromEl) {
+        const btn = fromEl?.closest?.("button") || fromEl;
+        try {
+          cancelCloseHintCountdown({ hideModal: true });
+          setBtnBusy(btn, true, { loadingText: "开号中" });
+          const hl = getMappingHeadless(mappingId);
+          await postJson(`/api/admin/task-type-windows/${mappingId}/open-account?headless=${hl}`, { method: "POST" });
+          const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          toast(
+            _h === "veo_workflow"
+              ? "已完成：Google 登录并打开 Flow，已断开自动化连接"
+              : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）",
+            "success",
+          );
+          flashBtnText(btn, "完成");
+        } catch (e) {
+          toast(e.message || "开号失败", "error");
         } finally {
           setBtnBusy(btn, false);
         }

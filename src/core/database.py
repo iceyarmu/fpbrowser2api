@@ -3138,6 +3138,7 @@ class Database:
                   t.create_task_handler,
                   t.refresh_quota_handler,
                   t.default_target_url,
+                  t.timeout_seconds AS task_timeout_seconds,
                   w.window_key,
                   w.window_name,
                   w.platform_account,
