@@ -111,7 +111,7 @@ def _remaining_quota_exclusive_floor_for_pick(
     if code == "sora_gen_video":
         return 3
     if code == "veo_workflow":
-        return 40 if _veo_resolve_n_frames(payload or {}) > 1 else 0
+        return 30 if _veo_resolve_n_frames(payload or {}) > 1 else 10
     return 3
 
 

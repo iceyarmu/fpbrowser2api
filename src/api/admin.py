@@ -2715,12 +2715,28 @@ async def clear_mapping_browser_cache(
             detail=f"清空服务器缓存失败（本地已清空）：{server_rsp.get('msg') or server_rsp}",
         )
 
+    # 与「清缓存」语义一致：指纹侧清空后，同步清空本 mapping 保存的会话与额度/会员缓存字段
+    await db.update_task_type_window(
+        mapping_id=mapping_id,
+        sora_access_token="",
+        sora_access_expires="",
+        remaining_quota=0,
+        sora_remaining_count=0,
+        sora_purchased_remaining_count=0,
+        sora_rate_limit_reached=False,
+        sora_access_resets_in_seconds=0,
+        cooldown_until="",
+        sora_plan_title="",
+        sora_subscription_end="",
+    )
+
     return {
         "success": True,
         "mapping_id": mapping_id,
         "local": local_rsp,
         "server": server_rsp,
         "local_only": False,
+        "cleared_mapping_session_fields": True,
     }
 
 
