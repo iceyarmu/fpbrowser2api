@@ -2300,14 +2300,14 @@ async def refresh_mapping_remaining_quota(
                     _veo = get_or_create_veo_session(
                         vendor=_vendor, base_url=_base, access_key=_ak, space_id=_sid, window_key=_wk
                     )
-                    await _veo.pw_ctx.disconnect_playwright_only()
+                    await _veo.disconnect_playwright_under_bring_lock()
                 else:
                     from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
                     _sora = get_or_create_sora_session(
                         vendor=_vendor, base_url=_base, access_key=_ak, space_id=_sid, window_key=_wk
                     )
-                    await _sora.pw_ctx.disconnect_playwright_only()
+                    await _sora.disconnect_playwright_under_bring_lock()
             except Exception:
                 pass
 
@@ -2377,7 +2377,7 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             sora_remaining_count=credits,
         )
         try:
-            await veo_ctx.pw_ctx.disconnect_playwright_only()
+            await veo_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
         return {
@@ -2411,7 +2411,7 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         sora_subscription_end=subscription_end,
     )
     try:
-        await sora_ctx.pw_ctx.disconnect_playwright_only()
+        await sora_ctx.disconnect_playwright_under_bring_lock()
     except Exception:
         pass
     return {
@@ -2516,7 +2516,7 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
     invite_code = (info or {}).get("invite_code")
     await db.update_task_type_window(mapping_id=mapping_id, sora_invite_code=str(invite_code or "").strip() or None)
     try:
-        await sora_ctx.pw_ctx.disconnect_playwright_only()
+        await sora_ctx.disconnect_playwright_under_bring_lock()
     except Exception:
         pass
     return {
@@ -2585,7 +2585,7 @@ async def convert_sora_session_token_to_access_token(
 
         await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
         try:
-            await veo_ctx.pw_ctx.disconnect_playwright_only()
+            await veo_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
         return {
@@ -2617,7 +2617,7 @@ async def convert_sora_session_token_to_access_token(
         except Exception:
             pass
         try:
-            await sora_ctx.pw_ctx.disconnect_playwright_only()
+            await sora_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
         return {"success": True, "mapping_id": mapping_id, "access_token": access_token, "expires": expires, "source": "window"}
@@ -2924,7 +2924,7 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
         try:
-            await veo_ctx.pw_ctx.disconnect_playwright_only()
+            await veo_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
     else:
@@ -2948,7 +2948,7 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
         try:
-            await sora_ctx.pw_ctx.disconnect_playwright_only()
+            await sora_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
 
@@ -3151,7 +3151,7 @@ async def admin_create_veo_flow_project(
     )
 
     try:
-        await sess.pw_ctx.disconnect_playwright_only()
+        await sess.disconnect_playwright_under_bring_lock()
     except Exception:
         pass
 

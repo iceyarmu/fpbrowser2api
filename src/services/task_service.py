@@ -340,6 +340,10 @@ class TaskService:
                     sess._cancel_idle_close()
                     await sess.ensure_open(args=[], force_open=False, headless=headless)
                     await sess._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
+                    try:
+                        await sess.disconnect_playwright_under_bring_lock()
+                    except Exception:
+                        pass
                 elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                     tu = target_url or "https://sora.chatgpt.com/drafts"
                     sess = get_or_create_sora_session(
@@ -361,6 +365,10 @@ class TaskService:
                         headless=headless,
                     )
                     await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=tu)
+                    try:
+                        await sess.disconnect_playwright_under_bring_lock()
+                    except Exception:
+                        pass
                 else:
                     tu = target_url
                     if not tu:
@@ -373,17 +381,23 @@ class TaskService:
                         window_key=window_key,
                     )
                     await pw.ensure_open(args=[], force_open=False, headless=headless, require_page=False)
-                    async with pw.driver_lock:
-                        if pw.context is None:
-                            return
-                        if pw.page is None:
+                    try:
+                        async with pw.driver_lock:
+                            if pw.context is None:
+                                return
+                            if pw.page is None:
+                                try:
+                                    pages = list(getattr(pw.context, "pages", []) or [])
+                                except Exception:
+                                    pages = []
+                                pw.page = pages[0] if pages else await pw.context.new_page()
                             try:
-                                pages = list(getattr(pw.context, "pages", []) or [])
+                                await pw.page.goto(tu, wait_until="domcontentloaded", timeout=60_000)
                             except Exception:
-                                pages = []
-                            pw.page = pages[0] if pages else await pw.context.new_page()
+                                pass
+                    finally:
                         try:
-                            await pw.page.goto(tu, wait_until="domcontentloaded", timeout=60_000)
+                            await pw.disconnect_playwright_only_under_driver_lock()
                         except Exception:
                             pass
         except Exception as e:
@@ -518,6 +532,10 @@ class TaskService:
                 await sess.raise_if_cloudflare_page_nonpenalized(
                     page, stage="window_pool", target_url=tu
                 )
+                try:
+                    await sess.disconnect_playwright_under_bring_lock()
+                except Exception:
+                    pass
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                 tu = target_url or "https://sora.chatgpt.com/drafts"
                 sess = get_or_create_sora_session(
@@ -533,6 +551,10 @@ class TaskService:
                 await sess._raise_if_cloudflare_page_nonpenalized(
                     page, stage="window_pool", drafts_url=tu
                 )
+                try:
+                    await sess.disconnect_playwright_under_bring_lock()
+                except Exception:
+                    pass
             else:
                 tu = target_url
                 if not tu:
@@ -548,6 +570,10 @@ class TaskService:
                 await window_pool_guard_unknown_handler_page(
                     page, stage="window_pool", target_url=tu
                 )
+                try:
+                    await pw.disconnect_playwright_only_under_driver_lock()
+                except Exception:
+                    pass
         except NonPenalizedTaskError:
             logger.warning(
                 "window_pool cloudflare persists, reset session mapping_id=%s", mapping_id

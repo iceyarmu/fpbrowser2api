@@ -695,6 +695,11 @@ class PlaywrightBrowserContext:
         except Exception:
             pass
 
+    async def disconnect_playwright_only_under_driver_lock(self) -> None:
+        """在 driver_lock 下断开 CDP，与通过 driver_lock 进行的页面操作串行。"""
+        async with self.driver_lock:
+            await self.disconnect_playwright_only()
+
     async def open_fingerprint_window_only(
         self,
         *,

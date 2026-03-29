@@ -228,6 +228,12 @@ class VeoSession:
         async with self._bring_drafts_lock:
             await self.pw_ctx.ensure_open(args=args or [], force_open=force_open, headless=headless, require_page=False)
 
+    async def disconnect_playwright_under_bring_lock(self) -> None:
+        """先占 _bring_drafts_lock，再占 pw_ctx.driver_lock，再断开 CDP（与 bring 及仅持 driver_lock 的页面逻辑互斥）。"""
+        async with self._bring_drafts_lock:
+            async with self.pw_ctx.driver_lock:
+                await self.pw_ctx.disconnect_playwright_only()
+
     async def navigate_to(self, url: str, *, timeout_ms: int = 60_000) -> None:
         """导航到指定 URL。"""
         if self.pw_ctx.page is None:
@@ -331,36 +337,41 @@ class VeoSession:
         self, page, *, stage: str, target_url: str
     ) -> None:
         """与 Sora `_raise_if_cloudflare_page_nonpenalized` 同类：bring 目标页 + 等待/重启，仍判定 CF 则抛 NonPenalizedTaskError（用于窗口池巡检）。"""
-        if page is None:
-            return
-        try:
-            th = (urlparse(target_url).netloc or "").strip().lower()
-        except Exception:
-            th = ""
-        cur = page
-        for _ in range(2):
-            if cur is None:
+        async with self._bring_drafts_lock:
+            if page is None:
                 return
-            if not await self._is_cloudflare_page(cur, deep=False):
-                return
-            await self._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
-            cur = self.pw_ctx.page
-            if cur is None:
-                return
-        if cur is not None and await self._is_cloudflare_page(cur, deep=False):
-            still = await self._wait_cloudflare_auto_pass(
-                cur,
-                max_wait_seconds=25.0,
-                max_success_clicks=2,
-            )
-            if still and await self._is_cloudflare_page(cur, deep=True):
-                await self._restart_window_and_restore_single_drafts(drafts_url=target_url, target_host=th)
+            try:
+                th = (urlparse(target_url).netloc or "").strip().lower()
+            except Exception:
+                th = ""
+            cur = page
+            for _ in range(2):
+                if cur is None:
+                    return
+                if not await self._is_cloudflare_page(cur, deep=False):
+                    return
+                await self._bring_target_page_to_front(
+                    refresh_target=False, drafts_url=target_url, acquire_bring_lock=False
+                )
                 cur = self.pw_ctx.page
-        if cur is not None and await self._is_cloudflare_page(cur, deep=True):
-            raise NonPenalizedTaskError(
-                f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
-                status_code=503,
-            )
+                if cur is None:
+                    return
+            if cur is not None and await self._is_cloudflare_page(cur, deep=False):
+                still = await self._wait_cloudflare_auto_pass(
+                    cur,
+                    max_wait_seconds=25.0,
+                    max_success_clicks=2,
+                )
+                if still and await self._is_cloudflare_page(cur, deep=True):
+                    await self._restart_window_and_restore_single_drafts(
+                        drafts_url=target_url, target_host=th
+                    )
+                    cur = self.pw_ctx.page
+            if cur is not None and await self._is_cloudflare_page(cur, deep=True):
+                raise NonPenalizedTaskError(
+                    f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
+                    status_code=503,
+                )
 
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
@@ -708,20 +719,28 @@ class VeoSession:
     # ------------------------------------------------------------------
     # 核心：将目标页面置前（完整照搬 sora 的 _bring_sora_drafts_to_front）
     # ------------------------------------------------------------------
-    async def _bring_target_page_to_front(self, refresh_target=True, *, drafts_url: str) -> None:
+    async def _bring_target_page_to_front(
+        self,
+        refresh_target=True,
+        *,
+        drafts_url: str,
+        acquire_bring_lock: bool = True,
+    ) -> None:
         """将目标页面置前，并尽量确保整个指纹浏览器实例只保留一个目标页面。
 
         需求背景：指纹浏览器可能开了多个标签页/窗口；即使 ensure_open 选中了可用 page，也不一定是目标页面。
         这里确保 drafts_url 在每次 ensure_open 后都会被 bring_to_front，
         且会关闭同一个指纹浏览器（同一 CDP 连接）内除 drafts_url 外的其它页面（包括其它站点、about:blank、新窗口、重复 drafts 等），
         尽量只保留一个目标页面以节省内存。
+
+        acquire_bring_lock：为 False 时表示调用方已持有 ``_bring_drafts_lock``（避免与外层 ``async with`` 死锁）。
         """
         try:
             target_host = urlparse(drafts_url).netloc.strip().lower()
         except Exception:
             target_host = ""
 
-        async with self._bring_drafts_lock:
+        async def _inner() -> None:
             def _is_page_closed(p: Any) -> bool:
                 try:
                     return bool(getattr(p, "is_closed", lambda: False)())
@@ -1002,6 +1021,12 @@ class VeoSession:
                             pass
             except Exception:
                 pass
+
+        if acquire_bring_lock:
+            async with self._bring_drafts_lock:
+                await _inner()
+        else:
+            await _inner()
 
     # ------------------------------------------------------------------
     # idle close / close_and_drop

@@ -1557,23 +1557,26 @@ class SoraSession:
         self, page, *, stage: str, drafts_url: str = "https://sora.chatgpt.com/drafts"
     ) -> None:
         """若为 Cloudflare 或未登录类提示，则最多 2 次：先尝试登录/错误页自愈，再 bring drafts；仍判定为 CF 再抛 NonPenalizedTaskError。"""
-        if page is None:
-            return
-        cur = page
-        for _ in range(2):
-            is_cf = await self._is_cloudflare_page(cur, deep=False)
-            if not is_cf and not await self._drafts_page_suggests_login_recovery(cur):
+        async with self._bring_drafts_lock:
+            if page is None:
                 return
-            await self._try_resolve_drafts_login_prompt_if_needed(cur, drafts_url)
-            await self._bring_sora_drafts_to_front(refresh_target=False, drafts_url=drafts_url)
-            cur = self.pw_ctx.page
-            if cur is None:
-                return
-        if await self._is_cloudflare_page(cur, deep=False):
-            raise NonPenalizedTaskError(
-                f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
-                status_code=503,
-            )
+            cur = page
+            for _ in range(2):
+                is_cf = await self._is_cloudflare_page(cur, deep=False)
+                if not is_cf and not await self._drafts_page_suggests_login_recovery(cur):
+                    return
+                await self._try_resolve_drafts_login_prompt_if_needed(cur, drafts_url)
+                await self._bring_sora_drafts_to_front(
+                    refresh_target=False, drafts_url=drafts_url, acquire_bring_lock=False
+                )
+                cur = self.pw_ctx.page
+                if cur is None:
+                    return
+            if await self._is_cloudflare_page(cur, deep=False):
+                raise NonPenalizedTaskError(
+                    f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
+                    status_code=503,
+                )
 
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
@@ -2009,20 +2012,28 @@ class SoraSession:
         except Exception:
             pass
 
-    async def _bring_sora_drafts_to_front(self, refresh_target=True, *, drafts_url: str = "https://sora.chatgpt.com/drafts") -> None:
+    async def _bring_sora_drafts_to_front(
+        self,
+        refresh_target=True,
+        *,
+        drafts_url: str = "https://sora.chatgpt.com/drafts",
+        acquire_bring_lock: bool = True,
+    ) -> None:
         """将目标页面置前，并尽量确保整个指纹浏览器实例只保留一个目标页面。
 
         需求背景：指纹浏览器可能开了多个标签页/窗口；即使 ensure_open 选中了可用 page，也不一定是目标页面。
         这里确保 drafts_url 在每次 ensure_open 后都会被 bring_to_front，
         且会关闭同一个指纹浏览器（同一 CDP 连接）内除 drafts_url 外的其它页面（包括其它站点、about:blank、新窗口、重复 drafts 等），
         尽量只保留一个目标页面以节省内存。
+
+        acquire_bring_lock：为 False 时表示调用方已持有 ``_bring_drafts_lock``（避免与外层 ``async with`` 死锁）。
         """
         try:
             sora_host = urlparse(drafts_url).netloc.strip().lower()
         except Exception:
             sora_host = "sora.chatgpt.com"
 
-        async with self._bring_drafts_lock:
+        async def _inner() -> None:
             def _is_page_closed(p: Any) -> bool:
                 try:
                     return bool(getattr(p, "is_closed", lambda: False)())
@@ -2272,6 +2283,12 @@ class SoraSession:
             except Exception:
                 pass
 
+        if acquire_bring_lock:
+            async with self._bring_drafts_lock:
+                await _inner()
+        else:
+            await _inner()
+
     async def ensure_open(
         self,
         *,
@@ -2284,6 +2301,12 @@ class SoraSession:
         async with self._bring_drafts_lock:
             # 仅要求“指纹浏览器窗口已打开且 CDP 已连接”，不要求确认/创建 page（page 由 _bring_sora_drafts_to_front 负责）。
             await self.pw_ctx.ensure_open(args=args, force_open=force_open, headless=headless, require_page=False)
+
+    async def disconnect_playwright_under_bring_lock(self) -> None:
+        """先占 _bring_drafts_lock，再占 pw_ctx.driver_lock，再断开 CDP（与 bring 及 driver_lock 页面逻辑互斥）。"""
+        async with self._bring_drafts_lock:
+            async with self.pw_ctx.driver_lock:
+                await self.pw_ctx.disconnect_playwright_only()
 
     def _cancel_idle_close(self) -> None:
         t = self.idle_close_task
