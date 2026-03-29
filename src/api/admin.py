@@ -2058,6 +2058,18 @@ async def batch_delete_card_keys(req: BatchDeleteCardKeysRequest, token: str = D
 
 
 # -------------------- task types --------------------
+async def _refresh_window_pool_after_task_type_write() -> None:
+    """任务类型写入后立刻与 DB 对齐窗口池目标，避免最长等待一轮 reconcile 周期。"""
+    from ..api.routes import task_service as _ts
+
+    if _ts is None:
+        return
+    try:
+        await _ts.refresh_window_pool_targets_now()
+    except Exception:
+        pass
+
+
 @router.get("/api/admin/task-types")
 async def list_task_types(include_all: bool = False, token: str = Depends(verify_admin_token)):
     user = await _ensure_any_page_access(token, {"task_types", "tasks", "test", "users"})
@@ -2104,6 +2116,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             default_target_url=req.default_target_url,
             window_pool_enabled=req.window_pool_enabled,
         )
+        await _refresh_window_pool_after_task_type_write()
         return {"success": True, "task_type_id": tid}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2148,6 +2161,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             default_target_url=req.default_target_url,
             window_pool_enabled=req.window_pool_enabled,
         )
+        await _refresh_window_pool_after_task_type_write()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

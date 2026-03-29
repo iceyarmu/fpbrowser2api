@@ -154,6 +154,7 @@ class TaskService:
         self._window_pool_stop = asyncio.Event()
         self._window_pool_task: Optional[asyncio.Task] = None
         self._window_pool_lock = asyncio.Lock()
+        self._window_pool_reconcile_serial = asyncio.Lock()
         self._window_pool_targets: dict[str, set[int]] = {}
         # Cloudflare 巡检周期（较长，默认 30 分钟）
         self._window_pool_cf_interval: float = 1800.0
@@ -180,6 +181,16 @@ class TaskService:
         self._window_pool_task = asyncio.create_task(
             self._window_pool_supervisor_loop(), name="window_pool_maintainer"
         )
+
+    async def refresh_window_pool_targets_now(self) -> None:
+        """任务类型窗口池开关等变更后立即与 DB 对齐（不等 supervisor 周期）。"""
+        self.start_window_pool_maintainer()
+        try:
+            await self._window_pool_reconcile_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("window_pool refresh_window_pool_targets_now failed")
 
     async def stop_window_pool_maintainer(self) -> None:
         """停止窗口池协程并尽量关闭池内会话。"""
@@ -245,6 +256,10 @@ class TaskService:
                 pass
 
     async def _window_pool_reconcile_once(self) -> None:
+        async with self._window_pool_reconcile_serial:
+            await self._window_pool_reconcile_once_impl()
+
+    async def _window_pool_reconcile_once_impl(self) -> None:
         try:
             all_types = await self.db.list_task_types()
         except Exception as e:
