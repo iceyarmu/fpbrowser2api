@@ -16,8 +16,15 @@ from ..core.logger import logger
 from ..core.models import Task
 from ..core.public_api_limits import DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT, calc_public_browser_pool_limit
 from .image_task_executor import simulate_image_task
+from .playwright_broswer_context import acquire_browser_open_slot, get_or_create_ctx as get_or_create_playwright_ctx
 from .video_task_executor import simulate_video_task
-from .sora_task_executor import get_or_create_sora_session, sora_fetch_access_token_in_window, sora_gen_video
+from .sora_task_executor import (
+    get_or_create_sora_session,
+    sora_fetch_access_token_in_window,
+    sora_gen_video,
+    window_pool_guard_unknown_handler_page,
+)
+from .task_executor_types import NonPenalizedTaskError
 
 
 def _sora_task_error_needs_forced_access_token_refresh(exc: BaseException) -> bool:
@@ -143,10 +150,394 @@ class TaskService:
         self._queue_config_cache: tuple[float, int, float] = (0.0, 1000, 300.0)
         self._queue_config_ttl: float = 30.0
 
+        # ---- 窗口池（按任务类型 code 维护应预热的 mapping_id；不占 inflight_slots） ----
+        self._window_pool_stop = asyncio.Event()
+        self._window_pool_task: Optional[asyncio.Task] = None
+        self._window_pool_lock = asyncio.Lock()
+        self._window_pool_targets: dict[str, set[int]] = {}
+        # Cloudflare 巡检周期（较长，默认 30 分钟）
+        self._window_pool_cf_interval: float = 1800.0
+        # 与 DB 对齐窗口池目标的 reconcile 周期（较短，默认 10 分钟）
+        self._window_pool_reconcile_interval: float = 600.0
+        # supervisor 单次休眠上限，避免 stop 后长时间无响应
+        self._window_pool_supervisor_poll_cap: float = 60.0
+
     def set_browser_pool_limit(self, limit: int) -> None:
         """Hot-update scheduling candidate pool size."""
         try:
             self._browser_pool_limit = max(1, int(limit))
+        except Exception:
+            pass
+
+    def start_window_pool_maintainer(self) -> None:
+        """在进程内启动窗口池协程（幂等）。"""
+        if self._window_pool_task is not None and not self._window_pool_task.done():
+            return
+        try:
+            self._window_pool_stop.clear()
+        except Exception:
+            pass
+        self._window_pool_task = asyncio.create_task(
+            self._window_pool_supervisor_loop(), name="window_pool_maintainer"
+        )
+
+    async def stop_window_pool_maintainer(self) -> None:
+        """停止窗口池协程并尽量关闭池内会话。"""
+        self._window_pool_stop.set()
+        t = self._window_pool_task
+        self._window_pool_task = None
+        if t is not None and not t.done():
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        async with self._window_pool_lock:
+            codes = list(self._window_pool_targets.keys())
+            all_mids: set[int] = set()
+            for c in codes:
+                all_mids |= set(self._window_pool_targets.get(c, set()))
+            self._window_pool_targets.clear()
+        for mid in all_mids:
+            try:
+                await self._window_pool_close_mapping(mid)
+            except Exception:
+                pass
+
+    async def _window_pool_supervisor_loop(self) -> None:
+        # 首次 Cloudflare 巡检在启动后满 cf_interval 再执行，避免与首轮 reconcile 抢浏览器打开槽位
+        last_cf = time.monotonic()
+        # 首轮尽快 reconcile 一次以预热池；之后按 _window_pool_reconcile_interval
+        last_reconcile = time.monotonic() - self._window_pool_reconcile_interval
+        while not self._window_pool_stop.is_set():
+            now = time.monotonic()
+            if now - last_reconcile >= self._window_pool_reconcile_interval:
+                last_reconcile = now
+                try:
+                    await self._window_pool_reconcile_once()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.exception("window_pool reconcile: %s", e)
+            now = time.monotonic()
+            if now - last_cf >= self._window_pool_cf_interval:
+                last_cf = now
+                try:
+                    await self._window_pool_cloudflare_tick()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.exception("window_pool cloudflare tick: %s", e)
+            now = time.monotonic()
+            due_r = max(0.0, last_reconcile + self._window_pool_reconcile_interval - now)
+            due_c = max(0.0, last_cf + self._window_pool_cf_interval - now)
+            wait = min(due_r, due_c, self._window_pool_supervisor_poll_cap)
+            wait = max(0.1, wait)
+            try:
+                await asyncio.wait_for(
+                    self._window_pool_stop.wait(),
+                    timeout=wait,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _window_pool_reconcile_once(self) -> None:
+        try:
+            all_types = await self.db.list_task_types()
+        except Exception as e:
+            logger.warning("window_pool list_task_types: %s", e)
+            return
+
+        new_targets: dict[str, set[int]] = {}
+
+        for t in all_types:
+            if not t.enabled or not bool(getattr(t, "window_pool_enabled", False)):
+                continue
+            code = (t.code or "").strip()
+            if not code:
+                continue
+            handler = (t.create_task_handler or "").strip()
+            if handler == "veo_workflow":
+                hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
+                floor = 30 if hi else 10
+            else:
+                floor = _remaining_quota_exclusive_floor_for_pick(code, None)
+            try:
+                ids = await self.db.list_window_pool_target_mapping_ids(
+                    code, self._browser_pool_limit, floor
+                )
+            except Exception as e:
+                logger.warning("window_pool targets %s: %s", code, e)
+                continue
+            new_targets[code] = {int(x) for x in ids}
+
+        async with self._window_pool_lock:
+            prev = {k: set(v) for k, v in self._window_pool_targets.items()}
+            self._window_pool_targets = {k: set(v) for k, v in new_targets.items()}
+
+        to_close: list[int] = []
+        for code, old_set in prev.items():
+            if code not in new_targets:
+                to_close.extend(old_set)
+            else:
+                to_close.extend(old_set - new_targets[code])
+        for mid in to_close:
+            await self._window_pool_close_mapping(mid)
+
+        to_open: list[int] = []
+        for code, new_set in new_targets.items():
+            old_set = prev.get(code, set())
+            to_open.extend(new_set - old_set)
+        for mid in to_open:
+            await self._window_pool_open_mapping(mid)
+
+    async def _window_pool_open_mapping(self, mapping_id: int) -> None:
+        ctx = await self.db.get_task_type_window_context(mapping_id)
+        if not ctx:
+            return
+        handler = (ctx.get("create_task_handler") or "").strip()
+        base_url = str(ctx.get("lan_addr") or "").strip()
+        window_key = str(ctx.get("window_key") or "").strip()
+        if not base_url or not window_key:
+            return
+        vendor = str(ctx.get("vendor") or "generic")
+        access_key = ctx.get("access_key")
+        space_id = str(ctx.get("space_id") or "")
+        headless = bool(ctx.get("headless"))
+        target_url = (str(ctx.get("default_target_url") or "").strip() or None)
+
+        try:
+            async with acquire_browser_open_slot(base_url):
+                if handler == "veo_workflow":
+                    tu = target_url or "https://labs.google/fx"
+                    sess = get_or_create_veo_session(
+                        vendor=vendor,
+                        base_url=base_url,
+                        access_key=access_key,
+                        space_id=space_id,
+                        window_key=window_key,
+                    )
+                    sess.browser_headless = headless
+                    sess.idle_close_disabled = True
+                    sess._cancel_idle_close()
+                    await sess.ensure_open(args=[], force_open=False, headless=headless)
+                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
+                elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
+                    tu = target_url or "https://sora.chatgpt.com/drafts"
+                    sess = get_or_create_sora_session(
+                        vendor=vendor,
+                        base_url=base_url,
+                        access_key=access_key,
+                        space_id=space_id,
+                        window_key=window_key,
+                    )
+                    tok = str(ctx.get("sora_access_token") or "").strip()
+                    if tok:
+                        sess.set_access_token(tok, str(ctx.get("sora_access_expires") or "").strip() or None)
+                    sess.browser_headless = headless
+                    sess.idle_close_disabled = True
+                    sess._cancel_idle_close()
+                    await sess.ensure_open(
+                        args=sess.browser_open_args,
+                        force_open=sess.browser_force_open,
+                        headless=headless,
+                    )
+                    await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=tu)
+                else:
+                    tu = target_url
+                    if not tu:
+                        return
+                    pw = get_or_create_playwright_ctx(
+                        vendor=vendor,
+                        base_url=base_url,
+                        access_key=access_key,
+                        space_id=space_id,
+                        window_key=window_key,
+                    )
+                    await pw.ensure_open(args=[], force_open=False, headless=headless, require_page=False)
+                    async with pw.driver_lock:
+                        if pw.context is None:
+                            return
+                        if pw.page is None:
+                            try:
+                                pages = list(getattr(pw.context, "pages", []) or [])
+                            except Exception:
+                                pages = []
+                            pw.page = pages[0] if pages else await pw.context.new_page()
+                        try:
+                            await pw.page.goto(tu, wait_until="domcontentloaded", timeout=60_000)
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.warning("window_pool open mapping=%s err=%s", mapping_id, e)
+
+    async def _window_pool_close_mapping(self, mapping_id: int) -> None:
+        ctx = await self.db.get_task_type_window_context(mapping_id)
+        if not ctx:
+            return
+        handler = (ctx.get("create_task_handler") or "").strip()
+        base_url = str(ctx.get("lan_addr") or "").strip()
+        window_key = str(ctx.get("window_key") or "").strip()
+        if not base_url or not window_key:
+            return
+        vendor = str(ctx.get("vendor") or "generic")
+        access_key = ctx.get("access_key")
+        space_id = str(ctx.get("space_id") or "")
+        try:
+            if handler == "veo_workflow":
+                sess = get_or_create_veo_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                sess.idle_close_disabled = False
+                sess._schedule_idle_close()
+            elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
+                sess = get_or_create_sora_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                sess.idle_close_disabled = False
+                sess._schedule_idle_close()
+            else:
+                pw = get_or_create_playwright_ctx(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                await pw.close_and_drop()
+        except Exception as e:
+            logger.debug("window_pool close mapping=%s err=%s", mapping_id, e)
+
+    async def _window_pool_drop_sessions_for_mapping(self, mapping_id: int) -> None:
+        """CF 仍失败时丢弃会话，由下次 reconcile 重新打开。"""
+        ctx = await self.db.get_task_type_window_context(mapping_id)
+        if not ctx:
+            return
+        handler = (ctx.get("create_task_handler") or "").strip()
+        base_url = str(ctx.get("lan_addr") or "").strip()
+        window_key = str(ctx.get("window_key") or "").strip()
+        if not base_url or not window_key:
+            return
+        vendor = str(ctx.get("vendor") or "generic")
+        access_key = ctx.get("access_key")
+        space_id = str(ctx.get("space_id") or "")
+        try:
+            if handler == "veo_workflow":
+                sess = get_or_create_veo_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                await sess.close_and_drop()
+            elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
+                sess = get_or_create_sora_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                await sess.close_and_drop()
+            else:
+                pw = get_or_create_playwright_ctx(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                await pw.close_and_drop()
+        except Exception as e:
+            logger.debug("window_pool drop mapping=%s err=%s", mapping_id, e)
+
+    async def _window_pool_cloudflare_tick(self) -> None:
+        async with self._window_pool_lock:
+            snapshot = {k: set(v) for k, v in self._window_pool_targets.items()}
+        for _code, mids in snapshot.items():
+            for mid in mids:
+                try:
+                    await self._window_pool_cloudflare_one(mid)
+                except Exception as e:
+                    logger.warning("window_pool cf mapping=%s err=%s", mid, e)
+
+    async def _window_pool_cloudflare_one(self, mapping_id: int) -> None:
+        ctx = await self.db.get_task_type_window_context(mapping_id)
+        if not ctx:
+            return
+        handler = (ctx.get("create_task_handler") or "").strip()
+        base_url = str(ctx.get("lan_addr") or "").strip()
+        window_key = str(ctx.get("window_key") or "").strip()
+        if not base_url or not window_key:
+            return
+        vendor = str(ctx.get("vendor") or "generic")
+        access_key = ctx.get("access_key")
+        space_id = str(ctx.get("space_id") or "")
+        target_url = (str(ctx.get("default_target_url") or "").strip() or None)
+
+        try:
+            if handler == "veo_workflow":
+                tu = target_url or "https://labs.google/fx"
+                sess = get_or_create_veo_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                if not sess.idle_close_disabled:
+                    return
+                page = getattr(sess.pw_ctx, "page", None)
+                await sess.raise_if_cloudflare_page_nonpenalized(
+                    page, stage="window_pool", target_url=tu
+                )
+            elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
+                tu = target_url or "https://sora.chatgpt.com/drafts"
+                sess = get_or_create_sora_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                if not sess.idle_close_disabled:
+                    return
+                page = getattr(sess.pw_ctx, "page", None)
+                await sess._raise_if_cloudflare_page_nonpenalized(
+                    page, stage="window_pool", drafts_url=tu
+                )
+            else:
+                tu = target_url
+                if not tu:
+                    return
+                pw = get_or_create_playwright_ctx(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                page = getattr(pw, "page", None)
+                await window_pool_guard_unknown_handler_page(
+                    page, stage="window_pool", target_url=tu
+                )
+        except NonPenalizedTaskError:
+            logger.warning(
+                "window_pool cloudflare persists, reset session mapping_id=%s", mapping_id
+            )
+            await self._window_pool_drop_sessions_for_mapping(mapping_id)
         except Exception:
             pass
 
@@ -348,24 +739,10 @@ class TaskService:
             except Exception:
                 pass
 
-    async def _pick_window(self, task_type_code: str, payload: Optional[Dict[str, Any]] = None) -> Optional[PickedWindow]:
-        """从 DB 候选中挑选窗口，并在 DB 中原子预占并发槽位。
-
-        说明：
-        - 预占由 DB 字段 inflight_slots 完成（支持多进程/多实例，避免超卖）
-        - 预占成功同时将 windows.window_status 置 1，使单浏览器窗口池上限在打开指纹前即计数
-        - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
-        """
-        r = await self.db.pick_and_reserve_window_for_task(
-            task_type_code=task_type_code,
-            browser_pool_limit=self._browser_pool_limit,
-            remaining_quota_exclusive_floor=_remaining_quota_exclusive_floor_for_pick(
-                task_type_code, payload
-            ),
-        )
-        if not r:
-            return None
-
+    async def _finalize_picked_window(
+        self, r: Dict[str, Any], payload: Optional[Dict[str, Any]] = None
+    ) -> Optional[PickedWindow]:
+        """由 reserve / pick 返回的行构造 PickedWindow，并处理 window_key 缺失与预扣额度。"""
         mid = int(r["id"])
         picked = PickedWindow(
             mapping_id=mid,
@@ -396,6 +773,64 @@ class TaskService:
             return None
         await self._consume_quota_after_window_pick(picked, payload)
         return picked
+
+    async def _window_pool_pin_selected_mapping(self, task_type_code: str, mapping_id: int) -> None:
+        """显式选窗成功后钉入窗口池集合（与 DB 推导目标合并），便于 reconcile / CF 统一管理。"""
+        code = (task_type_code or "").strip()
+        if not code:
+            return
+        try:
+            tt = await self.db.get_task_type_by_code(code)
+        except Exception:
+            return
+        if not tt or not bool(getattr(tt, "window_pool_enabled", False)):
+            return
+        mid = int(mapping_id)
+        async with self._window_pool_lock:
+            self._window_pool_targets.setdefault(code, set()).add(mid)
+
+    async def _pick_window(self, task_type_code: str, payload: Optional[Dict[str, Any]] = None) -> Optional[PickedWindow]:
+        """从 DB 候选中挑选窗口，并在 DB 中原子预占并发槽位。
+
+        说明：
+        - 预占由 DB 字段 inflight_slots 完成（支持多进程/多实例，避免超卖）
+        - 预占成功同时将 windows.window_status 置 1，使单浏览器窗口池上限在打开指纹前即计数
+        - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
+        - 若任务类型开启窗口池：仅从 `_window_pool_targets` 内按顺序 reserve；池为空或当前额度等约束下无可用 mapping 则返回 None（不回退全局 pick）
+        """
+        floor = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
+        try:
+            tt = await self.db.get_task_type_by_code(task_type_code)
+        except Exception:
+            tt = None
+        if tt and bool(getattr(tt, "window_pool_enabled", False)):
+            async with self._window_pool_lock:
+                pool_ids = list(self._window_pool_targets.get(task_type_code, set()))
+            if not pool_ids:
+                return None
+            ordered = await self.db.list_mapping_ids_for_pool_pick(
+                task_type_code, pool_ids, floor
+            )
+            for mid in ordered:
+                r = await self.db.reserve_mapping_for_task(
+                    task_type_code,
+                    mid,
+                    remaining_quota_exclusive_floor=floor,
+                )
+                if r:
+                    picked = await self._finalize_picked_window(r, payload)
+                    if picked:
+                        return picked
+            return None
+
+        r = await self.db.pick_and_reserve_window_for_task(
+            task_type_code=task_type_code,
+            browser_pool_limit=self._browser_pool_limit,
+            remaining_quota_exclusive_floor=floor,
+        )
+        if not r:
+            return None
+        return await self._finalize_picked_window(r, payload)
 
     async def _pick_window_by_mapping(
         self, task_type_code: str, mapping_id: int, payload: Optional[Dict[str, Any]] = None
@@ -435,6 +870,7 @@ class TaskService:
                 pass
             return None
         await self._consume_quota_after_window_pick(picked, payload)
+        await self._window_pool_pin_selected_mapping(task_type_code, mid)
         return picked
 
     async def _pick_window_by_window_pk(
@@ -474,6 +910,7 @@ class TaskService:
                 pass
             return None
         await self._consume_quota_after_window_pick(picked, payload)
+        await self._window_pool_pin_selected_mapping(task_type_code, mid)
         return picked
 
     # ---- 排队与调度 ----
@@ -1139,17 +1576,27 @@ class TaskService:
                         ce = 0
                     close_thr = max(1, int(getattr(picked, "close_window_threshold", 1) or 1))
                     should_close = ce > 0 and (ce % close_thr == 0)
-                    # 注意：仅对 Sora 窗口做处理；其它模拟执行器没有需要维护的浏览器会话
+                    # Sora / Veo 等真实浏览器会话：达阈值后调度空闲关闭，窗口池协程会再补开
                     if should_close:
                         try:
-                            sess = get_or_create_sora_session(
-                                vendor=picked.browser_vendor,
-                                base_url=picked.browser_base_url,
-                                access_key=picked.browser_access_key,
-                                space_id=picked.space_id,
-                                window_key=picked.window_key,
-                            )
-                            sess._schedule_idle_close()
+                            if (picked.create_task_handler or "").strip() == "veo_workflow":
+                                v_sess = get_or_create_veo_session(
+                                    vendor=picked.browser_vendor,
+                                    base_url=picked.browser_base_url,
+                                    access_key=picked.browser_access_key,
+                                    space_id=picked.space_id,
+                                    window_key=picked.window_key,
+                                )
+                                v_sess._schedule_idle_close()
+                            else:
+                                sess = get_or_create_sora_session(
+                                    vendor=picked.browser_vendor,
+                                    base_url=picked.browser_base_url,
+                                    access_key=picked.browser_access_key,
+                                    space_id=picked.space_id,
+                                    window_key=picked.window_key,
+                                )
+                                sess._schedule_idle_close()
                         except Exception:
                             pass
                 if not _need_retry:

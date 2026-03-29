@@ -191,6 +191,13 @@
                 </div>
                 <div class="col-12">
                   <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="typeWindowPoolEnabled" />
+                    <label class="form-check-label" for="typeWindowPoolEnabled">开启窗口池</label>
+                  </div>
+                  <div class="text-muted small">开启后服务会按每个指纹浏览器的窗口池上限预热窗口（不占任务 inflight），并约每 60 秒做 Cloudflare 巡检；派单时优先从池内 mapping 预占槽位。</div>
+                </div>
+                <div class="col-12">
+                  <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="typeEnabled" checked />
                     <label class="form-check-label" for="typeEnabled">启用</label>
                   </div>
@@ -754,6 +761,7 @@
           "typeCreateHandler",
           "typeQuotaHandler",
           "typeDefaultTargetUrl",
+          "typeWindowPoolEnabled",
           "typeEnabled",
         ].forEach((id) => {
           const el = document.getElementById(id);
@@ -1961,6 +1969,7 @@
         document.getElementById("typeCreateHandler").value = t?.create_task_handler || "";
         document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
         document.getElementById("typeDefaultTargetUrl").value = t?.default_target_url || "";
+        document.getElementById("typeWindowPoolEnabled").checked = !!t?.window_pool_enabled;
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
         setTaskTypeConfigReadonly(!canEditTaskTypeConfig());
@@ -1998,6 +2007,7 @@
             create_task_handler: document.getElementById("typeCreateHandler").value || null,
             refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
             default_target_url: document.getElementById("typeDefaultTargetUrl").value.trim() || null,
+            window_pool_enabled: document.getElementById("typeWindowPoolEnabled").checked,
             enabled: document.getElementById("typeEnabled").checked,
           };
           if (!payload.name || !payload.code) throw new Error("请填写名称与英文名称");

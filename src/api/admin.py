@@ -221,6 +221,7 @@ class CreateTaskTypeRequest(BaseModel):
     refresh_quota_handler: Optional[str] = None
     error_retry_count: int = Field(default=0, ge=0, le=10)
     default_target_url: Optional[str] = Field(default=None, max_length=2048)
+    window_pool_enabled: bool = False
 
 
 class UpdateTaskTypeRequest(BaseModel):
@@ -235,6 +236,7 @@ class UpdateTaskTypeRequest(BaseModel):
     refresh_quota_handler: Optional[str] = None
     error_retry_count: int = Field(default=0, ge=0, le=10)
     default_target_url: Optional[str] = Field(default=None, max_length=2048)
+    window_pool_enabled: bool = False
     enabled: bool = True
 
 
@@ -2100,6 +2102,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             refresh_quota_handler=req.refresh_quota_handler,
             error_retry_count=req.error_retry_count,
             default_target_url=req.default_target_url,
+            window_pool_enabled=req.window_pool_enabled,
         )
         return {"success": True, "task_type_id": tid}
     except Exception as e:
@@ -2143,6 +2146,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             enabled=req.enabled,
             error_retry_count=req.error_retry_count,
             default_target_url=req.default_target_url,
+            window_pool_enabled=req.window_pool_enabled,
         )
         return {"success": True}
     except Exception as e:

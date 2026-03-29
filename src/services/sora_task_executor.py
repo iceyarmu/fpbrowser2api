@@ -3201,6 +3201,7 @@ class SoraSession:
                                 self.watchers.pop(tid, None)
                 if not self.watchers:
                     return
+                self._cancel_idle_close()
                 await asyncio.sleep(float(self.poll_interval_seconds))
         finally:
             if not self.watchers:
@@ -3302,6 +3303,7 @@ class SoraSession:
 
             if draft_item is not None:
                 break
+            self._cancel_idle_close()
             await asyncio.sleep(float(drafts_poll_interval))
             await self._bring_sora_drafts_to_front(refresh_target=False)
 
@@ -3475,6 +3477,59 @@ def get_or_create_sora_session(
     else:
         sess.pw_ctx.access_key = access_key
     return sess
+
+
+async def window_pool_guard_unknown_handler_page(page: Any, *, stage: str, target_url: str) -> None:
+    """非 Sora/Veo 专用会话时的窗口池 CF 巡检：两次 goto 目标页，仍疑似 CF 则抛 NonPenalizedTaskError。"""
+    if page is None:
+        return
+    tu = (target_url or "").strip()
+    if not tu:
+        return
+
+    async def _looks_cf(p: Any, *, deep: bool) -> bool:
+        if p is None:
+            return False
+        try:
+            u = str(getattr(p, "url", "") or "").strip().lower()
+        except Exception:
+            u = ""
+        if "/cdn-cgi/" in u:
+            return True
+        try:
+            title = await p.title()
+        except Exception:
+            title = ""
+        tl = (title or "").strip().lower()
+        if "just a moment" in tl or "attention required" in tl:
+            return True
+        if not deep:
+            return False
+        try:
+            html = await p.content()
+        except Exception:
+            html = ""
+        hl = (html or "").lower()
+        if "cloudflare" in hl and ("just a moment" in hl or "/cdn-cgi/" in hl or "cf-ray" in hl):
+            return True
+        if ("turnstile" in hl or "cf-challenge" in hl) and ("/cdn-cgi/" in hl or "cloudflare" in hl):
+            return True
+        return False
+
+    cur = page
+    for _ in range(2):
+        if not await _looks_cf(cur, deep=False):
+            return
+        try:
+            await cur.goto(tu, wait_until="domcontentloaded", timeout=60_000)
+        except Exception:
+            pass
+        await asyncio.sleep(2.0)
+    if await _looks_cf(cur, deep=True):
+        raise NonPenalizedTaskError(
+            f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
+            status_code=503,
+        )
 
 
 async def sora_gen_video(

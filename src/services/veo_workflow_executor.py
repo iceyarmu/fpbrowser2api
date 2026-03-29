@@ -327,6 +327,41 @@ class VeoSession:
             return True
         return False
 
+    async def raise_if_cloudflare_page_nonpenalized(
+        self, page, *, stage: str, target_url: str
+    ) -> None:
+        """与 Sora `_raise_if_cloudflare_page_nonpenalized` 同类：bring 目标页 + 等待/重启，仍判定 CF 则抛 NonPenalizedTaskError（用于窗口池巡检）。"""
+        if page is None:
+            return
+        try:
+            th = (urlparse(target_url).netloc or "").strip().lower()
+        except Exception:
+            th = ""
+        cur = page
+        for _ in range(2):
+            if cur is None:
+                return
+            if not await self._is_cloudflare_page(cur, deep=False):
+                return
+            await self._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+            cur = self.pw_ctx.page
+            if cur is None:
+                return
+        if cur is not None and await self._is_cloudflare_page(cur, deep=False):
+            still = await self._wait_cloudflare_auto_pass(
+                cur,
+                max_wait_seconds=25.0,
+                max_success_clicks=2,
+            )
+            if still and await self._is_cloudflare_page(cur, deep=True):
+                await self._restart_window_and_restore_single_drafts(drafts_url=target_url, target_host=th)
+                cur = self.pw_ctx.page
+        if cur is not None and await self._is_cloudflare_page(cur, deep=True):
+            raise NonPenalizedTaskError(
+                f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
+                status_code=503,
+            )
+
     async def _try_click_cloudflare_checkbox(self, page) -> bool:
         """尝试点击 Cloudflare Turnstile challenge 的 checkbox。
 
@@ -1583,6 +1618,7 @@ async def _veo_poll_operations_until_video_url(
     max_wait_seconds: float,
     poll_interval_seconds: float,
     poll_progress_base: int = 25,
+    sess: Optional[Any] = None,
 ) -> str:
     """轮询 batchCheckAsyncVideoGenerationStatus，成功则返回 fifeUrl。"""
     max_attempts = max(3, int(max_wait_seconds / max(0.5, poll_interval_seconds)) + 3)
@@ -1590,6 +1626,7 @@ async def _veo_poll_operations_until_video_url(
     video_url: Optional[str] = None
 
     for attempt in range(max_attempts):
+        sess._cancel_idle_close()
         await asyncio.sleep(poll_interval_seconds)
         pct = poll_progress_base + min(70, int((attempt + 1) / max(1, max_attempts) * 70))
         try:
@@ -2441,6 +2478,7 @@ async def _veo_execute_image_mode(
     last_submit_err: Optional[str] = None
 
     for attempt in range(max_submit_retries):
+        sess._cancel_idle_close()
         recaptcha_token = recaptcha_override
         if not recaptcha_token:
             recaptcha_token = await _veo_try_recaptcha_token_in_page(
@@ -2538,6 +2576,7 @@ async def _veo_execute_image_mode(
         upsample_err: Optional[str] = None
 
         if want_2k:
+            sess._cancel_idle_close()
             if not media_name:
                 upsample_err = "上游未返回 media name，无法放大，已返回 1K 原图"
                 append_log(log_file, f"[veo][image] 2K requested but no mediaId: {upsample_err}")
@@ -2566,6 +2605,7 @@ async def _veo_execute_image_mode(
                         bring_prefix=bring_prefix,
                         sess=sess,
                     )
+                    sess._cancel_idle_close()
                     if b64:
                         oss_cfg = oss_config_from_setting_section(
                             (app_config.get_raw_config() or {}).get("oss")
@@ -2616,7 +2656,7 @@ async def _veo_execute_image_mode(
                     append_log(log_file, f"[veo][image] upsample failed, fallback 1K: {e}")
                     share_url = fife_url
                     res_label = "1K"
-
+        sess._cancel_idle_close()
         elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
         await progress_cb(
             100,
@@ -2924,6 +2964,7 @@ async def veo_workflow(
                     await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
                 except Exception:
                     pass
+                sess._cancel_idle_close()
             continue
 
         session_id = _veo_generate_session_id()
@@ -3034,6 +3075,7 @@ async def veo_workflow(
         raise NonPenalizedTaskError(last_submit_err or _submit_fail, status_code=502)
 
     await progress_cb(25, {"stage": "polling", "operations": len(operations)})
+    sess._cancel_idle_close()
     video_url = await _veo_poll_operations_until_video_url(
         page=page,
         access_token=str(at),
@@ -3042,6 +3084,7 @@ async def veo_workflow(
         operations=operations,
         max_wait_seconds=max_wait_seconds,
         poll_interval_seconds=poll_interval_seconds,
+        sess=sess,
     )
 
     elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))

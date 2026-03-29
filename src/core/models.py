@@ -193,6 +193,8 @@ class TaskType(BaseModel):
     refresh_quota_handler: Optional[str] = None
     error_retry_count: int = 0
     default_target_url: Optional[str] = None
+    # 开启后由 TaskService 后台协程按 browser_pool_limit 预热窗口并做 Cloudflare 巡检（不占 inflight_slots）
+    window_pool_enabled: bool = False
     enabled: bool = True
     deleted: bool = False
     created_at: Optional[datetime] = None

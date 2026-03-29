@@ -77,6 +77,14 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("FPBrowser2API Shutting down...")
+    try:
+        from .api import routes as routes_mod
+
+        ts = getattr(routes_mod, "task_service", None)
+        if ts is not None:
+            await ts.stop_window_pool_maintainer()
+    except Exception:
+        logger.exception("stop_window_pool_maintainer failed (ignored)")
 
 
 app = FastAPI(

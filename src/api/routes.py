@@ -57,6 +57,7 @@ def set_dependencies(database: Database) -> None:
     db = database
     task_service = TaskService(database)
     _create_task_semaphore = asyncio.Semaphore(_CREATE_TASK_MAX_INFLIGHT)
+    task_service.start_window_pool_maintainer()
 
 
 class CreateTaskRequest(BaseModel):

@@ -600,6 +600,7 @@ class Database:
                     ("project_id", "INTEGER"),
                     ("error_retry_count", "INTEGER DEFAULT 0"),
                     ("default_target_url", "TEXT"),
+                    ("window_pool_enabled", "BOOLEAN DEFAULT 0"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
@@ -3031,6 +3032,7 @@ class Database:
         refresh_quota_handler: Optional[str] = None,
         error_retry_count: int = 0,
         default_target_url: Optional[str] = None,
+        window_pool_enabled: bool = False,
     ) -> int:
         async with self._write_conn() as db:
             cur = await db.execute(
@@ -3038,9 +3040,9 @@ class Database:
                 INSERT INTO task_types (
                   name, code, project_id, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
                   create_task_handler, refresh_quota_handler, error_retry_count, default_target_url,
-                  enabled, deleted
+                  window_pool_enabled, enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
@@ -3054,6 +3056,7 @@ class Database:
                     (refresh_quota_handler or "").strip() or None,
                     int(error_retry_count),
                     (default_target_url or "").strip() or None,
+                    1 if window_pool_enabled else 0,
                 ),
             )
             await db.commit()
@@ -3074,6 +3077,7 @@ class Database:
         enabled: bool,
         error_retry_count: int = 0,
         default_target_url: Optional[str] = None,
+        window_pool_enabled: bool = False,
     ) -> None:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -3100,7 +3104,7 @@ class Database:
                 UPDATE task_types
                 SET name=?, code=?, project_id=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
                     create_task_handler=?, refresh_quota_handler=?, error_retry_count=?, default_target_url=?,
-                    enabled=?, updated_at=datetime('now','localtime')
+                    window_pool_enabled=?, enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
                 """,
                 (
@@ -3115,6 +3119,7 @@ class Database:
                     (refresh_quota_handler or "").strip() or None,
                     int(error_retry_count),
                     (default_target_url or "").strip() or None,
+                    1 if window_pool_enabled else 0,
                     1 if enabled else 0,
                     task_type_id,
                 ),
@@ -3730,7 +3735,167 @@ class Database:
                 _lock.release()
         return None
 
-    async def reserve_mapping_for_task(self, task_type_code: str, mapping_id: int) -> Optional[Dict[str, Any]]:
+    async def task_type_has_mapping_remaining_quota_above(
+        self, task_type_code: str, above: int
+    ) -> bool:
+        """是否存在该任务类型下 remaining_quota 严格大于 above 的可用映射（用于 veo 窗口池分层）。"""
+        code = (task_type_code or "").strip()
+        if not code:
+            return False
+        lim = int(above)
+        async with self._read_conn() as db:
+            cur = await db.execute(
+                """
+                SELECT 1
+                FROM task_types t
+                JOIN task_type_windows m ON m.task_type_id = t.id AND m.deleted = 0 AND m.enabled = 1
+                JOIN windows w ON m.window_pk = w.id AND w.deleted = 0 AND w.enabled = 1
+                WHERE t.code = ? AND t.deleted = 0 AND t.enabled = 1
+                  AND m.remaining_quota > ?
+                LIMIT 1
+                """,
+                (code, lim),
+            )
+            row = await cur.fetchone()
+            return row is not None
+
+    async def list_window_pool_target_mapping_ids(
+        self,
+        task_type_code: str,
+        browser_pool_limit: int = 100,
+        remaining_quota_exclusive_floor: int = 3,
+    ) -> List[int]:
+        """与 pick_and_reserve_window_for_task 相同的候选与每浏览器上限，返回应保持在池中的 mapping_id 列表（不修改 inflight）。"""
+        code = (task_type_code or "").strip()
+        if not code:
+            return []
+        pool_limit = max(1, int(browser_pool_limit or 100))
+        quota_floor = max(0, int(remaining_quota_exclusive_floor))
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                WITH base AS (
+                  SELECT
+                    m.id AS mapping_id,
+                    t.concurrency AS task_concurrency,
+                    t.continuous_error_threshold AS continuous_error_threshold,
+                    m.consecutive_errors AS consecutive_errors,
+                    m.updated_at AS mapping_updated_at,
+                    m.remaining_quota AS remaining_quota,
+                    m.cooldown_until AS cooldown_until,
+                    m.error_cooldown_until AS error_cooldown_until,
+                    COALESCE(m.inflight_slots, 0) AS inflight_slots,
+                    COALESCE(w.window_status, 0) AS window_status,
+                    b.id AS browser_pk,
+                    CASE WHEN COALESCE(b.browser_pool_limit, 0) > 0 THEN b.browser_pool_limit ELSE ? END AS effective_pool_limit
+                  FROM task_types t
+                  JOIN task_type_windows m ON m.task_type_id = t.id
+                  JOIN windows w ON m.window_pk = w.id
+                  JOIN spaces s ON w.space_pk = s.id
+                  JOIN browsers b ON s.browser_id = b.id
+                  WHERE t.deleted = 0 AND t.enabled = 1
+                    AND t.code = ?
+                    AND m.deleted = 0 AND m.enabled = 1
+                    AND w.deleted = 0 AND w.enabled = 1
+                ),
+                pool_source AS (
+                  SELECT
+                    b.*,
+                    CASE
+                      WHEN (
+                        ((b.remaining_quota >= ?)
+                          OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                        AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
+                        AND (b.consecutive_errors < b.continuous_error_threshold)
+                        AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
+                      ) THEN 1
+                      ELSE 0
+                    END AS is_runnable
+                  FROM base b
+                  WHERE b.window_status = 1
+                     OR (
+                          b.window_status = 0
+                          AND (
+                            ((b.remaining_quota >= ?)
+                              OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                            AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
+                            AND (b.consecutive_errors < b.continuous_error_threshold)
+                            AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
+                          )
+                        )
+                ),
+                ranked AS (
+                  SELECT
+                    p.*,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY p.browser_pk
+                      ORDER BY
+                        p.window_status DESC,
+                        p.consecutive_errors ASC,
+                        p.mapping_updated_at ASC,
+                        p.remaining_quota DESC
+                    ) AS browser_pool_rank
+                  FROM pool_source p
+                )
+                SELECT mapping_id
+                FROM ranked
+                WHERE browser_pool_rank <= effective_pool_limit
+                  AND is_runnable = 1
+                ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
+                """,
+                (pool_limit, code, quota_floor, quota_floor),
+            )
+            rows = await cur.fetchall()
+            return [int(r["mapping_id"]) for r in rows]
+
+    async def list_mapping_ids_for_pool_pick(
+        self,
+        task_type_code: str,
+        pool_mapping_ids: List[int],
+        remaining_quota_exclusive_floor: int = 3,
+    ) -> List[int]:
+        """在窗口池集合内按调度顺序排列 mapping_id（仅只读过滤，不预占）。"""
+        code = (task_type_code or "").strip()
+        ids = [int(x) for x in (pool_mapping_ids or []) if int(x) > 0]
+        if not code or not ids:
+            return []
+        quota_floor = max(0, int(remaining_quota_exclusive_floor))
+        placeholders = ",".join("?" for _ in ids)
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"""
+                SELECT m.id AS mapping_id
+                FROM task_types t
+                JOIN task_type_windows m ON m.task_type_id = t.id
+                JOIN windows w ON m.window_pk = w.id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND t.code = ?
+                  AND m.id IN ({placeholders})
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
+                  AND (m.consecutive_errors < t.continuous_error_threshold)
+                  AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
+                  AND (
+                    (m.remaining_quota >= ?)
+                    OR (m.remaining_quota >= 1 AND m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
+                  )
+                ORDER BY m.consecutive_errors ASC, m.updated_at ASC, m.remaining_quota DESC
+                """,
+                (code, *ids, quota_floor),
+            )
+            rows = await cur.fetchall()
+            return [int(r["mapping_id"]) for r in rows]
+
+    async def reserve_mapping_for_task(
+        self,
+        task_type_code: str,
+        mapping_id: int,
+        *,
+        remaining_quota_exclusive_floor: int = 3,
+    ) -> Optional[Dict[str, Any]]:
         """按指定 mapping_id（task_type_windows.id）预占 1 个并发槽位，并返回窗口上下文。
 
         说明：
@@ -3741,6 +3906,7 @@ class Database:
         mid = int(mapping_id)
         if not code or mid <= 0:
             return None
+        quota_floor = max(0, int(remaining_quota_exclusive_floor))
 
         _lock = self._get_write_lock()
         for _attempt in range(5):
@@ -3767,7 +3933,7 @@ class Database:
                           AND m.deleted=0 AND m.enabled=1
                           AND w.deleted=0 AND w.enabled=1
                           AND (
-                            (m.remaining_quota > 2)
+                            (m.remaining_quota >= ?)
                             OR (m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
                           AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
@@ -3775,7 +3941,7 @@ class Database:
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
                         LIMIT 1
                         """,
-                        (code, mid),
+                        (code, mid, quota_floor),
                     )
                     picked = await cur.fetchone()
                     if not picked:
@@ -3795,12 +3961,12 @@ class Database:
                           AND (consecutive_errors < ?)
                           AND (COALESCE(inflight_slots, 0) < ?)
                           AND (
-                            (remaining_quota > 2)
+                            (remaining_quota >= ?)
                             OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
                           AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
                         """,
-                        (mid, threshold, task_concurrency),
+                        (mid, threshold, task_concurrency, quota_floor),
                     )
                     if int(cur2.rowcount or 0) <= 0:
                         await db.execute("ROLLBACK")
