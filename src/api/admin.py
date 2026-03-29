@@ -2284,6 +2284,33 @@ async def refresh_mapping_remaining_quota(
         await db.mark_mapping_success(mapping_id=mapping_id)
     except Exception:
         pass
+
+    # 走指纹/CDP 的 handler 完成后断开本地 CDP（noop / reset_to_daily 无连接，此处不调用）
+    if handler_used in ("veo_flow_credits", "sora_nf_check"):
+        _vendor = str(ctx_row.get("vendor") or "roxy")
+        _base = str(ctx_row.get("lan_addr") or "")
+        _ak = ctx_row.get("access_key")
+        _sid = str(ctx_row.get("space_id") or "")
+        _wk = str(ctx_row.get("window_key") or "")
+        if _base and _sid and _wk:
+            try:
+                if handler_used == "veo_flow_credits":
+                    from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+
+                    _veo = get_or_create_veo_session(
+                        vendor=_vendor, base_url=_base, access_key=_ak, space_id=_sid, window_key=_wk
+                    )
+                    await _veo.pw_ctx.disconnect_playwright_only()
+                else:
+                    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
+
+                    _sora = get_or_create_sora_session(
+                        vendor=_vendor, base_url=_base, access_key=_ak, space_id=_sid, window_key=_wk
+                    )
+                    await _sora.pw_ctx.disconnect_playwright_only()
+            except Exception:
+                pass
+
     ctx_after = await db.get_task_type_window_context(mapping_id)
     cooldown_until_out = (ctx_after or {}).get("cooldown_until")
     return {
@@ -2297,7 +2324,7 @@ async def refresh_mapping_remaining_quota(
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-subscription-info")
 async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
-    """通过指纹浏览器读取订阅信息并写回 mapping。"""
+    """通过指纹浏览器读取订阅信息并写回 mapping；完成后断开本地 CDP（不关指纹窗口）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -2349,6 +2376,10 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             remaining_quota=credits,
             sora_remaining_count=credits,
         )
+        try:
+            await veo_ctx.pw_ctx.disconnect_playwright_only()
+        except Exception:
+            pass
         return {
             "success": True,
             "mapping_id": mapping_id,
@@ -2379,6 +2410,10 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         sora_plan_title=plan_title,
         sora_subscription_end=subscription_end,
     )
+    try:
+        await sora_ctx.pw_ctx.disconnect_playwright_only()
+    except Exception:
+        pass
     return {
         "success": True,
         "mapping_id": mapping_id,
@@ -2450,7 +2485,7 @@ async def list_auto_refresh_errors(
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/refresh-invite-code")
 async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(verify_admin_token)):
-    """通过指纹浏览器读取 backend/project_y/invite/mine 并写回 mapping.sora_invite_code。"""
+    """通过指纹浏览器读取 backend/project_y/invite/mine 并写回 mapping.sora_invite_code；完成后断开本地 CDP。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -2480,6 +2515,10 @@ async def refresh_mapping_invite_code(mapping_id: int, token: str = Depends(veri
 
     invite_code = (info or {}).get("invite_code")
     await db.update_task_type_window(mapping_id=mapping_id, sora_invite_code=str(invite_code or "").strip() or None)
+    try:
+        await sora_ctx.pw_ctx.disconnect_playwright_only()
+    except Exception:
+        pass
     return {
         "success": True,
         "mapping_id": mapping_id,
@@ -2500,7 +2539,7 @@ async def convert_sora_session_token_to_access_token(
 
     规则：
     - 若请求携带 access_token（非空）：直接写入 DB（不发起自动获取）。
-    - 若 access_token 为空：使用指纹浏览器对应窗口，在页面上下文内请求 `/api/auth/session` 获取并写入。
+    - 若 access_token 为空：使用指纹浏览器对应窗口，在页面上下文内请求 `/api/auth/session` 获取并写入；成功后断开本地 CDP。
     """
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2545,6 +2584,10 @@ async def convert_sora_session_token_to_access_token(
             raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 access_token / session_token")
 
         await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
+        try:
+            await veo_ctx.pw_ctx.disconnect_playwright_only()
+        except Exception:
+            pass
         return {
             "success": True,
             "mapping_id": mapping_id,
@@ -2571,6 +2614,10 @@ async def convert_sora_session_token_to_access_token(
         await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
         try:
             sora_ctx.set_access_token(access_token, expires)
+        except Exception:
+            pass
+        try:
+            await sora_ctx.pw_ctx.disconnect_playwright_only()
         except Exception:
             pass
         return {"success": True, "mapping_id": mapping_id, "access_token": access_token, "expires": expires, "source": "window"}
@@ -2836,6 +2883,7 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
     """立刻关闭指纹浏览器窗口并重新打开，进入 Sora drafts / Veo 目标页。
 
     不修改绑定上的 enabled（启用）状态，仅做窗口重启与页面置前。
+    置前完成后断开本地 CDP（不关指纹窗口），降低站点通过调试端口识别自动化、触发 Cloudflare 的概率。
     """
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2875,6 +2923,10 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
             await veo_ctx._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
+        try:
+            await veo_ctx.pw_ctx.disconnect_playwright_only()
+        except Exception:
+            pass
     else:
         from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
@@ -2895,6 +2947,10 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
             await sora_ctx._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
+        try:
+            await sora_ctx.pw_ctx.disconnect_playwright_only()
+        except Exception:
+            pass
 
     enabled_before = bool(int(ctx_row.get("enabled") or 0))
     return {"success": True, "mapping_id": mapping_id, "enabled": enabled_before, "idle_close_disabled": True}
@@ -3033,6 +3089,7 @@ async def admin_create_veo_flow_project(
     base_name: Optional[str] = Query(None, max_length=240),
     token: str = Depends(verify_admin_token),
 ):
+    """在指纹窗口内创建 Flow 项目并入库；成功后断开本地 CDP（不关指纹窗口）。"""
     await _ensure_page_access(token, "task_types")
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -3092,6 +3149,11 @@ async def admin_create_veo_flow_project(
         project_name=project_title,
         tool_name="PINHOLE",
     )
+
+    try:
+        await sess.pw_ctx.disconnect_playwright_only()
+    except Exception:
+        pass
 
     return {
         "success": True,
