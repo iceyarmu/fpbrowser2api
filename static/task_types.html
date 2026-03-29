@@ -233,9 +233,10 @@
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-danger" id="btnBulkTransfer">批量转移</button>
-                    <button class="btn btn-outline-warning" id="btnBulkHeadlessOn">批量启动无头</button>
+                    <button class="btn btn-outline-warning" id="btnBulkHeadlessOn">批量打开无头</button>
                     <button class="btn btn-outline-secondary" id="btnBulkHeadlessOff">批量关闭无头</button>
-                    <button class="btn btn-outline-primary" id="btnSyncAllWindowStatus" title="按空间同步当前任务类型窗口状态">刷新所有窗口状态</button>
+                    <button class="btn btn-outline-success" id="btnBulkEnableOn" title="将勾选窗口的「启用」列设为开启">批量打开启用</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkEnableOff" title="将勾选窗口的「启用」列设为关闭">批量关闭启用</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
                     <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
@@ -4466,6 +4467,8 @@
         setBtnDisabledById("btnBulkTransfer", true);
         setBtnDisabledById("btnBulkHeadlessOn", true);
         setBtnDisabledById("btnBulkHeadlessOff", true);
+        setBtnDisabledById("btnBulkEnableOn", true);
+        setBtnDisabledById("btnBulkEnableOff", true);
         setBtnDisabledById("btnBulkSetCore", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
@@ -4487,6 +4490,8 @@
           setBtnDisabledById("btnBulkTransfer", false);
           setBtnDisabledById("btnBulkHeadlessOn", false);
           setBtnDisabledById("btnBulkHeadlessOff", false);
+          setBtnDisabledById("btnBulkEnableOn", false);
+          setBtnDisabledById("btnBulkEnableOff", false);
           setBtnDisabledById("btnBulkSetCore", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
@@ -4519,7 +4524,7 @@
       async function bulkHeadlessOnSelected() {
         const ids = getSelectedMappingIds();
         await runBulkAction({
-          label: "批量启动无头",
+          label: "批量打开无头",
           ids,
           runner: async (mappingId) => {
             const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
@@ -4548,6 +4553,42 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "关闭无头失败");
             updateMappingRowUI(mappingId, { headless: false });
+          },
+        });
+      }
+
+      async function bulkEnableOnSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量打开启用",
+          ids,
+          runner: async (mappingId) => {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ enabled: true }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "启用失败");
+            updateMappingRowUI(mappingId, { enabled: true });
+          },
+        });
+      }
+
+      async function bulkEnableOffSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量关闭启用",
+          ids,
+          runner: async (mappingId) => {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ enabled: false }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "禁用失败");
+            updateMappingRowUI(mappingId, { enabled: false });
           },
         });
       }
@@ -4637,22 +4678,6 @@
           toast("统计信息已刷新", "success");
         } catch (e) {
           toast(e.message || "刷新统计失败", "error");
-        } finally {
-          setBtnBusy(btn, false);
-        }
-      }
-
-      async function syncAllWindowStatusForCurrentType(fromEl) {
-        const btn = fromEl || document.getElementById("btnSyncAllWindowStatus");
-        const typeId = document.getElementById("typeId")?.value;
-        if (!typeId) return toast("请先选择任务类型", "warning");
-        try {
-          setBtnBusy(btn, true, { loadingText: "刷新中", keepWidth: false });
-          // 只从数据库读取 window_status 字段，不通过指纹浏览器
-          await loadMappings({ preserveSelection: true });
-          toast("窗口状态已刷新", "success");
-        } catch (e) {
-          toast(e.message || "刷新窗口状态失败", "error");
         } finally {
           setBtnBusy(btn, false);
         }
@@ -4817,8 +4842,9 @@
       document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
       document.getElementById("btnBulkHeadlessOn")?.addEventListener("click", bulkHeadlessOnSelected);
       document.getElementById("btnBulkHeadlessOff")?.addEventListener("click", bulkHeadlessOffSelected);
+      document.getElementById("btnBulkEnableOn")?.addEventListener("click", bulkEnableOnSelected);
+      document.getElementById("btnBulkEnableOff")?.addEventListener("click", bulkEnableOffSelected);
       document.getElementById("btnBulkSetCore")?.addEventListener("click", bulkSetCoreVersionSelected);
-      document.getElementById("btnSyncAllWindowStatus")?.addEventListener("click", (e) => syncAllWindowStatusForCurrentType(e.currentTarget));
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         try {
