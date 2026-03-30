@@ -273,7 +273,7 @@ class TaskService:
                 try:
                     await self._window_pool_reconcile_once()
                 except asyncio.CancelledError:
-                    break
+                    raise
                 except Exception as e:
                     logger.exception("window_pool reconcile: %s", e)
             now = time.monotonic()
@@ -282,7 +282,7 @@ class TaskService:
                 try:
                     await self._window_pool_cloudflare_tick()
                 except asyncio.CancelledError:
-                    break
+                    raise
                 except Exception as e:
                     logger.exception("window_pool cloudflare tick: %s", e)
             now = time.monotonic()
@@ -303,10 +303,14 @@ class TaskService:
         except Exception as e:
             logger.warning("window_pool list_task_types: %s", e)
             return
+        if self._window_pool_stop.is_set():
+            return
 
         new_targets: dict[str, set[int]] = {}
 
         for t in all_types:
+            if self._window_pool_stop.is_set():
+                return
             if not t.enabled or not bool(getattr(t, "window_pool_enabled", False)):
                 continue
             code = (t.code or "").strip()
@@ -338,6 +342,8 @@ class TaskService:
             else:
                 to_close.extend(old_set - new_targets[code])
         for mid in to_close:
+            if self._window_pool_stop.is_set():
+                return
             await self._window_pool_close_mapping(mid)
 
         to_open: list[int] = []
@@ -345,9 +351,13 @@ class TaskService:
             old_set = prev.get(code, set())
             to_open.extend(new_set - old_set)
         for mid in to_open:
+            if self._window_pool_stop.is_set():
+                return
             await self._window_pool_open_mapping(mid)
 
     async def _window_pool_open_mapping(self, mapping_id: int) -> None:
+        if self._window_pool_stop.is_set():
+            return
         ctx = await self.db.get_task_type_window_context(mapping_id)
         if not ctx:
             return
@@ -535,6 +545,8 @@ class TaskService:
             snapshot = {k: set(v) for k, v in self._window_pool_targets.items()}
         for _code, mids in snapshot.items():
             for mid in mids:
+                if self._window_pool_stop.is_set():
+                    return
                 try:
                     await self._window_pool_cloudflare_one(mid)
                 except Exception as e:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,6 +21,48 @@ from .core.models import RequestLog
 
 
 db = Database()
+
+
+def _install_window_pool_stop_on_signals() -> None:
+    """Ctrl+C / SIGTERM 时尽早置位窗口池停止标志，使 reconcile 在两次开窗之间可退出。"""
+    from .api import routes as routes_mod
+
+    def _set_pool_stop() -> None:
+        try:
+            ts = getattr(routes_mod, "task_service", None)
+            if ts is not None:
+                ts._window_pool_stop.set()
+        except Exception:
+            pass
+
+    def _chain(prev_handler, signum: int):
+        def _wrapped(sig: int, frame, p=prev_handler, sn=signum) -> None:
+            _set_pool_stop()
+            if callable(p):
+                p(sig, frame)
+            elif p is signal.SIG_DFL:
+                try:
+                    signal.raise_signal(sn)
+                except (AttributeError, OSError, RuntimeError):
+                    if sn == signal.SIGINT:
+                        signal.default_int_handler(sig, frame)
+
+        return _wrapped
+
+    for name in ("SIGINT", "SIGTERM"):
+        if not hasattr(signal, name):
+            continue
+        num = getattr(signal, name)
+        try:
+            prev = signal.getsignal(num)
+        except OSError:
+            continue
+        if prev is signal.SIG_IGN:
+            continue
+        try:
+            signal.signal(num, _chain(prev, num))
+        except OSError:
+            pass
 
 
 @asynccontextmanager
@@ -70,6 +113,7 @@ async def lifespan(app: FastAPI):
     # 5) 依赖注入
     admin.set_dependencies(db)
     routes.set_dependencies(db)
+    _install_window_pool_stop_on_signals()
 
     logger.info("✓ Server running on http://%s:%s", config.server_host, config.server_port)
     logger.info("=" * 60)
