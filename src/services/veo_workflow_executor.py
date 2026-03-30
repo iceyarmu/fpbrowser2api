@@ -1354,14 +1354,14 @@ def _veo_extract_project_id_from_url(url: str) -> Optional[str]:
 
 def _veo_labs_fx_prefix_url(hint_url: str) -> str:
     """用于 _bring_target_page_to_front：任意 labs 子路径均以 {origin}/fx 为前缀。"""
-    h = (hint_url or "").strip() or "https://labs.google/fx"
+    h = (hint_url or "").strip() or "https://labs.google/fx/tools/flow"
     try:
         p = urlparse(h)
         if p.scheme and p.netloc:
             return f"{p.scheme}://{p.netloc}/fx"
     except Exception:
         pass
-    return "https://labs.google/fx"
+    return "https://labs.google/fx/tools/flow"
 
 
 def _veo_project_page_url(*, project_id: str, hint_url: str) -> str:
@@ -2563,7 +2563,7 @@ async def _veo_execute_image_mode(
             acquire_bring_lock=False,
         )
         await sess._bring_target_page_to_front(
-            refresh_target=False,
+            refresh_target=True,
             drafts_url=bring_prefix,
             acquire_bring_lock=False,
         )
@@ -2606,7 +2606,7 @@ async def _veo_execute_image_mode(
                     await asyncio.sleep(2.0)
                     try:
                         await sess._bring_target_page_to_front(
-                            refresh_target=False,
+                            refresh_target=True,
                             drafts_url=bring_prefix,
                             acquire_bring_lock=False,
                         )
@@ -2922,7 +2922,7 @@ async def veo_workflow(
 
     log_file = sess._log_file
     started_at = time.time()
-    bring_prefix = _veo_labs_fx_prefix_url(labs_hint)
+    bring_prefix = "https://labs.google/fx/tools/flow"
     project_page = _veo_project_page_url(project_id=None, hint_url=labs_hint)
 
     if project_id_from_db and task_type_window_id:
@@ -3098,7 +3098,7 @@ async def veo_workflow(
             acquire_bring_lock=False,
         )
         await sess._bring_target_page_to_front(
-            refresh_target=False,
+            refresh_target=True,
             drafts_url=bring_prefix,
             acquire_bring_lock=False,
         )
@@ -3144,7 +3144,7 @@ async def veo_workflow(
                     await asyncio.sleep(2.0)
                     try:
                         await sess._bring_target_page_to_front(
-                            refresh_target=False,
+                            refresh_target=True,
                             drafts_url=bring_prefix,
                             acquire_bring_lock=False,
                         )

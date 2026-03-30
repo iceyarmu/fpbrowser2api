@@ -3735,6 +3735,140 @@ class Database:
                 _lock.release()
         return None
 
+    async def pick_and_reserve_window_from_pool(
+        self,
+        task_type_code: str,
+        pool_mapping_ids: List[int],
+        remaining_quota_exclusive_floor: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        """在窗口池 mapping 集合内原子挑选并预占 1 槽位。
+
+        与 pick_and_reserve_window_for_task 一致：单事务内排序 LIMIT 1 + 条件 UPDATE，并设置
+        error_cooldown_until = now+60s，避免高并发下多协程/多进程先读到同一候选再依次抢到同一 mapping。
+
+        候选过滤与排序对齐 list_mapping_ids_for_pool_pick（不含全局路径的 browser 池内 ROW_NUMBER）。
+        """
+        code = (task_type_code or "").strip()
+        ids = [int(x) for x in (pool_mapping_ids or []) if int(x) > 0]
+        if not code or not ids:
+            return None
+        quota_floor = max(0, int(remaining_quota_exclusive_floor))
+        placeholders = ",".join("?" for _ in ids)
+
+        _lock = self._get_write_lock()
+        for _attempt in range(5):
+            await _lock.acquire()
+            try:
+                async with self._read_conn() as db:
+                    db.row_factory = aiosqlite.Row
+                    await db.execute("PRAGMA foreign_keys=ON")
+                    await db.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}")
+                    await db.execute("BEGIN IMMEDIATE")
+
+                    cur = await db.execute(
+                        f"""
+                        SELECT
+                          m.id AS mapping_id,
+                          t.concurrency AS task_concurrency,
+                          t.continuous_error_threshold AS continuous_error_threshold
+                        FROM task_types t
+                        JOIN task_type_windows m ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        WHERE t.deleted = 0 AND t.enabled = 1
+                          AND t.code = ?
+                          AND m.id IN ({placeholders})
+                          AND m.deleted = 0 AND m.enabled = 1
+                          AND w.deleted = 0 AND w.enabled = 1
+                          AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
+                          AND (m.consecutive_errors < t.continuous_error_threshold)
+                          AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
+                          AND (
+                            (m.remaining_quota >= ?)
+                            OR (m.remaining_quota >= 1 AND m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
+                          )
+                        ORDER BY m.consecutive_errors ASC, m.updated_at ASC, m.remaining_quota DESC
+                        LIMIT 1
+                        """,
+                        (code, *ids, quota_floor),
+                    )
+                    picked = await cur.fetchone()
+                    if not picked:
+                        await db.execute("ROLLBACK")
+                        return None
+
+                    mapping_id = int(picked["mapping_id"])
+                    task_concurrency = max(1, int(picked["task_concurrency"] or 1))
+                    threshold = max(1, int(picked["continuous_error_threshold"] or 1))
+
+                    cur2 = await db.execute(
+                        """
+                        UPDATE task_type_windows
+                        SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                            error_cooldown_until = datetime('now','localtime', '+60 seconds'),
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ?
+                          AND deleted = 0 AND enabled = 1
+                          AND (consecutive_errors < ?)
+                          AND (COALESCE(inflight_slots, 0) < ?)
+                          AND (
+                            (remaining_quota >= ?)
+                            OR (cooldown_until IS NOT NULL AND cooldown_until <= datetime('now','localtime', '+5 minutes'))
+                          )
+                          AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
+                        """,
+                        (mapping_id, threshold, task_concurrency, quota_floor),
+                    )
+                    if int(cur2.rowcount or 0) <= 0:
+                        await db.execute("ROLLBACK")
+                        continue
+
+                    await self._tx_mark_window_status_for_mapping(db, mapping_id, 1)
+
+                    cur3 = await db.execute(
+                        """
+                        SELECT
+                          m.*,
+                          t.code AS task_code,
+                          t.concurrency AS task_concurrency,
+                          t.continuous_error_threshold,
+                          t.continuous_error_close_window_threshold,
+                          t.timeout_seconds,
+                          t.create_task_handler,
+                          t.error_retry_count,
+                          t.default_target_url,
+                          w.window_key,
+                          w.window_name,
+                          w.platform_account,
+                          w.platform_url,
+                          w.proxy_addr AS window_ip,
+                          s.id AS space_pk,
+                          s.space_id AS space_id,
+                          b.id AS browser_pk,
+                          b.lan_addr,
+                          b.vendor,
+                          b.access_key
+                        FROM task_type_windows m
+                        JOIN task_types t ON m.task_type_id = t.id
+                        JOIN windows w ON m.window_pk = w.id
+                        JOIN spaces s ON w.space_pk = s.id
+                        JOIN browsers b ON s.browser_id = b.id
+                        WHERE m.id = ?
+                        LIMIT 1
+                        """,
+                        (mapping_id,),
+                    )
+                    row = await cur3.fetchone()
+                    await db.commit()
+                    return dict(row) if row else None
+            except Exception as e:
+                if self._is_db_locked_error(e) and _attempt < 4:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
+                    continue
+                raise
+            finally:
+                _lock.release()
+        return None
+
     async def task_type_has_mapping_remaining_quota_above(
         self, task_type_code: str, above: int
     ) -> bool:
@@ -3901,6 +4035,7 @@ class Database:
         说明：
         - 用于“指定窗口运行任务”的调试/测试场景（管理端页面）。
         - 约束与 pick_and_reserve_window_for_task 保持一致（额度/冷却/错误熔断/并发上限/启用状态）。
+        - 预占成功时同样写入 error_cooldown_until = now+60s，与全局原子挑选一致。
         """
         code = (task_type_code or "").strip()
         mid = int(mapping_id)
@@ -3955,6 +4090,7 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
+                            error_cooldown_until = datetime('now','localtime', '+60 seconds'),
                             updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1

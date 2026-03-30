@@ -837,7 +837,7 @@ class TaskService:
         - 预占由 DB 字段 inflight_slots 完成（支持多进程/多实例，避免超卖）
         - 预占成功同时将 windows.window_status 置 1，使单浏览器窗口池上限在打开指纹前即计数
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
-        - 若任务类型开启窗口池：仅从 `_window_pool_targets` 内按顺序 reserve；池为空或当前额度等约束下无可用 mapping 则返回 None（不回退全局 pick）
+        - 若任务类型开启窗口池：仅从 `_window_pool_targets` 内由 DB 单事务 `pick_and_reserve_window_from_pool` 原子挑选（与全局 pick 相同：+60s error_cooldown_until，避免高并发下多任务盯上同一 mapping）；池为空或无可用则返回 None（不回退全局 pick）
         """
         floor = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
         try:
@@ -849,20 +849,14 @@ class TaskService:
                 pool_ids = list(self._window_pool_targets.get(task_type_code, set()))
             if not pool_ids:
                 return None
-            ordered = await self.db.list_mapping_ids_for_pool_pick(
-                task_type_code, pool_ids, floor
+            r = await self.db.pick_and_reserve_window_from_pool(
+                task_type_code,
+                pool_ids,
+                remaining_quota_exclusive_floor=floor,
             )
-            for mid in ordered:
-                r = await self.db.reserve_mapping_for_task(
-                    task_type_code,
-                    mid,
-                    remaining_quota_exclusive_floor=floor,
-                )
-                if r:
-                    picked = await self._finalize_picked_window(r, payload)
-                    if picked:
-                        return picked
-            return None
+            if not r:
+                return None
+            return await self._finalize_picked_window(r, payload)
 
         r = await self.db.pick_and_reserve_window_for_task(
             task_type_code=task_type_code,
