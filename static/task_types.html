@@ -244,6 +244,8 @@
                     <button class="btn btn-outline-secondary" id="btnBulkHeadlessOff">批量关闭无头</button>
                     <button class="btn btn-outline-success" id="btnBulkEnableOn" title="将勾选窗口的「启用」列设为开启">批量打开启用</button>
                     <button class="btn btn-outline-secondary" id="btnBulkEnableOff" title="将勾选窗口的「启用」列设为关闭">批量关闭启用</button>
+                    <button class="btn btn-outline-primary" id="btnBulkPureModeOn" title="将勾选窗口的「纯净」列设为开启">批量开启纯净</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkPureModeOff" title="将勾选窗口的「纯净」列设为关闭">批量关闭纯净</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
                     <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
@@ -4491,6 +4493,8 @@
         setBtnDisabledById("btnBulkHeadlessOff", true);
         setBtnDisabledById("btnBulkEnableOn", true);
         setBtnDisabledById("btnBulkEnableOff", true);
+        setBtnDisabledById("btnBulkPureModeOn", true);
+        setBtnDisabledById("btnBulkPureModeOff", true);
         setBtnDisabledById("btnBulkSetCore", true);
         setBtnDisabledById("btnAutoRefreshToggle", true);
         try {
@@ -4514,6 +4518,8 @@
           setBtnDisabledById("btnBulkHeadlessOff", false);
           setBtnDisabledById("btnBulkEnableOn", false);
           setBtnDisabledById("btnBulkEnableOff", false);
+          setBtnDisabledById("btnBulkPureModeOn", false);
+          setBtnDisabledById("btnBulkPureModeOff", false);
           setBtnDisabledById("btnBulkSetCore", false);
           setBtnDisabledById("btnAutoRefreshToggle", false);
           window.setTimeout(hideHint, 1200);
@@ -4611,6 +4617,52 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "禁用失败");
             updateMappingRowUI(mappingId, { enabled: false });
+          },
+        });
+      }
+
+      async function bulkPureModeOnSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量开启纯净模式",
+          ids,
+          runner: async (mappingId) => {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            const spacePk = parseInt(String(m.space_pk || ""), 10) || 0;
+            const wk = String(m.window_key || "").trim();
+            if (!spacePk || !wk) throw new Error("缺少 space_pk 或 window_key");
+            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
+              method: "POST",
+              body: JSON.stringify({ pure_mode: true, mapping_id: mappingId }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "开启纯净模式失败");
+            updateMappingRowUI(mappingId, { pure_mode: true });
+          },
+        });
+      }
+
+      async function bulkPureModeOffSelected() {
+        const ids = getSelectedMappingIds();
+        await runBulkAction({
+          label: "批量关闭纯净模式",
+          ids,
+          runner: async (mappingId) => {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            const spacePk = parseInt(String(m.space_pk || ""), 10) || 0;
+            const wk = String(m.window_key || "").trim();
+            if (!spacePk || !wk) throw new Error("缺少 space_pk 或 window_key");
+            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
+              method: "POST",
+              body: JSON.stringify({ pure_mode: false, mapping_id: mappingId }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "关闭纯净模式失败");
+            updateMappingRowUI(mappingId, { pure_mode: false });
           },
         });
       }
@@ -4866,6 +4918,8 @@
       document.getElementById("btnBulkHeadlessOff")?.addEventListener("click", bulkHeadlessOffSelected);
       document.getElementById("btnBulkEnableOn")?.addEventListener("click", bulkEnableOnSelected);
       document.getElementById("btnBulkEnableOff")?.addEventListener("click", bulkEnableOffSelected);
+      document.getElementById("btnBulkPureModeOn")?.addEventListener("click", bulkPureModeOnSelected);
+      document.getElementById("btnBulkPureModeOff")?.addEventListener("click", bulkPureModeOffSelected);
       document.getElementById("btnBulkSetCore")?.addEventListener("click", bulkSetCoreVersionSelected);
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
