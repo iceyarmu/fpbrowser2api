@@ -57,7 +57,7 @@ def set_dependencies(database: Database) -> None:
     db = database
     task_service = TaskService(database)
     _create_task_semaphore = asyncio.Semaphore(_CREATE_TASK_MAX_INFLIGHT)
-    task_service.start_window_pool_maintainer()
+    # 窗口池维护协程由 main lifespan 延迟启动，避免启动瞬间抢占事件循环导致管理页无法打开
 
 
 class CreateTaskRequest(BaseModel):

@@ -345,6 +345,7 @@ class TaskService:
             if self._window_pool_stop.is_set():
                 return
             await self._window_pool_close_mapping(mid)
+            await asyncio.sleep(0)
 
         to_open: list[int] = []
         for code, new_set in new_targets.items():
@@ -354,6 +355,7 @@ class TaskService:
             if self._window_pool_stop.is_set():
                 return
             await self._window_pool_open_mapping(mid)
+            await asyncio.sleep(0)
 
     async def _window_pool_open_mapping(self, mapping_id: int) -> None:
         if self._window_pool_stop.is_set():

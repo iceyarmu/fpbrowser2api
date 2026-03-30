@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import signal
 import time
 from contextlib import asynccontextmanager
@@ -115,10 +117,53 @@ async def lifespan(app: FastAPI):
     routes.set_dependencies(db)
     _install_window_pool_stop_on_signals()
 
+    # 窗口池预热会连续 await 指纹/Playwright，若在 set_dependencies 里立刻启动会饿死事件循环，
+    # 管理页（含关闭「开启窗口池」的保存）可能长时间无响应。延迟启动并可在关机前取消。
+    try:
+        pool_delay_sec = float(os.getenv("WINDOW_POOL_START_DELAY_SEC", "45"))
+    except ValueError:
+        pool_delay_sec = 45.0
+    pool_delay_sec = max(0.0, pool_delay_sec)
+
+    async def _deferred_window_pool_maintainer() -> None:
+        await asyncio.sleep(0)
+        if pool_delay_sec > 0:
+            try:
+                await asyncio.sleep(pool_delay_sec)
+            except asyncio.CancelledError:
+                raise
+        try:
+            ts = getattr(routes, "task_service", None)
+            if ts is not None and not ts._window_pool_stop.is_set():
+                ts.start_window_pool_maintainer()
+                logger.info(
+                    "窗口池维护协程已启动（延迟 %.1fs）",
+                    pool_delay_sec,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("延迟启动窗口池维护协程失败")
+
+    window_pool_defer_task = asyncio.create_task(_deferred_window_pool_maintainer())
+
     logger.info("✓ Server running on http://%s:%s", config.server_host, config.server_port)
+    logger.info(
+        "窗口池约 %.0fs 后启动（WINDOW_POOL_START_DELAY_SEC，0=尽快）；保存任务类型仍会立即触发对齐",
+        pool_delay_sec,
+    )
     logger.info("=" * 60)
 
     yield
+
+    if not window_pool_defer_task.done():
+        window_pool_defer_task.cancel()
+        try:
+            await window_pool_defer_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("取消窗口池延迟启动任务时出错（忽略）")
 
     logger.info("FPBrowser2API Shutting down...")
     try:
