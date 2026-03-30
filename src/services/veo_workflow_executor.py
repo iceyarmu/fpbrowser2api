@@ -222,11 +222,18 @@ class VeoSession:
         args: Optional[list[str]] = None,
         force_open: bool = False,
         headless: bool = False,
+        acquire_bring_lock: bool = False,
     ) -> None:
         """确保指纹浏览器窗口已打开、CDP 已连接。"""
         self.last_used_at = time.time()
-        async with self._bring_drafts_lock:
-            await self.pw_ctx.ensure_open(args=args or [], force_open=force_open, headless=headless, require_page=False)
+        # 串行化窗口 open/close：避免并发 ensure_open 与 Cloudflare 自愈重启产生竞态。
+        async def _inner() -> None:
+            await self.pw_ctx.ensure_open(args=args, force_open=force_open, headless=headless, require_page=False)
+        if acquire_bring_lock:
+            async with self._bring_drafts_lock:
+                await _inner()
+        else:
+            await _inner()
 
     async def disconnect_playwright_under_bring_lock(self) -> None:
         """先占 _bring_drafts_lock，再占 pw_ctx.driver_lock，再断开 CDP（与 bring 及仅持 driver_lock 的页面逻辑互斥）。"""
@@ -1943,19 +1950,22 @@ async def veo_fetch_next_update_cooldown_from_one_google_activity(
     需已能正常使用该窗口（与 veo_fetch_credits_in_window 相同的前置：开窗、labs 目标页上下文）；失败返回 None，不抛错。
     """
     try:
-        await sess.ensure_open(
-            args=sess.browser_open_args,
-            force_open=sess.browser_force_open,
-            headless=sess.browser_headless,
-        )
-        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
         sess._cancel_idle_close()
         log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
         async with sess._bring_drafts_lock:
+            await sess.ensure_open(
+                args=sess.browser_open_args,
+                force_open=sess.browser_force_open,
+                headless=sess.browser_headless,
+                acquire_bring_lock=False,
+            )
+            await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
             if sess.pw_ctx.page is None:
                 append_log(log_file, "[veo][activity] page 未初始化，跳过 Next update")
                 return None
-            return await _veo_scrape_one_google_next_update_cooldown(sess, log_file=log_file)
+            cu = await _veo_scrape_one_google_next_update_cooldown(sess, log_file=log_file)
+            await sess.pw_ctx.disconnect_playwright_only()
+            return cu
     except Exception as e:
         try:
             lf = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -1979,11 +1989,12 @@ async def veo_fetch_credits_in_window(
     if not tok:
         raise RuntimeError("缺少 access_token（请先获取并保存 access_token）")
 
-    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+    
     sess._cancel_idle_close()
 
     async with sess._bring_drafts_lock:
+        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
+        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
@@ -2001,6 +2012,7 @@ async def veo_fetch_credits_in_window(
             log_file=log_file,
         )
         status = tx.get("status")
+        await sess.pw_ctx.disconnect_playwright_only()
         if status is not None and int(status) >= 400:
             body = safe_trim(str(tx.get("response_body") or ""), 400)
             raise RuntimeError(f"查询 credits 失败：HTTP {status} {body}")
@@ -2025,13 +2037,14 @@ async def veo_fetch_access_token_in_window(
     3. 在页面上下文中 fetch /fx/api/auth/session（credentials: include，自动携带 cookie）
     4. 解析返回的 accessToken / expires / user 信息
     """
-    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+    
     sess._cancel_idle_close()
 
     async with sess._bring_drafts_lock:
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
+        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
+        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
 
         log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
@@ -2075,6 +2088,7 @@ async def veo_fetch_access_token_in_window(
                 append_log(log_file, f"[veo][token] document.cookie fallback failed: {e}")
 
         if not session_token:
+            await sess.pw_ctx.disconnect_playwright_only()
             raise RuntimeError(
                 "未找到 __Secure-next-auth.session-token cookie（请确认窗口已登录 Google/VEO）"
             )
@@ -2116,6 +2130,8 @@ async def veo_fetch_access_token_in_window(
                 email = str((user or {}).get("email") or "").strip() or None
         except Exception as e:
             append_log(log_file, f"[veo][token] auth/session fetch failed: {e}")
+
+        await sess.pw_ctx.disconnect_playwright_only()
 
         if access_token:
             append_log(log_file, f"[veo][token] access_token obtained via auth/session, email={email}")
@@ -2322,6 +2338,7 @@ async def _veo_flow_upsample_image_in_window(
     max_retries: int,
     bring_prefix: str,
     sess: "VeoSession",
+    target_bring_acquire_lock: bool = True,
 ) -> str:
     """页面内调用 `flow/upsampleImage`（对齐 flow2api `FlowClient.upsample_image`），返回 base64 图片数据。"""
     last_err: Optional[str] = None
@@ -2336,7 +2353,11 @@ async def _veo_flow_upsample_image_in_window(
             if attempt + 1 < n:
                 await asyncio.sleep(2.0)
                 try:
-                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
+                    await sess._bring_target_page_to_front(
+                        refresh_target=False,
+                        drafts_url=bring_prefix,
+                        acquire_bring_lock=target_bring_acquire_lock,
+                    )
                 except Exception:
                     pass
             continue
@@ -2441,13 +2462,11 @@ async def _veo_execute_image_mode(
     progress_cb: ProgressCB,
     prompt: str,
     project_id: str,
-    page: Any,
     access_token: str,
     log_file: Path,
     started_at: float,
     max_submit_retries: int,
     download_timeout: float,
-    user_agent: Optional[str],
     sess: "VeoSession",
     bring_prefix: str,
     user_paygate_tier: str,
@@ -2462,6 +2481,7 @@ async def _veo_execute_image_mode(
     res_label, want_2k = _veo_resolve_image_output_resolution(payload)
     want_i2i = _veo_payload_looks_like_i2v(payload)
     image_inputs: List[Dict[str, Any]] = []
+    raw_i2i_bytes: Optional[bytes] = None
 
     if want_i2i:
         i2i_urls = _veo_collect_i2v_image_urls(payload)
@@ -2472,22 +2492,12 @@ async def _veo_execute_image_mode(
             )
         first_u = i2i_urls[0]
         await progress_cb(8, {"stage": "download_images", "count": 1, "workflow_kind": "image"})
-        raw_b = await _veo_download_image_bytes_for_i2v(
+        raw_i2i_bytes = await _veo_download_image_bytes_for_i2v(
             first_u,
             label="参考图",
             timeout_seconds=download_timeout,
-            user_agent=user_agent,
+            user_agent=None,
         )
-        await progress_cb(12, {"stage": "upload_image", "index": 1, "total": 1, "workflow_kind": "image"})
-        mid = await _veo_flow_upload_image_in_window(
-            page=page,
-            access_token=str(access_token),
-            project_id=project_id,
-            image_bytes=raw_b,
-            log_file=log_file,
-        )
-        image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
-        append_log(log_file, f"[veo][image] i2i uploaded reference mediaId={safe_trim(mid, 80)!r}")
     else:
         await progress_cb(8, {"stage": "text_to_image", "workflow_kind": "image"})
         append_log(log_file, "[veo][image] t2i (no reference images)")
@@ -2499,227 +2509,277 @@ async def _veo_execute_image_mode(
         or ""
     ).strip() or None
 
-    submit_url = _veo_flow_media_batch_generate_images_url(project_id)
-    last_submit_err: Optional[str] = None
+    async def _do_veo_image_page_work() -> Dict[str, Any]:
+        nonlocal res_label, recaptcha_override
 
-    for attempt in range(max_submit_retries):
-        sess._cancel_idle_close()
-        recaptcha_token = recaptcha_override
-        if not recaptcha_token:
-            recaptcha_token = await _veo_try_recaptcha_token_in_page(
-                page, action="IMAGE_GENERATION", log_file=log_file
-            )
-        if not recaptcha_token:
-            last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
-            append_log(log_file, f"[veo][image] submit attempt {attempt + 1}: no recaptcha token")
-            if attempt + 1 < max_submit_retries:
-                await asyncio.sleep(2.0)
-                try:
-                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
-                except Exception:
-                    pass
-            continue
-
-        session_id = _veo_generate_session_id()
-        client_context: Dict[str, Any] = {
-            "recaptchaContext": {
-                "token": recaptcha_token,
-                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-            },
-            "sessionId": session_id,
-            "projectId": str(project_id),
-            "tool": "PINHOLE",
-        }
-        request_data: Dict[str, Any] = {
-            "clientContext": client_context,
-            "seed": random.randint(1, 999999),
-            "imageModelName": model_name,
-            "imageAspectRatio": image_aspect,
-            "structuredPrompt": {"parts": [{"text": prompt}]},
-            "imageInputs": image_inputs,
-        }
-        json_data: Dict[str, Any] = {
-            "clientContext": client_context,
-            "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-            "useNewMedia": True,
-            "requests": [request_data],
-        }
-
-        await progress_cb(
-            18,
-            {
-                "stage": "submit_image_task",
-                "attempt": attempt + 1,
-                "workflow_kind": "image",
-                "image_mode": "i2i" if want_i2i else "t2i",
-            },
+        await sess.ensure_open(
+            args=sess.browser_open_args,
+            force_open=sess.browser_force_open,
+            headless=sess.browser_headless,
+            acquire_bring_lock=False,
         )
+        await sess._bring_target_page_to_front(
+            refresh_target=False,
+            drafts_url=bring_prefix,
+            acquire_bring_lock=False,
+        )
+        page = sess.pw_ctx.page
+        if page is None:
+            raise RuntimeError("page 未初始化")
 
-        try:
-            tx = await page_fetch_json(
-                page,
-                url=submit_url,
-                method="POST",
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {access_token}",
-                },
-                json_data=json_data,
+        if want_i2i:
+            rb = raw_i2i_bytes
+            if rb is None:
+                raise RuntimeError("图生图参考图数据缺失")
+            await progress_cb(
+                12,
+                {"stage": "upload_image", "index": 1, "total": 1, "workflow_kind": "image"},
+            )
+            mid = await _veo_flow_upload_image_in_window(
+                page=page,
+                access_token=str(access_token),
+                project_id=project_id,
+                image_bytes=rb,
                 log_file=log_file,
             )
-        except Exception as e:
-            last_submit_err = _short_err_msg(e, max_len=200)
-            append_log(log_file, f"[veo][image] submit fetch error: {e}")
-            continue
+            image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
+            append_log(log_file, f"[veo][image] i2i uploaded reference mediaId={safe_trim(mid, 80)!r}")
 
-        st = tx.get("status")
-        if st is not None and int(st) >= 400:
-            body = safe_trim(str(tx.get("response_body") or ""), 500)
-            last_submit_err = f"HTTP {st} {body}"
-            append_log(log_file, f"[veo][image] submit rejected: {last_submit_err}")
-            recaptcha_override = None
-            continue
+        submit_url = _veo_flow_media_batch_generate_images_url(project_id)
+        last_submit_err: Optional[str] = None
 
-        resp = tx.get("_json")
-        try:
-            fife_url, media_name = _veo_parse_batch_generate_images_fife_url(resp)
-        except NonPenalizedTaskError as e:
-            last_submit_err = str(e)
-            append_log(log_file, f"[veo][image] bad response: {last_submit_err}")
-            recaptcha_override = None
-            continue
-
-        append_log(
-            log_file,
-            f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} media={safe_trim(str(media_name or ''), 60)!r}",
-        )
-
-        share_url = fife_url
-        origin_image_url = fife_url
-        upsample_ok = False
-        upsample_err: Optional[str] = None
-
-        if want_2k:
+        for attempt in range(max_submit_retries):
             sess._cancel_idle_close()
-            if not media_name:
-                upsample_err = "上游未返回 media name，无法放大，已返回 1K 原图"
-                append_log(log_file, f"[veo][image] 2K requested but no mediaId: {upsample_err}")
-                res_label = "1K"
-            else:
-                await progress_cb(
-                    72,
-                    {
-                        "stage": "upsample_image",
-                        "workflow_kind": "image",
-                        "target_resolution": "2K",
-                        "origin_image_url": fife_url,
-                    },
+            recaptcha_token = recaptcha_override
+            if not recaptcha_token:
+                recaptcha_token = await _veo_try_recaptcha_token_in_page(
+                    page, action="IMAGE_GENERATION", log_file=log_file
                 )
-                upsample_retries = max(1, min(5, int(payload.get("veo_image_upsample_max_retries") or 3)))
-                try:
-                    b64 = await _veo_flow_upsample_image_in_window(
-                        page=page,
-                        access_token=str(access_token),
-                        project_id=str(project_id),
-                        media_id=str(media_name),
-                        user_paygate_tier=user_paygate_tier,
-                        generation_session_id=str(session_id),
-                        log_file=log_file,
-                        max_retries=upsample_retries,
-                        bring_prefix=bring_prefix,
-                        sess=sess,
-                    )
-                    sess._cancel_idle_close()
-                    if b64:
-                        oss_cfg = oss_config_from_setting_section(
-                            (app_config.get_raw_config() or {}).get("oss")
+            if not recaptcha_token:
+                last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
+                append_log(log_file, f"[veo][image] submit attempt {attempt + 1}: no recaptcha token")
+                if attempt + 1 < max_submit_retries:
+                    await asyncio.sleep(2.0)
+                    try:
+                        await sess._bring_target_page_to_front(
+                            refresh_target=False,
+                            drafts_url=bring_prefix,
+                            acquire_bring_lock=False,
                         )
-                        if oss_cfg.enabled:
-                            try:
-                                raw_jpeg = base64.b64decode(b64, validate=False)
-                                if not raw_jpeg:
-                                    raise ValueError("base64 解码后为空")
-                                object_key = build_veo_upsample_object_key(
-                                    project_id=str(project_id),
-                                    media_name=str(media_name) if media_name else None,
-                                )
-                                share_url = await asyncio.to_thread(
-                                    upload_bytes_to_oss,
-                                    cfg=oss_cfg,
-                                    data=raw_jpeg,
-                                    object_key=object_key,
-                                    content_type="image/jpeg",
-                                )
+                    except Exception:
+                        pass
+                continue
+
+            session_id = _veo_generate_session_id()
+            client_context: Dict[str, Any] = {
+                "recaptchaContext": {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                },
+                "sessionId": session_id,
+                "projectId": str(project_id),
+                "tool": "PINHOLE",
+            }
+            request_data: Dict[str, Any] = {
+                "clientContext": client_context,
+                "seed": random.randint(1, 999999),
+                "imageModelName": model_name,
+                "imageAspectRatio": image_aspect,
+                "structuredPrompt": {"parts": [{"text": prompt}]},
+                "imageInputs": image_inputs,
+            }
+            json_data: Dict[str, Any] = {
+                "clientContext": client_context,
+                "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+                "useNewMedia": True,
+                "requests": [request_data],
+            }
+    
+            await progress_cb(
+                18,
+                {
+                    "stage": "submit_image_task",
+                    "attempt": attempt + 1,
+                    "workflow_kind": "image",
+                    "image_mode": "i2i" if want_i2i else "t2i",
+                },
+            )
+    
+            try:
+                tx = await page_fetch_json(
+                    page,
+                    url=submit_url,
+                    method="POST",
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {access_token}",
+                    },
+                    json_data=json_data,
+                    log_file=log_file,
+                )
+            except Exception as e:
+                last_submit_err = _short_err_msg(e, max_len=200)
+                append_log(log_file, f"[veo][image] submit fetch error: {e}")
+                continue
+    
+            st = tx.get("status")
+            if st is not None and int(st) >= 400:
+                body = safe_trim(str(tx.get("response_body") or ""), 500)
+                last_submit_err = f"HTTP {st} {body}"
+                append_log(log_file, f"[veo][image] submit rejected: {last_submit_err}")
+                recaptcha_override = None
+                continue
+    
+            resp = tx.get("_json")
+            try:
+                fife_url, media_name = _veo_parse_batch_generate_images_fife_url(resp)
+            except NonPenalizedTaskError as e:
+                last_submit_err = str(e)
+                append_log(log_file, f"[veo][image] bad response: {last_submit_err}")
+                recaptcha_override = None
+                continue
+    
+            append_log(
+                log_file,
+                f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} media={safe_trim(str(media_name or ''), 60)!r}",
+            )
+    
+            share_url = fife_url
+            origin_image_url = fife_url
+            upsample_ok = False
+            upsample_err: Optional[str] = None
+    
+            if want_2k:
+                sess._cancel_idle_close()
+                if not media_name:
+                    upsample_err = "上游未返回 media name，无法放大，已返回 1K 原图"
+                    append_log(log_file, f"[veo][image] 2K requested but no mediaId: {upsample_err}")
+                    res_label = "1K"
+                else:
+                    await progress_cb(
+                        72,
+                        {
+                            "stage": "upsample_image",
+                            "workflow_kind": "image",
+                            "target_resolution": "2K",
+                            "origin_image_url": fife_url,
+                        },
+                    )
+                    upsample_retries = max(1, min(5, int(payload.get("veo_image_upsample_max_retries") or 3)))
+                    try:
+                        b64 = await _veo_flow_upsample_image_in_window(
+                            page=page,
+                            access_token=str(access_token),
+                            project_id=str(project_id),
+                            media_id=str(media_name),
+                            user_paygate_tier=user_paygate_tier,
+                            generation_session_id=str(session_id),
+                            log_file=log_file,
+                            max_retries=upsample_retries,
+                            bring_prefix=bring_prefix,
+                            sess=sess,
+                            target_bring_acquire_lock=False,
+                        )
+                        sess._cancel_idle_close()
+                        if b64:
+                            oss_cfg = oss_config_from_setting_section(
+                                (app_config.get_raw_config() or {}).get("oss")
+                            )
+                            if oss_cfg.enabled:
+                                try:
+                                    raw_jpeg = base64.b64decode(b64, validate=False)
+                                    if not raw_jpeg:
+                                        raise ValueError("base64 解码后为空")
+                                    object_key = build_veo_upsample_object_key(
+                                        project_id=str(project_id),
+                                        media_name=str(media_name) if media_name else None,
+                                    )
+                                    share_url = await asyncio.to_thread(
+                                        upload_bytes_to_oss,
+                                        cfg=oss_cfg,
+                                        data=raw_jpeg,
+                                        object_key=object_key,
+                                        content_type="image/jpeg",
+                                    )
+                                    upsample_ok = True
+                                    res_label = "2K"
+                                    append_log(
+                                        log_file,
+                                        f"[veo][image] upsample done, uploaded to oss object_key={object_key!r}",
+                                    )
+                                except Exception as e:
+                                    upsample_err = _short_err_msg(e, max_len=240)
+                                    append_log(
+                                        log_file,
+                                        f"[veo][image] upsample ok but oss upload failed, fallback 1K: {e}",
+                                    )
+                                    share_url = fife_url
+                                    res_label = "1K"
+                                    upsample_ok = False
+                            else:
+                                share_url = f"data:image/jpeg;base64,{b64}"
                                 upsample_ok = True
                                 res_label = "2K"
                                 append_log(
                                     log_file,
-                                    f"[veo][image] upsample done, uploaded to oss object_key={object_key!r}",
+                                    "[veo][image] upsample done, share_url is data:image/jpeg;base64,... (oss disabled)",
                                 )
-                            except Exception as e:
-                                upsample_err = _short_err_msg(e, max_len=240)
-                                append_log(
-                                    log_file,
-                                    f"[veo][image] upsample ok but oss upload failed, fallback 1K: {e}",
-                                )
-                                share_url = fife_url
-                                res_label = "1K"
-                                upsample_ok = False
                         else:
-                            share_url = f"data:image/jpeg;base64,{b64}"
-                            upsample_ok = True
-                            res_label = "2K"
-                            append_log(
-                                log_file,
-                                "[veo][image] upsample done, share_url is data:image/jpeg;base64,... (oss disabled)",
-                            )
-                    else:
-                        upsample_err = "放大返回空数据，已返回 1K 原图"
-                except Exception as e:
-                    upsample_err = _short_err_msg(e, max_len=240)
-                    append_log(log_file, f"[veo][image] upsample failed, fallback 1K: {e}")
-                    share_url = fife_url
-                    res_label = "1K"
-        sess._cancel_idle_close()
-        elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
-        await progress_cb(
-            100,
-            {
-                "stage": "done",
-                "elapsed_ms": elapsed_ms,
-                "image_url": share_url,
+                            upsample_err = "放大返回空数据，已返回 1K 原图"
+                    except Exception as e:
+                        upsample_err = _short_err_msg(e, max_len=240)
+                        append_log(log_file, f"[veo][image] upsample failed, fallback 1K: {e}")
+                        share_url = fife_url
+                        res_label = "1K"
+            sess._cancel_idle_close()
+            elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
+            await progress_cb(
+                100,
+                {
+                    "stage": "done",
+                    "elapsed_ms": elapsed_ms,
+                    "image_url": share_url,
+                    "workflow_kind": "image",
+                    "image_resolution": res_label,
+                    "origin_image_url": origin_image_url,
+                },
+            )
+            append_log(
+                log_file,
+                f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms} resolution={res_label}",
+            )
+            out: Dict[str, Any] = {
+                "type": "veo_workflow_image",
+                "message": "VEO 图生图完成" if want_i2i else "VEO 文生图完成",
+                "share_url": share_url,
                 "workflow_kind": "image",
+                "image_mode": "i2i" if want_i2i else "t2i",
+                "model_name": model_name,
+                "image_aspect_ratio": image_aspect,
                 "image_resolution": res_label,
-                "origin_image_url": origin_image_url,
-            },
-        )
-        append_log(
-            log_file,
-            f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms} resolution={res_label}",
-        )
-        out: Dict[str, Any] = {
-            "type": "veo_workflow_image",
-            "message": "VEO 图生图完成" if want_i2i else "VEO 文生图完成",
-            "share_url": share_url,
-            "workflow_kind": "image",
-            "image_mode": "i2i" if want_i2i else "t2i",
-            "model_name": model_name,
-            "image_aspect_ratio": image_aspect,
-            "image_resolution": res_label,
-            "project_id": str(project_id),
-            "elapsed_ms": elapsed_ms,
-            "n_frames": 1,
-        }
-        if want_2k or upsample_ok:
-            out["upsample_url"] = share_url
-        if upsample_err:
-            out["upsample_error"] = upsample_err
-        if media_name:
-            out["generated_media_id"] = media_name
-        return out
+                "project_id": str(project_id),
+                "elapsed_ms": elapsed_ms,
+                "n_frames": 1,
+            }
+            if want_2k or upsample_ok:
+                out["upsample_url"] = share_url
+            if upsample_err:
+                out["upsample_error"] = upsample_err
+            if media_name:
+                out["generated_media_id"] = media_name
+            return out
 
-    raise NonPenalizedTaskError(last_submit_err or "图片生成提交失败", status_code=502)
+        raise NonPenalizedTaskError(last_submit_err or "图片生成提交失败", status_code=502)
+
+    async with sess._bring_drafts_lock:
+        try:
+            return await _do_veo_image_page_work()
+        finally:
+            try:
+                await sess.pw_ctx.disconnect_playwright_only()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -2858,6 +2918,7 @@ async def veo_workflow(
 
     #at = str(access_token or "").strip() or None
     #if not at:
+    tok_info: Optional[Dict[str, Any]] = None
     try:
         tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
         at = str((tok_info or {}).get("access_token") or "").strip() or None
@@ -2869,6 +2930,19 @@ async def veo_workflow(
             "缺少可用的 access_token：请在任务窗口映射中配置 Labs access_token，或确保指纹窗口已登录并可取得凭证",
             status_code=401,
         )
+    if db is not None and task_type_window_id:
+        try:
+            mid = int(task_type_window_id)
+            if mid > 0:
+                expires = str((tok_info or {}).get("expires") or "").strip() or None
+                await db.update_task_type_window(
+                    mapping_id=mid,
+                    sora_access_token=at,
+                    sora_access_expires=expires,
+                )
+                append_log(log_file, f"[veo] persisted Labs access_token to task_type_window id={mid}")
+        except Exception as e:
+            append_log(log_file, f"[veo] persist access_token to DB failed (non-fatal): {e}")
 
     user_tier = _veo_normalize_user_paygate_tier(
         str(payload.get("user_paygate_tier") or payload.get("userPaygateTier") or "").strip() or None
@@ -2898,20 +2972,11 @@ async def veo_workflow(
 
     await asyncio.sleep(max(0.5, float(payload.get("veo_recaptcha_pre_wait_seconds") or 2.0)))
 
-    page = sess.pw_ctx.page
-    if page is None:
-        raise RuntimeError("page 未初始化")
-
     download_timeout = float(
         payload.get("i2v_image_download_timeout_seconds")
         or payload.get("veo_image_download_timeout_seconds")
         or 60.0
     )
-    user_agent: Optional[str] = None
-    try:
-        user_agent = await page.evaluate("() => navigator.userAgent")
-    except Exception:
-        user_agent = None
 
     if image_mode:
         return await _veo_execute_image_mode(
@@ -2919,13 +2984,11 @@ async def veo_workflow(
             progress_cb=progress_cb,
             prompt=prompt,
             project_id=project_id,
-            page=page,
             access_token=str(at),
             log_file=log_file,
             started_at=started_at,
             max_submit_retries=max_submit_retries,
             download_timeout=download_timeout,
-            user_agent=user_agent,
             sess=sess,
             bring_prefix=bring_prefix,
             user_paygate_tier=user_tier,
@@ -2944,215 +3007,254 @@ async def veo_workflow(
     if model_key != base_model_key:
         append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
 
-    start_media_id: Optional[str] = None
-    end_media_id: Optional[str] = None
+    i2v_raw_batches: List[bytes] = []
     if want_i2v:
         await progress_cb(6, {"stage": "download_images", "count": len(i2v_urls)})
-        media_ids: List[str] = []
         for i, u in enumerate(i2v_urls):
             label = "首帧图片" if i == 0 else "尾帧图片"
             raw_b = await _veo_download_image_bytes_for_i2v(
                 u,
                 label=label,
                 timeout_seconds=download_timeout,
-                user_agent=user_agent,
+                user_agent=None,
             )
-            await progress_cb(7 + i, {"stage": "upload_image", "index": i + 1, "total": len(i2v_urls)})
-            mid = await _veo_flow_upload_image_in_window(
-                page=page,
-                access_token=str(at),
-                project_id=project_id,
-                image_bytes=raw_b,
-                log_file=log_file,
-            )
-            media_ids.append(mid)
-            append_log(log_file, f"[veo][i2v] uploaded {label} mediaId={safe_trim(mid, 80)!r}")
-        start_media_id = media_ids[0]
-        end_media_id = media_ids[1] if len(media_ids) > 1 else None
+            i2v_raw_batches.append(raw_b)
 
-    operations: List[Dict[str, Any]] = []
-    t2v_thumb_media_name: Optional[str] = None
-    last_submit_err: Optional[str] = None
+    async def _do_veo_video_page_work() -> Dict[str, Any]:
+        nonlocal recaptcha_override
 
-    for attempt in range(max_submit_retries):
-        recaptcha_token = recaptcha_override
-        if not recaptcha_token:
-            recaptcha_token = await _veo_try_recaptcha_token_in_page(
-                page, action="VIDEO_GENERATION", log_file=log_file
-            )
-        if not recaptcha_token:
-            last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
-            append_log(log_file, f"[veo] submit attempt {attempt + 1}: no recaptcha token")
-            if attempt + 1 < max_submit_retries:
-                await asyncio.sleep(2.0)
-                try:
-                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
-                except Exception:
-                    pass
-                sess._cancel_idle_close()
-            continue
+        await sess.ensure_open(
+            args=sess.browser_open_args,
+            force_open=sess.browser_force_open,
+            headless=sess.browser_headless,
+            acquire_bring_lock=False,
+        )
+        await sess._bring_target_page_to_front(
+            refresh_target=False,
+            drafts_url=bring_prefix,
+            acquire_bring_lock=False,
+        )
+        sess._cancel_idle_close()
 
-        session_id = _veo_generate_session_id()
-        scene_id = str(uuid.uuid4())
+        page = sess.pw_ctx.page
+        if page is None:
+            raise RuntimeError("page 未初始化")
 
+        start_media_id: Optional[str] = None
+        end_media_id: Optional[str] = None
         if want_i2v:
-            assert start_media_id is not None
-            if end_media_id:
-                submit_url = FLOW_VIDEO_SUBMIT_I2V_START_END_URL
-                req_item: Dict[str, Any] = {
-                    "aspectRatio": aspect_ratio,
-                    "seed": random.randint(1, 99999),
-                    "textInput": {"prompt": prompt},
-                    "videoModelKey": model_key,
-                    "startImage": {"mediaId": start_media_id},
-                    "endImage": {"mediaId": end_media_id},
-                    "metadata": {"sceneId": scene_id},
-                }
-            else:
-                submit_url = FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL
-                single_mk = _veo_strip_i2v_fl_for_single_frame(model_key)
-                append_log(
-                    log_file,
-                    f"[veo][i2v] single-frame model_key: {model_key!r} -> {single_mk!r}",
+            media_ids: List[str] = []
+            for i, raw_b in enumerate(i2v_raw_batches):
+                label = "首帧图片" if i == 0 else "尾帧图片"
+                await progress_cb(7 + i, {"stage": "upload_image", "index": i + 1, "total": len(i2v_urls)})
+                mid = await _veo_flow_upload_image_in_window(
+                    page=page,
+                    access_token=str(at),
+                    project_id=project_id,
+                    image_bytes=raw_b,
+                    log_file=log_file,
                 )
+                media_ids.append(mid)
+                append_log(log_file, f"[veo][i2v] uploaded {label} mediaId={safe_trim(mid, 80)!r}")
+            start_media_id = media_ids[0]
+            end_media_id = media_ids[1] if len(media_ids) > 1 else None
+
+        operations: List[Dict[str, Any]] = []
+        t2v_thumb_media_name: Optional[str] = None
+        last_submit_err: Optional[str] = None
+
+        for attempt in range(max_submit_retries):
+            recaptcha_token = recaptcha_override
+            if not recaptcha_token:
+                recaptcha_token = await _veo_try_recaptcha_token_in_page(
+                    page, action="VIDEO_GENERATION", log_file=log_file
+                )
+            if not recaptcha_token:
+                last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
+                append_log(log_file, f"[veo] submit attempt {attempt + 1}: no recaptcha token")
+                if attempt + 1 < max_submit_retries:
+                    await asyncio.sleep(2.0)
+                    try:
+                        await sess._bring_target_page_to_front(
+                            refresh_target=False,
+                            drafts_url=bring_prefix,
+                            acquire_bring_lock=False,
+                        )
+                    except Exception:
+                        pass
+                    sess._cancel_idle_close()
+                continue
+
+            session_id = _veo_generate_session_id()
+            scene_id = str(uuid.uuid4())
+
+            if want_i2v:
+                assert start_media_id is not None
+                if end_media_id:
+                    submit_url = FLOW_VIDEO_SUBMIT_I2V_START_END_URL
+                    req_item: Dict[str, Any] = {
+                        "aspectRatio": aspect_ratio,
+                        "seed": random.randint(1, 99999),
+                        "textInput": {"prompt": prompt},
+                        "videoModelKey": model_key,
+                        "startImage": {"mediaId": start_media_id},
+                        "endImage": {"mediaId": end_media_id},
+                        "metadata": {"sceneId": scene_id},
+                    }
+                else:
+                    submit_url = FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL
+                    single_mk = _veo_strip_i2v_fl_for_single_frame(model_key)
+                    append_log(
+                        log_file,
+                        f"[veo][i2v] single-frame model_key: {model_key!r} -> {single_mk!r}",
+                    )
+                    req_item = {
+                        "aspectRatio": aspect_ratio,
+                        "seed": random.randint(1, 99999),
+                        "textInput": {"prompt": prompt},
+                        "videoModelKey": single_mk,
+                        "startImage": {"mediaId": start_media_id},
+                        "metadata": {"sceneId": scene_id},
+                    }
+            else:
+                submit_url = FLOW_VIDEO_SUBMIT_T2V_URL
                 req_item = {
                     "aspectRatio": aspect_ratio,
                     "seed": random.randint(1, 99999),
                     "textInput": {"prompt": prompt},
-                    "videoModelKey": single_mk,
-                    "startImage": {"mediaId": start_media_id},
+                    "videoModelKey": model_key,
                     "metadata": {"sceneId": scene_id},
                 }
-        else:
-            submit_url = FLOW_VIDEO_SUBMIT_T2V_URL
-            req_item = {
-                "aspectRatio": aspect_ratio,
-                "seed": random.randint(1, 99999),
-                "textInput": {"prompt": prompt},
-                "videoModelKey": model_key,
-                "metadata": {"sceneId": scene_id},
+
+            json_data: Dict[str, Any] = {
+                "clientContext": {
+                    "recaptchaContext": {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                    },
+                    "sessionId": session_id,
+                    "projectId": project_id,
+                    "tool": "PINHOLE",
+                    "userPaygateTier": user_tier,
+                },
+                "requests": [req_item],
             }
 
-        json_data: Dict[str, Any] = {
-            "clientContext": {
-                "recaptchaContext": {
-                    "token": recaptcha_token,
-                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-                },
-                "sessionId": session_id,
-                "projectId": project_id,
-                "tool": "PINHOLE",
-                "userPaygateTier": user_tier,
-            },
-            "requests": [req_item],
-        }
-
-        await progress_cb(
-            10,
-            {
-                "stage": "submit_task",
-                "attempt": attempt + 1,
-                "video_mode": "i2v" if want_i2v else "t2v",
-            },
-        )
-        try:
-            tx = await page_fetch_json(
-                page,
-                url=submit_url,
-                method="POST",
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {at}",
-                },
-                json_data=json_data,
-                log_file=log_file,
-            )
-        except Exception as e:
-            last_submit_err = _short_err_msg(e, max_len=200)
-            append_log(log_file, f"[veo] submit fetch error: {e}")
-            continue
-
-        st = tx.get("status")
-        if st is not None and int(st) >= 400:
-            body = safe_trim(str(tx.get("response_body") or ""), 500)
-            last_submit_err = f"HTTP {st} {body}"
-            append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
-            recaptcha_override = None
-            continue
-
-        resp = tx.get("_json")
-        ops = resp.get("operations") if isinstance(resp, dict) else None
-        if not isinstance(ops, list) or len(ops) == 0:
-            last_submit_err = f"提交返回无 operations: {safe_trim(str(resp), 300)}"
-            append_log(log_file, f"[veo] submit bad response: {last_submit_err}")
-            continue
-
-        operations = ops
-        if not want_i2v:
-            op0 = ops[0] if isinstance(ops[0], dict) else {}
-            raw_name = (op0.get("operation") or {}).get("name")
-            t2v_thumb_media_name = str(raw_name or "").strip() or None
-        append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
-        break
-    else:
-        _submit_fail = "图生视频提交失败" if want_i2v else "文生视频提交失败"
-        raise NonPenalizedTaskError(last_submit_err or _submit_fail, status_code=502)
-
-    await progress_cb(25, {"stage": "polling", "operations": len(operations)})
-    sess._cancel_idle_close()
-    video_url = await _veo_poll_operations_until_video_url(
-        page=page,
-        access_token=str(at),
-        log_file=log_file,
-        progress_cb=progress_cb,
-        operations=operations,
-        max_wait_seconds=max_wait_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-        sess=sess,
-    )
-
-    elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
-    await progress_cb(100, {"stage": "done", "elapsed_ms": elapsed_ms, "video_url": video_url})
-    append_log(
-        log_file,
-        f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}",
-    )
-
-    if want_i2v:
-        thumb_url = i2v_urls[0]
-    else:
-        thumb_url = ""
-        if t2v_thumb_media_name:
-            qs = urlencode(
+            await progress_cb(
+                10,
                 {
-                    "name": t2v_thumb_media_name,
-                    "mediaUrlType": "MEDIA_URL_TYPE_THUMBNAIL",
-                }
+                    "stage": "submit_task",
+                    "attempt": attempt + 1,
+                    "video_mode": "i2v" if want_i2v else "t2v",
+                },
             )
-            redirect_thumb = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?{qs}"
-            thumb_url = redirect_thumb
-            resolved = await page_resolve_redirect_url(page, url=redirect_thumb, log_file=log_file)
-            if resolved:
-                thumb_url = resolved
-            else:
-                append_log(
-                    log_file,
-                    "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
+            try:
+                tx = await page_fetch_json(
+                    page,
+                    url=submit_url,
+                    method="POST",
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {at}",
+                    },
+                    json_data=json_data,
+                    log_file=log_file,
                 )
+            except Exception as e:
+                last_submit_err = _short_err_msg(e, max_len=200)
+                append_log(log_file, f"[veo] submit fetch error: {e}")
+                continue
 
-    out: Dict[str, Any] = {
-        "type": "veo_workflow_video",
-        "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
-        "share_url": video_url,
-        "watermark_free_url": video_url,
-        "thumb_url": thumb_url,
-        "video_type": "i2v" if want_i2v else "t2v",
-        "model_key": model_key,
-        "aspect_ratio": aspect_ratio,
-        "project_id": project_id,
-        "elapsed_ms": elapsed_ms,
-    }
-    if want_i2v:
-        out["i2v_image_count"] = len(i2v_urls)
-    return out
+            st = tx.get("status")
+            if st is not None and int(st) >= 400:
+                body = safe_trim(str(tx.get("response_body") or ""), 500)
+                last_submit_err = f"HTTP {st} {body}"
+                append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
+                recaptcha_override = None
+                continue
+
+            resp = tx.get("_json")
+            ops = resp.get("operations") if isinstance(resp, dict) else None
+            if not isinstance(ops, list) or len(ops) == 0:
+                last_submit_err = f"提交返回无 operations: {safe_trim(str(resp), 300)}"
+                append_log(log_file, f"[veo] submit bad response: {last_submit_err}")
+                continue
+
+            operations = ops
+            if not want_i2v:
+                op0 = ops[0] if isinstance(ops[0], dict) else {}
+                raw_name = (op0.get("operation") or {}).get("name")
+                t2v_thumb_media_name = str(raw_name or "").strip() or None
+            append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
+            break
+        else:
+            _submit_fail = "图生视频提交失败" if want_i2v else "文生视频提交失败"
+            raise NonPenalizedTaskError(last_submit_err or _submit_fail, status_code=502)
+
+        await progress_cb(25, {"stage": "polling", "operations": len(operations)})
+        sess._cancel_idle_close()
+        video_url = await _veo_poll_operations_until_video_url(
+            page=page,
+            access_token=str(at),
+            log_file=log_file,
+            progress_cb=progress_cb,
+            operations=operations,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            sess=sess,
+        )
+
+        elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
+        await progress_cb(100, {"stage": "done", "elapsed_ms": elapsed_ms, "video_url": video_url})
+        append_log(
+            log_file,
+            f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}",
+        )
+
+        if want_i2v:
+            thumb_url = i2v_urls[0]
+        else:
+            thumb_url = ""
+            if t2v_thumb_media_name:
+                qs = urlencode(
+                    {
+                        "name": t2v_thumb_media_name,
+                        "mediaUrlType": "MEDIA_URL_TYPE_THUMBNAIL",
+                    }
+                )
+                redirect_thumb = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?{qs}"
+                thumb_url = redirect_thumb
+                resolved = await page_resolve_redirect_url(page, url=redirect_thumb, log_file=log_file)
+                if resolved:
+                    thumb_url = resolved
+                else:
+                    append_log(
+                        log_file,
+                        "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
+                    )
+
+        out: Dict[str, Any] = {
+            "type": "veo_workflow_video",
+            "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
+            "share_url": video_url,
+            "watermark_free_url": video_url,
+            "thumb_url": thumb_url,
+            "video_type": "i2v" if want_i2v else "t2v",
+            "model_key": model_key,
+            "aspect_ratio": aspect_ratio,
+            "project_id": project_id,
+            "elapsed_ms": elapsed_ms,
+        }
+        if want_i2v:
+            out["i2v_image_count"] = len(i2v_urls)
+        return out
+
+    async with sess._bring_drafts_lock:
+        try:
+            return await _do_veo_video_page_work()
+        finally:
+            try:
+                await sess.pw_ctx.disconnect_playwright_only()
+            except Exception:
+                pass

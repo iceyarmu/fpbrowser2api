@@ -248,10 +248,10 @@ async def sora_fetch_access_token_in_window(
     - 使用 `page_fetch_json`（credentials: include），会自动携带该窗口 Cookie（含代理/指纹网络栈）。
     - 不允许手工传 Cookie header（page_fetch_tx 会屏蔽 cookie/ua/origin/referer 等头）。
     """
-    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-    await sess._bring_sora_drafts_to_front(refresh_target=False)
     sess._cancel_idle_close()
     async with sess._bring_drafts_lock:
+        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
+        await sess._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
@@ -259,6 +259,7 @@ async def sora_fetch_access_token_in_window(
         url = "https://sora.chatgpt.com/api/auth/session"
         tx = await page_fetch_json(sess.pw_ctx.page, url=url, method="GET", headers={"Accept": "application/json"}, json_data=None, log_file=log_file)
         data = tx.get("_json")
+        await sess.pw_ctx.disconnect_playwright_only()
         if not isinstance(data, dict):
             raise RuntimeError(f"读取 session 失败：status={tx.get('status')} body={safe_trim(str(tx.get('response_body') or ''), 500)!r}")
 
@@ -2295,12 +2296,17 @@ class SoraSession:
         args: Optional[list[str]] = None,
         force_open: bool = False,
         headless: bool = False,
+        acquire_bring_lock: bool = True,
     ) -> None:
         self.last_used_at = time.time()
         # 串行化窗口 open/close：避免并发 ensure_open 与 Cloudflare 自愈重启产生竞态。
-        async with self._bring_drafts_lock:
-            # 仅要求“指纹浏览器窗口已打开且 CDP 已连接”，不要求确认/创建 page（page 由 _bring_sora_drafts_to_front 负责）。
+        async def _inner() -> None:
             await self.pw_ctx.ensure_open(args=args, force_open=force_open, headless=headless, require_page=False)
+        if acquire_bring_lock:
+            async with self._bring_drafts_lock:
+                await _inner()
+        else:
+            await _inner()
 
     async def disconnect_playwright_under_bring_lock(self) -> None:
         """先占 _bring_drafts_lock，再占 pw_ctx.driver_lock，再断开 CDP（与 bring 及 driver_lock 页面逻辑互斥）。"""
@@ -2361,11 +2367,12 @@ class SoraSession:
     async def api_nf_check(self, *, target_url: str) -> Dict[str, Any]:
         """读取 Sora 余额：GET /backend/nf/check。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         # 余额查询属于“仍在使用窗口”的行为：不要触发倒计时关窗
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, 
+                headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
             url = _sora_backend_url_from_target(target_url, "/backend/nf/check")
@@ -2389,6 +2396,7 @@ class SoraSession:
                 out["cooldown_until"] = dt.strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 pass
+            await self.pw_ctx.disconnect_playwright_only()
             return out
 
     async def api_subscription_info(self, *, target_url: str) -> Dict[str, Any]:
