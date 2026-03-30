@@ -391,13 +391,15 @@ class VeoSession:
     ) -> None:
         """与 Sora `_raise_if_cloudflare_page_nonpenalized` 同类：bring 目标页 + 等待/重启，仍判定 CF 则抛 NonPenalizedTaskError（用于窗口池巡检）。"""
         async with self._bring_drafts_lock:
-            if page is None:
-                return
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_target_page_to_front(
+                refresh_target=False, drafts_url=target_url, acquire_bring_lock=False
+            )
             try:
                 th = (urlparse(target_url).netloc or "").strip().lower()
             except Exception:
                 th = ""
-            cur = page
+            cur = self.pw_ctx.page
             for _ in range(2):
                 if cur is None:
                     return
@@ -409,18 +411,7 @@ class VeoSession:
                 cur = self.pw_ctx.page
                 if cur is None:
                     return
-            if cur is not None and await self._is_cloudflare_page(cur, deep=False):
-                still = await self._wait_cloudflare_auto_pass(
-                    cur,
-                    max_wait_seconds=25.0,
-                    max_success_clicks=2,
-                )
-                if still and await self._is_cloudflare_page(cur, deep=True):
-                    await self._restart_window_and_restore_single_drafts(
-                        drafts_url=target_url, target_host=th
-                    )
-                    cur = self.pw_ctx.page
-            if cur is not None and await self._is_cloudflare_page(cur, deep=True):
+            if await self._is_cloudflare_page(cur, deep=False):
                 raise NonPenalizedTaskError(
                     f"当前页面为 Cloudflare 验证/拦截页，无法继续：{stage}",
                     status_code=503,

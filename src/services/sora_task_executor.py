@@ -251,7 +251,7 @@ async def sora_fetch_access_token_in_window(
     sess._cancel_idle_close()
     async with sess._bring_drafts_lock:
         await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
-        await sess._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
+        await sess._bring_sora_drafts_to_front(acquire_bring_lock=False)
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
@@ -1559,17 +1559,15 @@ class SoraSession:
     ) -> None:
         """若为 Cloudflare 或未登录类提示，则最多 2 次：先尝试登录/错误页自愈，再 bring drafts；仍判定为 CF 再抛 NonPenalizedTaskError。"""
         async with self._bring_drafts_lock:
-            if page is None:
-                return
-            cur = page
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
+            cur = self.pw_ctx.page
             for _ in range(2):
                 is_cf = await self._is_cloudflare_page(cur, deep=False)
                 if not is_cf and not await self._drafts_page_suggests_login_recovery(cur):
                     return
                 await self._try_resolve_drafts_login_prompt_if_needed(cur, drafts_url)
-                await self._bring_sora_drafts_to_front(
-                    refresh_target=False, drafts_url=drafts_url, acquire_bring_lock=False
-                )
+                await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                 cur = self.pw_ctx.page
                 if cur is None:
                     return
@@ -2370,8 +2368,7 @@ class SoraSession:
         # 余额查询属于“仍在使用窗口”的行为：不要触发倒计时关窗
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
-            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, 
-                headless=self.browser_headless, acquire_bring_lock=False)
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
             await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
@@ -2402,11 +2399,11 @@ class SoraSession:
     async def api_subscription_info(self, *, target_url: str) -> Dict[str, Any]:
         """读取 Sora 订阅信息：GET /backend/billing/subscriptions。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         # 查询会员信息属于“仍在使用窗口”的行为：不要触发倒计时关窗
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
             url = _sora_backend_url_from_target(target_url, "/backend/billing/subscriptions")
@@ -2427,10 +2424,10 @@ class SoraSession:
     async def api_clear_all_drafts(self, *, target_url: str) -> Dict[str, Any]:
         """获取 drafts/v2 列表并逐个 DELETE 删除所有草稿。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
             headers = {"Authorization": f"Bearer {token}", "OAI-Language": "en-US"}
@@ -2461,7 +2458,7 @@ class SoraSession:
                         append_log(log_file, f"[sora][clear_drafts] DELETE {draft_id} failed: {e}")
                     except Exception:
                         pass
-
+            await self.pw_ctx.disconnect_playwright_only()
             return {
                 "total": len(items) if isinstance(items, list) else 0,
                 "deleted": deleted_ids,
@@ -2471,11 +2468,11 @@ class SoraSession:
     async def api_invite_mine(self, *, target_url: str) -> Dict[str, Any]:
         """读取邀请码：GET /backend/project_y/invite/mine（必要时尝试 bootstrap 激活）。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         # 查询邀请码属于“仍在使用窗口”的行为：不要触发倒计时关窗
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
             token = self._get_bearer_token_required()
             url = _sora_backend_url_from_target(target_url, "/backend/project_y/invite/mine")
@@ -2497,7 +2494,7 @@ class SoraSession:
                     obj = tx2.get("_json")
                 except Exception:
                     pass
-
+            await self.pw_ctx.disconnect_playwright_only()
             data = obj if isinstance(obj, dict) else {}
             invite_code = (data or {}).get("invite_code")
             self.invite_code = str(invite_code).strip() if invite_code else None
@@ -2518,12 +2515,13 @@ class SoraSession:
     ) -> str:
         """创建角色：POST /characters/upload，返回 cameo_id。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         last_err: Exception | None = None
         for _attempt in range(2):
+            self._cancel_idle_close()
             async with self._bring_drafts_lock:
+                await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+                await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                 if self.pw_ctx.page is None:
                     raise RuntimeError("page 未初始化")
                 log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2540,16 +2538,19 @@ class SoraSession:
                 except Exception as exc:
                     last_err = exc
                     append_log(log_file, f"[sora][upload_character] 上传角色视频失败(第{_attempt + 1}次): {exc}, 尝试刷新治愈…")
-            await self._bring_sora_drafts_to_front()
+            async with self._bring_drafts_lock:
+                await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+                await self._bring_sora_drafts_to_front(acquire_bring_lock=False)
+        self.disconnect_playwright_under_bring_lock()
         raise last_err  # type: ignore[misc]
 
     async def api_characters_from_generation(self, *, target_url: str, generation_id: str) -> Dict[str, Any]:
         """POST /backend/characters/from-generation：用 generation_id 创建 cameo，返回 cameo 对象（含 id）。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2582,15 +2583,16 @@ class SoraSession:
                 except Exception as e:
                     last_err = f"url={url!r} err={e}"
                     continue
+            await self.pw_ctx.disconnect_playwright_only()
             raise RuntimeError(f"from-generation 失败：{last_err}")
 
     async def api_cameo_owned_status(self, *, target_url: str, cameo_id: str) -> Dict[str, Any]:
         """GET /backend/project_y/cameos/in_progress/{cameo_id}：读取 from-generation cameo 处理进度。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2624,10 +2626,10 @@ class SoraSession:
     async def api_username_check(self, *, target_url: str, username: str) -> Dict[str, Any]:
         """POST /backend/project_y/profile/username/check：检查 username 是否可用。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2656,10 +2658,10 @@ class SoraSession:
     async def api_cameo_update_v2(self, *, target_url: str, cameo_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /backend/project_y/cameos/by_id/{cameo_id}/update_v2：更新 cameo（如 instruction_set、visibility）。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2689,10 +2691,10 @@ class SoraSession:
     async def api_cameo_status(self, *, target_url: str, cameo_id: str) -> Dict[str, Any]:
         """GET /project_y/cameos/in_progress/{cameo_id}。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2728,10 +2730,10 @@ class SoraSession:
     async def api_character_upload_image(self, *, target_url: str, image_path: Path) -> str:
         """POST /project_y/file/upload，返回 asset_pointer。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2756,10 +2758,10 @@ class SoraSession:
     ) -> str:
         """POST /characters/finalize，返回 character_id。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2804,10 +2806,11 @@ class SoraSession:
     async def api_character_set_public(self, *, target_url: str, cameo_id: str) -> bool:
         """POST /project_y/cameos/by_id/{cameo_id}/update_v2（visibility=public）。"""
         self.last_used_at = time.time()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
         self._cancel_idle_close()
         async with self._bring_drafts_lock:
+            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
+            
             if self.pw_ctx.page is None:
                 raise RuntimeError("page 未初始化")
             log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
@@ -2886,14 +2889,12 @@ class SoraSession:
 
         async with self.create_lock:
             try:
-                await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-                await self._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
-
                 log_file = Path(monitor_log_path) if monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
-
                 sentinel_token = None
                 # 先生成 sentinel_token，并填充/更新 oai_device_id
                 async with self._bring_drafts_lock:
+                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                    await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                     if self.pw_ctx.page is None:
                         raise RuntimeError("无法获取可用 page（context/pages 不可用或 drafts 打开失败）")
                     sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
@@ -2913,14 +2914,19 @@ class SoraSession:
                         self.oai_device_id = str(uuid4())
 
                 # bearer_token 优先复用会话缓存；缺失则 bring_to_front + refresh 一次后再抓取
+                self._cancel_idle_close()
                 async with self._bring_drafts_lock:
+                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                    await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                     if self.pw_ctx.page is None:
                         raise RuntimeError("page 未初始化")
                     await _sora_ui_fill_prompt_textarea(self.pw_ctx.page, prompt=prompt, log_file=log_file)
 
                 if not self.bearer_token:
-                    await self._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
+                    self._cancel_idle_close()
                     async with self._bring_drafts_lock:
+                        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                        await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                         if self.pw_ctx.page is None:
                             raise RuntimeError("page 未初始化")
                         info = await _sora_extract_bearer_from_any_post_pw(self.pw_ctx.page, timeout_seconds=20.0, log_file=log_file)
@@ -2951,7 +2957,10 @@ class SoraSession:
                 )
                 for attempt in range(1, max_create_attempts + 1):
                     try:
+                        self._cancel_idle_close()
                         async with self._bring_drafts_lock:
+                            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                            await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                             task_id, create_tx, auth_state = await _sora_create_task_pw(
                                 page=self.pw_ctx.page,
                                 prompt=prompt,
@@ -2989,9 +2998,11 @@ class SoraSession:
                                 log_file,
                                 f"[sora][create] 命中 token_expired，准备刷新 access_token 并重试（{attempt + 1}/{max_create_attempts}）",
                             )
+                            async with self._bring_drafts_lock:
+                                await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+                                await self._bring_sora_drafts_to_front(acquire_bring_lock=False)
                             # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
                             # 所以这里必须在未持锁状态下调用，避免锁重入。
-                            await self._bring_sora_drafts_to_front(drafts_url=target_url)
                             try:
                                 token_info = await sora_fetch_access_token_in_window(
                                     sess=self,
@@ -3017,7 +3028,9 @@ class SoraSession:
                                 log_file,
                                 f"[sora][create] 命中 Cloudflare 挑战页（403），准备刷新页面并自愈（{attempt}/{max_create_attempts}）",
                             )
-                            await self._bring_sora_drafts_to_front(drafts_url=target_url)
+                            async with self._bring_drafts_lock:
+                                await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+                                await self._bring_sora_drafts_to_front(acquire_bring_lock=False)
                             if attempt >= max_create_attempts:
                                 raise
                             continue
@@ -3029,9 +3042,9 @@ class SoraSession:
                             log_file,
                             f"[sora][create] 首帧上传失败，准备第 {attempt + 1}/{max_create_attempts} 次重试：{safe_trim(err_msg, 400)!r}",
                         )
-                        # 注意：_bring_sora_drafts_to_front 内部会拿 _bring_drafts_lock，
-                        # 所以这里必须在未持锁状态下调用，避免锁重入。
-                        await self._bring_sora_drafts_to_front(drafts_url=target_url)
+                        async with self._bring_drafts_lock:
+                            await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+                            await self._bring_sora_drafts_to_front(acquire_bring_lock=False)
 
                 if task_id is None:
                     if last_create_err:
@@ -3111,18 +3124,19 @@ class SoraSession:
                     return
 
                 try:
-                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-                    # monitor_loop 内也要保证有可用 page（ensure_open 已不再强制挑 page）
-                    page_closed = False
-                    if self.pw_ctx.page is not None:
-                        try:
-                            page_closed = bool(getattr(self.pw_ctx.page, "is_closed", lambda: False)())
-                        except Exception:
-                            page_closed = False
-                    if self.pw_ctx.page is None or page_closed:
-                        await self._bring_sora_drafts_to_front(refresh_target=False)
-                    if self.pw_ctx.page is None:
-                        raise RuntimeError("无法获取可用 page（context/pages 不可用或 drafts 打开失败）")
+                    self._cancel_idle_close()
+                    async with self._bring_drafts_lock:
+                        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                        await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
+                        # monitor_loop 内也要保证有可用 page（ensure_open 已不再强制挑 page）
+                        page_closed = False
+                        if self.pw_ctx.page is not None:
+                            try:
+                                page_closed = bool(getattr(self.pw_ctx.page, "is_closed", lambda: False)())
+                            except Exception:
+                                page_closed = False
+                        if self.pw_ctx.page is None:
+                            raise RuntimeError("无法获取可用 page（context/pages 不可用或 drafts 打开失败）")
                 except Exception as e:
                     for tid, w in list(self.watchers.items()):
                         if not w.future.done():
@@ -3154,6 +3168,9 @@ class SoraSession:
 
                 tx: Optional[Dict[str, Any]] = None
                 async with self._bring_drafts_lock:
+                    self._cancel_idle_close()
+                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                    await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                     try:
                         tx = await page_fetch_tx(self.pw_ctx.page, url=pending_url, method="GET", headers=headers, json_data=None, log_file=log_file)
                     except Exception as e:
@@ -3199,7 +3216,10 @@ class SoraSession:
                                 pass
 
                 if missing_tids:
+                    self._cancel_idle_close()
                     async with self._bring_drafts_lock:
+                        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                        await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                         try:
                             drafts = await _sora_api_get_video_drafts_pw(
                                 self.pw_ctx.page,
@@ -3233,6 +3253,7 @@ class SoraSession:
                 if not self.watchers:
                     return
                 self._cancel_idle_close()
+                await self.disconnect_playwright_under_bring_lock()
                 await asyncio.sleep(float(self.poll_interval_seconds))
         finally:
             if not self.watchers:
@@ -3252,11 +3273,7 @@ class SoraSession:
         _ = prompt  # 预留：未来扩展（例如校验 prompt 匹配）
         self.last_used_at = time.time()
         # 发布/轮询 drafts 期间仍在使用窗口：不要触发倒计时关窗
-        self._cancel_idle_close()
-        await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless)
-        await asyncio.sleep(5)
-        await self._bring_sora_drafts_to_front(refresh_target=False)
-        
+        self._cancel_idle_close()        
         log_file = Path(self.monitor_log_path) if self.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
         token = self._get_bearer_token_required()
 
@@ -3292,8 +3309,11 @@ class SoraSession:
         while time.time() < deadline and draft_item is None:
             attempt += 1
             items = []
+            self._cancel_idle_close()
             async with self._bring_drafts_lock:
                 try:
+                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                    await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                     drafts = await _sora_api_get_video_drafts_pw(
                         self.pw_ctx.page,
                         target_url=target_url,
@@ -3334,9 +3354,7 @@ class SoraSession:
 
             if draft_item is not None:
                 break
-            self._cancel_idle_close()
             await asyncio.sleep(float(drafts_poll_interval))
-            await self._bring_sora_drafts_to_front(refresh_target=False)
 
         if not draft_item:
             raise RuntimeError(
@@ -3356,7 +3374,10 @@ class SoraSession:
         post_resp: Dict[str, Any] = {}
         for publish_attempt in range(1, max_publish_attempts + 1):
             try:
+                self._cancel_idle_close()
                 async with self._bring_drafts_lock:
+                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+                    await self._bring_sora_drafts_to_front(refresh_target=False, acquire_bring_lock=False)
                     sentinel_token = await _sora_generate_sentinel_token_in_fp_context_pw(
                         self.pw_ctx.page,
                         device_id=self.oai_device_id,
@@ -3397,7 +3418,9 @@ class SoraSession:
                         except Exception:
                             pass
                     raise NonPenalizedTaskError(f"发布草稿失败: {err_kind}-{reason_str}-{markdown_reason_str}-{err_msg}", status_code=400)
-                await self._bring_sora_drafts_to_front()
+                async with self._bring_drafts_lock:
+                    await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless,acquire_bring_lock=False)
+                    await self._bring_sora_drafts_to_front(acquire_bring_lock=False)
         
         post_id = ""
         try:
@@ -3596,7 +3619,7 @@ async def sora_gen_video(
     monitor_log_path = (str(payload.get("sora_monitor_log_path") or "").strip() or None)
 
     max_wait_seconds = float(payload.get("sora_pending_max_wait_seconds") or max(30.0, min(float(timeout_seconds), 90.0 * 10)))
-    poll_interval_seconds = float(payload.get("sora_pending_poll_interval_seconds") or 5.0)
+    poll_interval_seconds = float(payload.get("sora_pending_poll_interval_seconds") or 15.0)
     sniff_timeout_seconds = float(payload.get("sora_pending_sniff_timeout_seconds") or 4.0)
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
 
@@ -3666,8 +3689,6 @@ async def sora_gen_video(
             tmp_img = await _write_bytes_to_tempfile_local_async(avatar_bytes, suffix=tmp_suffix)
 
             await progress_cb(10, {"stage": "character_from_generation_submit", "generation_id": generation_id})
-            await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-            await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
             await sess._raise_if_cloudflare_page_nonpenalized(
                 sess.pw_ctx.page, stage="角色创建（from_generation 前）", drafts_url=target_url
             )
@@ -3678,7 +3699,9 @@ async def sora_gen_video(
                     cameo_obj = await sess.api_characters_from_generation(target_url=target_url, generation_id=str(generation_id))
                     break
                 except Exception as e:
-                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
+                    async with sess._bring_drafts_lock:
+                        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless,acquire_bring_lock=False)
+                        await sess._bring_sora_drafts_to_front(acquire_bring_lock=False)
                     if _from_gen_attempt == 2:
                         raise
             cameo_id = str((cameo_obj or {}).get("id") or "").strip()
@@ -3704,7 +3727,9 @@ async def sora_gen_video(
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
-                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
+                    async with sess._bring_drafts_lock:
+                        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless,acquire_bring_lock=False)
+                        await sess._bring_sora_drafts_to_front(acquire_bring_lock=False)
                     if consecutive_errors >= 5:
                         raise RuntimeError(f"轮询 cameo owned 状态失败{consecutive_errors}次：{e}")
                     continue
@@ -3769,7 +3794,9 @@ async def sora_gen_video(
                     )
                     break
                 except Exception as e:
-                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
+                    async with sess._bring_drafts_lock:
+                        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless,acquire_bring_lock=False)
+                        await sess._bring_sora_drafts_to_front(acquire_bring_lock=False)
                     if _finalize_attempt == 2:
                         raise NonPenalizedTaskError(f"角色 finalize 失败：{e}", status_code=400)
 
@@ -3783,11 +3810,6 @@ async def sora_gen_video(
                 update_payload["instruction_set"] = {"value": hint}
                 update_payload["value"] = hint
             await sess.api_cameo_update_v2(target_url=target_url, cameo_id=cameo_id, payload=update_payload)
-
-            try:
-                await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
-            except Exception:
-                pass
 
             await progress_cb(100, {"stage": "done", "cameo_id": cameo_id, "character_id": character_id, "username_hint": username})
             return {
@@ -3813,7 +3835,7 @@ async def sora_gen_video(
         target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
         monitor_log_path = (str(payload.get("sora_monitor_log_path") or "").strip() or None)
         max_wait_seconds = float(payload.get("character_pending_max_wait_seconds") or payload.get("sora_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 60.0 * 15)))
-        poll_interval_seconds = float(payload.get("character_pending_poll_interval_seconds") or 5.0)
+        poll_interval_seconds = float(payload.get("character_pending_poll_interval_seconds") or 10.0)
         idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
         sess.monitor_log_path = monitor_log_path
         sess.idle_close_seconds = max(0.0, float(idle_close_seconds))
@@ -3849,8 +3871,6 @@ async def sora_gen_video(
             if float(dur) > 16.0 + 1e-6:
                 raise NonPenalizedTaskError(f"视频时长过长：{dur:.3f}s（限制 ≤16s）", status_code=400)
 
-            await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-            await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
             await sess._raise_if_cloudflare_page_nonpenalized(
                 sess.pw_ctx.page, stage="角色创建（上传角色视频前）", drafts_url=target_url
             )
@@ -3881,7 +3901,6 @@ async def sora_gen_video(
                     consecutive_errors = 0
                 except Exception as e:
                     consecutive_errors += 1
-                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if consecutive_errors >= 4:
                         raise RuntimeError(f"轮询 cameo 状态失败{consecutive_errors}次数过多：{e}")
                     continue
@@ -3943,17 +3962,11 @@ async def sora_gen_video(
                     )
                     break
                 except Exception as e:
-                    await sess._bring_sora_drafts_to_front(drafts_url=target_url)
                     if _finalize_attempt == 2:
                         raise NonPenalizedTaskError(f"角色 finalize 失败：{e}", status_code=400)
 
             await progress_cb(90, {"stage": "character_set_public"})
             await sess.api_character_set_public(target_url=target_url, cameo_id=cameo_id)
-
-            try:
-                await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
-            except Exception:
-                pass
 
             await progress_cb(100, {"stage": "done", "cameo_id": cameo_id, "character_id": character_id})
             return {
@@ -3990,7 +4003,7 @@ async def sora_gen_video(
         browser_force_open=False,
         browser_headless=headless,
     )
-    await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
+    await sess.disconnect_playwright_under_bring_lock()
     await progress_cb(10, {"stage": "created", "task_id": task_id})
     await progress_cb(10, {"stage": "monitor_progress", "task_id": task_id})
     progress_result = await sess.watch_task_progress(
@@ -4002,6 +4015,7 @@ async def sora_gen_video(
         idle_close_seconds=idle_close_seconds,
     )
 
+    await sess.disconnect_playwright_under_bring_lock()
     await progress_cb(90, {"stage": "drafts_and_publish", "task_id": task_id})
     publish_result = await sess.finalize_video_and_publish(
         task_id=task_id,
@@ -4010,8 +4024,6 @@ async def sora_gen_video(
         target_url=target_url,
         drafts_limit=int(payload.get("sora_drafts_limit") or 15),
     )
-
-    await sess._bring_sora_drafts_to_front(refresh_target=False, drafts_url=target_url)
 
     await progress_cb(100, {"stage": "done", "task_id": task_id, "post_id": publish_result.get("post_id")})
     _ = progress_result
