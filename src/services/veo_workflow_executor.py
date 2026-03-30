@@ -16,7 +16,7 @@ import random
 import re
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urlparse
@@ -57,6 +57,52 @@ def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
     if len(s) <= max_len:
         return s
     return s[: max(10, max_len - 3)] + "..."
+
+
+def _veo_parse_access_expires(raw: Any) -> Optional[datetime]:
+    """解析 Labs / NextAuth 返回的 expires（ISO-8601、带 Z、或 SQLite 本地时间串）。"""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    if s.endswith("Z") and len(s) > 1:
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s.replace(" ", "T", 1))
+        return dt
+    except ValueError:
+        pass
+    try:
+        if len(s) >= 19:
+            return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _veo_cached_access_still_valid(
+    token: Optional[str],
+    expires_raw: Optional[str],
+    *,
+    margin_seconds: float,
+) -> bool:
+    """若 mapping 上已有 access_token 且 expires 未到（预留 margin），则无需再开窗拉取。"""
+    at = str(token or "").strip()
+    if not at:
+        return False
+    exp_s = str(expires_raw or "").strip()
+    if not exp_s:
+        # auth/session 未给 expires、或仅存 session_token 时无法判断过期点，沿用缓存避免每次开窗
+        return True
+    dt = _veo_parse_access_expires(exp_s)
+    if dt is None:
+        return False
+    margin = timedelta(seconds=max(0.0, float(margin_seconds)))
+    if dt.tzinfo is None:
+        return datetime.now() + margin < dt
+    return datetime.now(timezone.utc) + margin < dt.astimezone(timezone.utc)
 
 
 def _build_debug_progress_panel_script() -> str:
@@ -2041,10 +2087,10 @@ async def veo_fetch_access_token_in_window(
     sess._cancel_idle_close()
 
     async with sess._bring_drafts_lock:
+        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
+        await sess._bring_target_page_to_front(refresh_target=True, drafts_url=target_url, acquire_bring_lock=False)
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
-        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
-        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
 
         log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
 
@@ -2214,12 +2260,10 @@ async def veo_create_flow_project_in_window(
     if not title:
         raise RuntimeError("项目标题不能为空")
     tn = str(tool_name or "PINHOLE").strip() or "PINHOLE"
-
-    await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless)
-    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
     sess._cancel_idle_close()
-
     async with sess._bring_drafts_lock:
+        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
+        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
@@ -2770,7 +2814,7 @@ async def _veo_execute_image_mode(
                 out["generated_media_id"] = media_name
             return out
 
-        raise NonPenalizedTaskError(last_submit_err or "图片生成提交失败", status_code=502)
+        raise RuntimeError(last_submit_err or "图片生成提交失败")
 
     async with sess._bring_drafts_lock:
         try:
@@ -2814,7 +2858,6 @@ async def veo_workflow(
     → veo_url 中的 /tools/flow/project/{id}
     → 若传入 db 与 task_type_window_id（task_type_windows.id），则从 veo_flow_projects 随机一条。
     """
-    _ = access_expires
     payload = payload or {}
     project_id_from_db = False
     prompt = str(payload.get("prompt") or "").strip()
@@ -2916,21 +2959,46 @@ async def veo_workflow(
     await progress_cb(5, {"stage": "navigate", "url": project_page})
     append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
 
-    #at = str(access_token or "").strip() or None
-    #if not at:
+    renew_margin = float(payload.get("veo_access_token_renew_margin_seconds") or 120.0)
+    renew_margin = max(0.0, min(3600.0, renew_margin))
+
+    at = str(access_token or "").strip() or None
+    exp_db = str(access_expires or "").strip() or None
+    if db is not None and task_type_window_id:
+        try:
+            mid = int(task_type_window_id)
+            if mid > 0:
+                row = await db.get_task_type_window_context(mid)
+                if row:
+                    t2 = str(row.get("sora_access_token") or "").strip() or None
+                    e2 = str(row.get("sora_access_expires") or "").strip() or None
+                    if t2:
+                        at, exp_db = t2, e2
+        except Exception as e:
+            append_log(log_file, f"[veo] reload access_token from DB failed (use call args): {e}")
+
     tok_info: Optional[Dict[str, Any]] = None
-    try:
-        tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
-        at = str((tok_info or {}).get("access_token") or "").strip() or None
-    except Exception as e:
-        append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
-        at = None
+    fetched_token_in_window = False
+    if _veo_cached_access_still_valid(at, exp_db, margin_seconds=renew_margin):
+        append_log(
+            log_file,
+            f"[veo] reuse mapping access_token (expires ok, margin_s={renew_margin:.0f}, skip window fetch)",
+        )
+        tok_info = {"access_token": at, "expires": exp_db or None}
+    else:
+        try:
+            tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
+            fetched_token_in_window = True
+            at = str((tok_info or {}).get("access_token") or "").strip() or None
+        except Exception as e:
+            append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
+            at = None
     if not at:
         raise NonPenalizedTaskError(
             "缺少可用的 access_token：请在任务窗口映射中配置 Labs access_token，或确保指纹窗口已登录并可取得凭证",
             status_code=401,
         )
-    if db is not None and task_type_window_id:
+    if fetched_token_in_window and db is not None and task_type_window_id:
         try:
             mid = int(task_type_window_id)
             if mid > 0:
@@ -3190,7 +3258,7 @@ async def veo_workflow(
             break
         else:
             _submit_fail = "图生视频提交失败" if want_i2v else "文生视频提交失败"
-            raise NonPenalizedTaskError(last_submit_err or _submit_fail, status_code=502)
+            raise RuntimeError(last_submit_err or _submit_fail)
 
         await progress_cb(25, {"stage": "polling", "operations": len(operations)})
         sess._cancel_idle_close()

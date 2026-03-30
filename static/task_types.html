@@ -2680,8 +2680,19 @@
 
           if (role === "remainingQuota") {
             toggleQuotaSort();
-          } else if (role === "accessToken") {
-            const tok = String(roleEl.dataset.token || "").trim();
+          } else if (role === "accessToken" || role === "accessTokenMasked") {
+            // 点击遮罩文字时 closest 会先命中内层 accessTokenMasked，需从外层 data-token 或 state 取完整 token
+            let tok = "";
+            if (role === "accessToken") {
+              tok = String(roleEl.dataset.token || "").trim();
+            } else {
+              const wrap = roleEl.closest('[data-role="accessToken"]');
+              tok = String(wrap?.dataset?.token || "").trim();
+            }
+            if (!tok && !Number.isNaN(mid)) {
+              const m = (state.mappings || []).find(x => String(x.id || "") === String(mid));
+              tok = String(m?.sora_access_token || "").trim();
+            }
             if (!tok) return toast("access_token 为空", "warning");
             copyToClipboard(tok)
               .then(() => toast("已复制 access_token", "success"))
