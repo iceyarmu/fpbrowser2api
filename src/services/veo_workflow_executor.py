@@ -1812,8 +1812,8 @@ async def _veo_fetch_recaptcha_token_new_page(
     page = None
     website_key = VEO_RECAPTCHA_SITE_KEY
     page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
-    primary_host = "https://www.google.com"
-    secondary_host = "https://www.recaptcha.net"
+    primary_host = "https://www.recaptcha.net"
+    secondary_host = "https://www.google.com"
 
     try:
         page = await browser_context.new_page()
@@ -2769,7 +2769,7 @@ async def _veo_execute_image_mode(
             }
     
             await progress_cb(
-                18,
+                10,
                 {
                     "stage": "submit_image_task",
                     "attempt": attempt + 1,
