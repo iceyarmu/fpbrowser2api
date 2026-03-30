@@ -110,12 +110,13 @@
       <div class="card shadow-sm">
         <div class="card-body">
           <div class="table-responsive">
-            <table class="table table-sm align-middle" style="min-width: 1240px;">
+            <table class="table table-sm align-middle" style="min-width: 1320px;">
               <thead>
                 <tr class="small2">
                   <th style="min-width: 160px;">窗口信息</th>
                   <th style="min-width: 150px;">IP</th>
                   <th style="min-width: 120px;">任务类型</th>
+                  <th style="min-width: 72px;">媒体</th>
                   <th style="min-width: 80px;">task_id</th>
                   <th style="min-width: 100px;">状态</th>
                   <th style="min-width: 100px;">进度</th>
@@ -319,6 +320,52 @@
         const p = item?.prompt;
         if (typeof p === "string" && p.trim()) return p;
         return "";
+      }
+
+      /** 与后端 sora_task_executor._pick_n_frames 对齐 */
+      function pickNFrames(v) {
+        let iv;
+        try {
+          const n = Number(v);
+          if (!Number.isFinite(n)) throw new Error("nan");
+          iv = Math.trunc(n);
+        } catch {
+          iv = 300;
+        }
+        if (iv === 300 || iv === 450) return iv;
+        if (iv === 10) return 300;
+        if (iv === 15) return 450;
+        return 450;
+      }
+
+      /** 与后端 veo_workflow_executor._veo_resolve_n_frames 对齐 */
+      function resolveNFramesFromPromptItem(item) {
+        const text = getPromptText(item);
+        if (!text) return pickNFrames(undefined);
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          return pickNFrames(undefined);
+        }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+          return pickNFrames(undefined);
+        }
+        const duration_v =
+          payload.n_frames ?? payload.duration_frames ?? payload.duration ?? payload["时长"];
+        let iv = 0;
+        try {
+          const n = Number(duration_v);
+          if (Number.isFinite(n)) iv = Math.trunc(n);
+        } catch {
+          iv = 0;
+        }
+        if (iv === 1) return 1;
+        return pickNFrames(duration_v);
+      }
+
+      function mediaKindLabel(item) {
+        return resolveNFramesFromPromptItem(item) === 1 ? "图片" : "视频";
       }
 
       function formatCreatedAtLocal(createdAt) {
@@ -733,13 +780,15 @@
         document.getElementById("btnNextBottom").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="12" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="13" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
         body.innerHTML = state.items.map(x => {
           const code = x.task_type_code || "-";
           const typeName = state.typeMap.get(String(code)) || String(code);
+          const nFramesResolved = resolveNFramesFromPromptItem(x);
+          const mediaLabel = mediaKindLabel(x);
           const err = x.error_message || "";
           const pNum = Number(x?.progress);
           const progress = Number.isFinite(pNum) ? Math.max(0, Math.min(100, Math.trunc(pNum))) : null;
@@ -772,6 +821,7 @@
               </td>
               <td class="mono truncate-1" title="${escapeHtml(windowIp)}">${escapeHtml(windowIp)}</td>
               <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
+              <td class="text-nowrap" title="n_frames=${escapeHtml(String(nFramesResolved))}">${escapeHtml(mediaLabel)}</td>
               <td class="mono" style="max-width: 120px;">${escapeHtml(x.task_id || "")}</td>
               <td>${badgeForStatus(x.status)}${isCharacterCreation(x) ? ' <span class="badge text-bg-info">角色创建</span>' : ''}</td>
               <td>

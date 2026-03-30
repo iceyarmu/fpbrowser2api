@@ -2369,12 +2369,10 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
 
         tier = str((info or {}).get("user_paygate_tier") or "").strip() or None
         plan_title = veo_format_paygate_tier_label(tier)
-        credits = int((info or {}).get("credits") or 0)
+        # 「刷新会员信息」仅更新套餐/档位展示，不写入 remaining_quota（余额请用「刷新额度」）
         await db.update_task_type_window(
             mapping_id=mapping_id,
             sora_plan_title=plan_title,
-            remaining_quota=credits,
-            sora_remaining_count=credits,
         )
         try:
             await veo_ctx.disconnect_playwright_under_bring_lock()
@@ -2385,7 +2383,6 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             "mapping_id": mapping_id,
             "plan_title": plan_title,
             "subscription_end": None,
-            "credits": credits,
             "user_paygate_tier": tier,
         }
 

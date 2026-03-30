@@ -3004,7 +3004,9 @@
             sora_plan_title: d?.plan_title || "",
             sora_subscription_end: d?.subscription_end != null ? d.subscription_end : "",
           };
-          if (d && typeof d.credits === "number") {
+          const _subHandler = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          // veo_workflow：刷新会员信息只更新套餐名，不刷新余额（与后端 refresh-subscription-info 一致）
+          if (_subHandler !== "veo_workflow" && d && typeof d.credits === "number") {
             patch.remaining_quota = d.credits;
           }
           updateMappingRowUI(mappingId, patch);
