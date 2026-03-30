@@ -3804,7 +3804,7 @@ class Database:
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            error_cooldown_until = datetime('now','localtime', '+60 seconds'),
+                            error_cooldown_until = datetime('now','localtime', '+30 seconds'),
                             updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1

@@ -2724,6 +2724,49 @@ def _veo_parse_batch_generate_images_fife_url(resp: Any) -> tuple[str, Optional[
     return fife, mid
 
 
+async def _veo_ui_fill_prompt_textbox(page, *, prompt: Any, log_file: Path) -> bool:
+    """在 `role="textbox"` 的可编辑区填入 prompt（仅输入；提交由后续 `page_fetch_json` 完成）。"""
+    try:
+        prompt_s = str(prompt or "")
+    except Exception:
+        prompt_s = ""
+    prompt_s = prompt_s.strip()
+    if not prompt_s:
+        return False
+
+    selectors = [
+        'div[role="textbox"]',
+        '[role="textbox"]',
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            await loc.first.wait_for(state="visible", timeout=2500)
+            try:
+                await loc.first.click(timeout=1500)
+            except Exception:
+                pass
+            await loc.first.fill(prompt_s, timeout=5000)
+            ok = False
+            try:
+                v = await loc.first.inner_text()
+                if str(v or "").strip():
+                    ok = True
+            except Exception:
+                ok = False
+            if ok:
+                append_log(
+                    log_file,
+                    f"[veo][ui] prompt filled into textbox selector={sel!r} len={len(prompt_s)}",
+                )
+                return True
+        except Exception:
+            continue
+
+    append_log(log_file, "[veo][ui] prompt fill skipped: role=textbox not found/visible")
+    return False
+
+
 async def _veo_execute_image_mode(
     *,
     payload: Dict[str, Any],
@@ -2877,7 +2920,9 @@ async def _veo_execute_image_mode(
                     "image_mode": "i2i" if want_i2i else "t2i",
                 },
             )
-    
+
+            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
+
             try:
                 print(f"submit_url: {submit_url}")
                 tx = await page_fetch_json(
@@ -2892,7 +2937,6 @@ async def _veo_execute_image_mode(
                     json_data=json_data,
                     log_file=log_file,
                 )
-                print(f"tx: {tx}")
             except Exception as e:
                 last_submit_err = f"submit fetch error: {_short_err_msg(e, max_len=200)}"
                 print(f"last_submit_err: {last_submit_err}")
@@ -3453,6 +3497,9 @@ async def veo_workflow(
                     "video_mode": "i2v" if want_i2v else "t2v",
                 },
             )
+
+            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
+
             try:
                 tx = await page_fetch_json(
                     page,
