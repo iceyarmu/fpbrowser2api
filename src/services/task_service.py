@@ -155,6 +155,8 @@ class TaskService:
         self._window_pool_task: Optional[asyncio.Task] = None
         self._window_pool_lock = asyncio.Lock()
         self._window_pool_reconcile_serial = asyncio.Lock()
+        self._window_pool_wake = asyncio.Event()
+        self._window_pool_force_reconcile = False
         self._window_pool_targets: dict[str, set[int]] = {}
         # Cloudflare 巡检周期（较长，默认 30 分钟）
         self._window_pool_cf_interval: float = 1800.0
@@ -217,6 +219,44 @@ class TaskService:
             except Exception:
                 pass
 
+    def _signal_window_pool_replenish(self) -> None:
+        """空闲关闭等导致缺窗时唤醒 supervisor 尽快 reconcile；正在 reconcile 时忽略。"""
+        try:
+            if self._window_pool_reconcile_serial.locked():
+                return
+        except Exception:
+            return
+        self.start_window_pool_maintainer()
+        try:
+            self._window_pool_wake.set()
+        except Exception:
+            pass
+
+    async def _window_pool_wait_interruptible(self, timeout: float) -> bool:
+        """休眠最多 timeout 秒；若 stop 则返回 True。期间收到 wake 则清除事件并在未占用 reconcile 锁时置 force。"""
+        if timeout <= 0:
+            return self._window_pool_stop.is_set()
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._window_pool_stop.is_set():
+                return True
+            if self._window_pool_wake.is_set():
+                self._window_pool_wake.clear()
+                try:
+                    if not self._window_pool_reconcile_serial.locked():
+                        self._window_pool_force_reconcile = True
+                except Exception:
+                    pass
+                return False
+            rem = deadline - time.monotonic()
+            if rem <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self._window_pool_stop.wait(), timeout=min(1.0, rem))
+                return True
+            except asyncio.TimeoutError:
+                pass
+
     async def _window_pool_supervisor_loop(self) -> None:
         # 首次 Cloudflare 巡检在启动后满 cf_interval 再执行，避免与首轮 reconcile 抢浏览器打开槽位
         last_cf = time.monotonic()
@@ -224,7 +264,11 @@ class TaskService:
         last_reconcile = time.monotonic() - self._window_pool_reconcile_interval
         while not self._window_pool_stop.is_set():
             now = time.monotonic()
-            if now - last_reconcile >= self._window_pool_reconcile_interval:
+            reconcile_due = self._window_pool_force_reconcile or (
+                now - last_reconcile >= self._window_pool_reconcile_interval
+            )
+            if reconcile_due:
+                self._window_pool_force_reconcile = False
                 last_reconcile = now
                 try:
                     await self._window_pool_reconcile_once()
@@ -246,14 +290,8 @@ class TaskService:
             due_c = max(0.0, last_cf + self._window_pool_cf_interval - now)
             wait = min(due_r, due_c, self._window_pool_supervisor_poll_cap)
             wait = max(0.1, wait)
-            try:
-                await asyncio.wait_for(
-                    self._window_pool_stop.wait(),
-                    timeout=wait,
-                )
+            if await self._window_pool_wait_interruptible(wait):
                 break
-            except asyncio.TimeoutError:
-                pass
 
     async def _window_pool_reconcile_once(self) -> None:
         async with self._window_pool_reconcile_serial:
@@ -1634,6 +1672,7 @@ class TaskService:
                                 sess._schedule_idle_close()
                         except Exception:
                             pass
+                        self._signal_window_pool_replenish()
                 if not _need_retry:
                     logger.exception("task failed: %s err=%s", task_id, e)
             finally:
@@ -1650,6 +1689,7 @@ class TaskService:
                         sess._schedule_idle_close()
                     except Exception:
                         pass
+                    self._signal_window_pool_replenish()
                 if not _need_retry:
                     self._task_payloads.pop(task_id, None)
         finally:
