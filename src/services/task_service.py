@@ -1383,6 +1383,16 @@ class TaskService:
                     return None
 
                 at = str(picked.sora_access_token or "").strip()
+                try:
+                    row = await self.db.get_task_type_window_context(picked.mapping_id)
+                    if row:
+                        t2 = str(row.get("sora_access_token") or "").strip() or None
+                        if t2:
+                            at = t2
+                            picked.sora_access_token = t2
+                            picked.sora_access_expires = str(row.get("sora_access_expires") or "").strip() or None
+                except Exception:
+                    pass
                 if not at:
                     return None
 

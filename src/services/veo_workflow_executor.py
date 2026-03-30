@@ -1297,6 +1297,7 @@ FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/
 FLOW_VIDEO_SUBMIT_I2V_START_END_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartAndEndImage"
 FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
 FLOW_FLOW_UPSAMPLE_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage"
+# Flow / Labs 当前常用 enterprise site key；动态解析失败时兜底（与 flow2api 一致）
 VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 
 # 与 flow2api generation_handler gemini-3.1-flash-image-*（NARWHAL）一致
@@ -1798,6 +1799,63 @@ def _veo_generate_session_id() -> str:
     return f";{int(time.time() * 1000)}"
 
 
+def _veo_parse_recaptcha_site_key_from_url(url: str) -> Optional[str]:
+    """从 enterprise.js 等请求 URL 的 render= 参数解析 site key。"""
+    try:
+        u = str(url or "")
+        if "enterprise.js" not in u or "render=" not in u:
+            return None
+        parsed = urlparse(u)
+        render = (parse_qs(parsed.query or "").get("render") or [None])[0]
+        if not render:
+            return None
+        s = str(render).strip()
+        if len(s) < 20:
+            return None
+        return s
+    except Exception:
+        return None
+
+
+async def _veo_resolve_recaptcha_site_key_on_page(
+    page: Any,
+    keys_seen: List[str],
+    *,
+    deadline_monotonic: float,
+) -> Optional[str]:
+    """在已打开的真实 Flow 页上，结合请求监听器写入的 keys_seen 与 DOM 轮询解析 site key。"""
+
+    def _pick_net() -> Optional[str]:
+        for x in keys_seen:
+            t = str(x or "").strip()
+            if t:
+                return t
+        return None
+
+    while time.monotonic() < deadline_monotonic:
+        k = _pick_net()
+        if k:
+            return k
+        try:
+            dom_k = await page.evaluate(
+                r"""() => {
+                    const re = /[?&]render=([^&]+)/;
+                    for (const s of document.querySelectorAll('script[src]')) {
+                        const src = s.getAttribute('src') || '';
+                        const m = re.exec(src);
+                        if (m) return decodeURIComponent(m[1]);
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:
+            dom_k = None
+        if dom_k:
+            return str(dom_k).strip() or None
+        await asyncio.sleep(0.35)
+    return _pick_net()
+
+
 async def _veo_fetch_recaptcha_token_new_page(
     browser_context: Any,
     *,
@@ -1805,66 +1863,53 @@ async def _veo_fetch_recaptcha_token_new_page(
     action: str,
     log_file: Path,
 ) -> Optional[str]:
-    """在独立新页按 flow2api BrowserCaptcha 思路打码：goto Labs project URL + 路由注入 enterprise.js。
+    """在独立新标签打开真实 Labs 项目页，优先从网络/DOM 解析 site key，失败则用 VEO_RECAPTCHA_SITE_KEY 兜底再 execute。
 
-    指纹浏览器侧已由环境固定代理，此处不切换 recaptcha.net / 不采集 UA 指纹；仅关闭打码页。
+    依赖指纹浏览器 context 内已有 Labs 登录态。
     """
     page = None
-    website_key = VEO_RECAPTCHA_SITE_KEY
     page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
-    primary_host = "https://www.recaptcha.net"
-    secondary_host = "https://www.google.com"
+    keys_seen: List[str] = []
+
+    def on_request(req: Any) -> None:
+        try:
+            sk = _veo_parse_recaptcha_site_key_from_url(req.url)
+            if sk and sk not in keys_seen:
+                keys_seen.append(sk)
+        except Exception:
+            pass
 
     try:
         page = await browser_context.new_page()
         await page.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )
-        append_log(
-            log_file,
-            f"[veo][recaptcha] new page enterprise.js primary={primary_host} secondary={secondary_host}",
+        page.on("request", on_request)
+        append_log(log_file, f"[veo][recaptcha] new page goto real Flow project (resolve site key from page)")
+
+        try:
+            await page.goto(page_url, wait_until="load", timeout=45000)
+        except Exception as e:
+            append_log(
+                log_file,
+                f"[veo][recaptcha] goto failed: {type(e).__name__}: {str(e)[:200]}",
+            )
+            return None
+
+        resolve_deadline = time.monotonic() + 18.0
+        website_key = await _veo_resolve_recaptcha_site_key_on_page(
+            page, keys_seen, deadline_monotonic=resolve_deadline
         )
+        if website_key:
+            print(f"[veo][recaptcha] site key from page len={len(website_key)}")
+            append_log(log_file, f"[veo][recaptcha] site key from page len={len(website_key)}")
+        else:
+            website_key = VEO_RECAPTCHA_SITE_KEY
+            append_log(
+                log_file,
+                "[veo][recaptcha] site key not resolved from network/DOM, fallback VEO_RECAPTCHA_SITE_KEY",
+            )
 
-        async def handle_route(route: Any) -> None:
-            if route.request.url.rstrip("/") == page_url.rstrip("/"):
-                html = f"""<html><head><script>
-                    (() => {{
-                        const urls = [
-                            '{primary_host}/recaptcha/enterprise.js?render={website_key}',
-                            '{secondary_host}/recaptcha/enterprise.js?render={website_key}'
-                        ];
-                        const loadScript = (index) => {{
-                            if (index >= urls.length) return;
-                            const script = document.createElement('script');
-                            script.src = urls[index];
-                            script.async = true;
-                            script.onerror = () => loadScript(index + 1);
-                            document.head.appendChild(script);
-                        }};
-                        loadScript(0);
-                    }})();
-                    </script></head><body></body></html>"""
-                await route.fulfill(status=200, content_type="text/html", body=html)
-            elif any(d in route.request.url for d in ["google.com", "gstatic.com", "recaptcha.net"]):
-                await route.continue_()
-            else:
-                await route.abort()
-
-        def handle_request_failed(request: Any) -> None:
-            try:
-                failed_url = request.url or ""
-                if not any(d in failed_url for d in ["google.com", "gstatic.com", "recaptcha.net"]):
-                    return
-                failure = request.failure or ""
-                append_log(
-                    log_file,
-                    f"[veo][recaptcha] resource failed: url={failed_url[:200]!s} err={failure!s}",
-                )
-            except Exception:
-                pass
-
-        await page.route("**/*", handle_route)
-        page.on("requestfailed", handle_request_failed)
         reload_ok_event = asyncio.Event()
         clr_ok_event = asyncio.Event()
 
@@ -1888,17 +1933,24 @@ async def _veo_fetch_recaptcha_token_new_page(
                 pass
 
         page.on("response", handle_response)
-        try:
-            await page.goto(page_url, wait_until="load", timeout=30000)
-        except Exception as e:
-            append_log(
-                log_file,
-                f"[veo][recaptcha] goto failed: {type(e).__name__}: {str(e)[:200]}",
-            )
-            return None
+
+        def handle_request_failed(request: Any) -> None:
+            try:
+                failed_url = request.url or ""
+                if not any(d in failed_url for d in ["google.com", "gstatic.com", "recaptcha.net"]):
+                    return
+                failure = request.failure or ""
+                append_log(
+                    log_file,
+                    f"[veo][recaptcha] resource failed: url={failed_url[:200]!s} err={failure!s}",
+                )
+            except Exception:
+                pass
+
+        page.on("requestfailed", handle_request_failed)
 
         try:
-            await page.wait_for_function("typeof grecaptcha !== 'undefined'", timeout=15000)
+            await page.wait_for_function("typeof grecaptcha !== 'undefined'", timeout=20000)
         except Exception as e:
             append_log(
                 log_file,
