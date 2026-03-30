@@ -195,7 +195,6 @@ class FPBrowserClient:
             args.append("--disable-threaded-scrolling")
             args.append("--mute-audio")
             args.append("--disable-extensions")
-            args.append("--blink-settings=imagesEnabled=false")
             args.append("--autoplay-policy=user-gesture-required")
             args.append("--blink-settings=imagesEnabled=false")
         else:
@@ -203,11 +202,10 @@ class FPBrowserClient:
             ##args.append("--disable-animations")
             ##args.append("--disable-threaded-animation")
             ##args.append("--disable-threaded-scrolling")
-            ##args.append("--mute-audio")
+            args.append("--mute-audio")
             ##args.append("--disable-extensions")
-            ##args.append("--blink-settings=imagesEnabled=false")
             ##args.append("--autoplay-policy=user-gesture-required")
-            ##args.append("--blink-settings=imagesEnabled=false")
+            args.append("--blink-settings=imagesEnabled=false")
             pass
 
         return await self._roxy_open_browser(

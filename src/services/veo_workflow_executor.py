@@ -1856,6 +1856,25 @@ async def _veo_resolve_recaptcha_site_key_on_page(
     return _pick_net()
 
 
+def _veo_page_is_target_flow_project_url(url: str, project_id: str) -> bool:
+    """判断当前页是否已是目标 Flow 项目页（与 goto 的 labs 项目 URL 一致，忽略 path 尾斜杠与 query）。"""
+    pid = str(project_id or "").strip()
+    if not pid:
+        return False
+    try:
+        cur = urlparse(str(url or "").strip())
+    except Exception:
+        return False
+    if (cur.scheme or "").lower() != "https":
+        return False
+    netloc = (cur.netloc or "").split("@")[-1].split(":")[0].lower()
+    if "labs.google" not in netloc:
+        return False
+    path = (cur.path or "").rstrip("/").lower()
+    exp = f"/fx/tools/flow/project/{pid}".rstrip("/").lower()
+    return path == exp
+
+
 async def _veo_fetch_recaptcha_token_new_page(
     browser_context: Any,
     *,
@@ -1863,11 +1882,12 @@ async def _veo_fetch_recaptcha_token_new_page(
     action: str,
     log_file: Path,
 ) -> Optional[str]:
-    """在独立新标签打开真实 Labs 项目页，优先从网络/DOM 解析 site key，失败则用 VEO_RECAPTCHA_SITE_KEY 兜底再 execute。
+    """在真实 Labs 项目页上解析 site key 并 execute；若已有标签即在该项目页则复用，否则新开标签并 goto。
 
     依赖指纹浏览器 context 内已有 Labs 登录态。
     """
     page = None
+    page_owned = False
     page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
     keys_seen: List[str] = []
 
@@ -1880,21 +1900,47 @@ async def _veo_fetch_recaptcha_token_new_page(
             pass
 
     try:
-        page = await browser_context.new_page()
-        await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page.on("request", on_request)
-        append_log(log_file, f"[veo][recaptcha] new page goto real Flow project (resolve site key from page)")
-
+        reused: Any = None
         try:
-            await page.goto(page_url, wait_until="load", timeout=45000)
-        except Exception as e:
+            for p in list(getattr(browser_context, "pages", []) or []):
+                try:
+                    if bool(getattr(p, "is_closed", lambda: False)()):
+                        continue
+                except Exception:
+                    continue
+                try:
+                    u = str(getattr(p, "url", "") or "")
+                except Exception:
+                    u = ""
+                if _veo_page_is_target_flow_project_url(u, project_id):
+                    reused = p
+                    break
+        except Exception:
+            reused = None
+
+        if reused is not None:
+            page = reused
             append_log(
                 log_file,
-                f"[veo][recaptcha] goto failed: {type(e).__name__}: {str(e)[:200]}",
+                "[veo][recaptcha] reuse existing page on Flow project (skip new tab/goto)",
             )
-            return None
+        else:
+            page = await browser_context.new_page()
+            page_owned = True
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            append_log(log_file, f"[veo][recaptcha] new page goto real Flow project (resolve site key from page)")
+            try:
+                await page.goto(page_url, wait_until="load", timeout=45000)
+            except Exception as e:
+                append_log(
+                    log_file,
+                    f"[veo][recaptcha] goto failed: {type(e).__name__}: {str(e)[:200]}",
+                )
+                return None
+
+        page.on("request", on_request)
 
         resolve_deadline = time.monotonic() + 18.0
         website_key = await _veo_resolve_recaptcha_site_key_on_page(
@@ -2009,7 +2055,7 @@ async def _veo_fetch_recaptcha_token_new_page(
         append_log(log_file, f"[veo][recaptcha] fatal: {type(e).__name__}: {str(e)[:200]}")
         return None
     finally:
-        if page:
+        if page_owned and page:
             try:
                 await page.close()
             except Exception:
@@ -2704,6 +2750,7 @@ async def _veo_execute_image_mode(
     want_i2i = _veo_payload_looks_like_i2v(payload)
     image_inputs: List[Dict[str, Any]] = []
     raw_i2i_bytes: Optional[bytes] = None
+    page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
 
     if want_i2i:
         i2i_urls = _veo_collect_i2v_image_urls(payload)
@@ -2754,7 +2801,7 @@ async def _veo_execute_image_mode(
             if rb is None:
                 raise RuntimeError("图生图参考图数据缺失")
             await progress_cb(
-                12,
+                8,
                 {"stage": "upload_image", "index": 1, "total": 1, "workflow_kind": "image"},
             )
             mid = await _veo_flow_upload_image_in_window(
@@ -2774,12 +2821,14 @@ async def _veo_execute_image_mode(
             sess._cancel_idle_close()
             recaptcha_token = recaptcha_override
             if not recaptcha_token:
+                print(f"project_id: {project_id}")
                 recaptcha_token = await _veo_fetch_recaptcha_token_new_page(
                     page.context,
                     project_id=project_id,
                     action="IMAGE_GENERATION",
                     log_file=log_file,
                 )
+                print(f"recaptcha_token: {recaptcha_token}")
             if not recaptcha_token:
                 last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
                 append_log(log_file, f"[veo][image] submit attempt {attempt + 1}: no recaptcha token")
@@ -2794,7 +2843,6 @@ async def _veo_execute_image_mode(
                     except Exception:
                         pass
                 continue
-
             session_id = _veo_generate_session_id()
             client_context: Dict[str, Any] = {
                 "recaptchaContext": {
@@ -2831,6 +2879,7 @@ async def _veo_execute_image_mode(
             )
     
             try:
+                print(f"submit_url: {submit_url}")
                 tx = await page_fetch_json(
                     page,
                     url=submit_url,
@@ -2843,8 +2892,10 @@ async def _veo_execute_image_mode(
                     json_data=json_data,
                     log_file=log_file,
                 )
+                print(f"tx: {tx}")
             except Exception as e:
-                last_submit_err = _short_err_msg(e, max_len=200)
+                last_submit_err = f"submit fetch error: {_short_err_msg(e, max_len=200)}"
+                print(f"last_submit_err: {last_submit_err}")
                 append_log(log_file, f"[veo][image] submit fetch error: {e}")
                 continue
     
@@ -2852,6 +2903,7 @@ async def _veo_execute_image_mode(
             if st is not None and int(st) >= 400:
                 body = safe_trim(str(tx.get("response_body") or ""), 500)
                 last_submit_err = f"HTTP {st} {body}"
+                print(f"last_submit_err: {last_submit_err}")
                 append_log(log_file, f"[veo][image] submit rejected: {last_submit_err}")
                 recaptcha_override = None
                 continue
@@ -2860,7 +2912,8 @@ async def _veo_execute_image_mode(
             try:
                 fife_url, media_name = _veo_parse_batch_generate_images_fife_url(resp)
             except NonPenalizedTaskError as e:
-                last_submit_err = str(e)
+                last_submit_err = f"bad response: {str(e)}"
+                print(f"last_submit_err: {last_submit_err}")
                 append_log(log_file, f"[veo][image] bad response: {last_submit_err}")
                 recaptcha_override = None
                 continue
@@ -3103,9 +3156,9 @@ async def veo_workflow(
 
     log_file = sess._log_file
     started_at = time.time()
-    bring_prefix = "https://labs.google/fx/tools/flow"
-    project_page = _veo_project_page_url(project_id=None, hint_url=labs_hint)
-
+    project_page = _veo_project_page_url(project_id=project_id, hint_url=labs_hint)
+    bring_prefix = project_page
+    print(f"bring_prefix: {bring_prefix}")
     if project_id_from_db and task_type_window_id:
         append_log(
             log_file,
