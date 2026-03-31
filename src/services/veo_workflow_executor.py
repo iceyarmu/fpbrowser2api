@@ -4040,7 +4040,6 @@ async def veo_workflow(
             "type": "veo_workflow_video",
             "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
             "share_url": video_url,
-            "watermark_free_url": video_url,
             "thumb_url": thumb_url,
             "video_type": "i2v" if want_i2v else "t2v",
             "model_key": model_key,
