@@ -2447,6 +2447,9 @@
           const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow";
           const _openTitle = "会先清空该窗口本地缓存，再仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
           const _startTitle = _isVeo ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
+          const _openAccountTitle = _isVeo
+            ? "开号/连接：连接后自动判断是否为 Google 登录页；若页面可见 @gmail.com（选账号列表）则走「连接置前」自动点选；否则走完整 Google 登录并打开 Flow（完成后断开 CDP）"
+            : "开号：Sora 走 Plus 注册自动化；Veo 为 Google 登录并打开 Flow（完成后断开 CDP）";
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -2459,12 +2462,11 @@
                   <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
 
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
-                  ${_isVeo ? `<button class="btn btn-outline-info btn-sm btn-icon" title="连接自动化并置前目标页；若在 Google「Sign in - Google Accounts」页则自动点击含 @gmail.com 的账号" aria-label="连接置前" data-act="veoConnectBring" data-mid="${m.id}"><i class="bi bi-link-45deg" aria-hidden="true"></i><span class="visually-hidden">连接置前</span></button>` : ""}
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                   <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
                   <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地与服务器缓存，并清空本行已保存的 access_token、额度与会员信息（Roxy：clear_local_cache + clear_server_cache）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
-                  ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="开号：Sora 走 Plus 注册自动化；Veo 为 Google 登录并打开 Flow（完成后断开 CDP）" aria-label="开号" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">开号</span></button>` : ""}
+                  ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="${escapeHtml(_openAccountTitle)}" aria-label="开号" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">开号</span></button>` : ""}
                 </div>
               </div>
             </td>
@@ -3837,14 +3839,15 @@
           cancelCloseHintCountdown({ hideModal: true });
           setBtnBusy(btn, true, { loadingText: "开号中" });
           const hl = getMappingHeadless(mappingId);
-          await postJson(`/api/admin/task-type-windows/${mappingId}/open-account?headless=${hl}`, { method: "POST" });
+          const r = await postJson(`/api/admin/task-type-windows/${mappingId}/open-account?headless=${hl}`, { method: "POST" });
           const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(
-            _h === "veo_workflow"
+          const resMsg = r?.result && typeof r.result.message === "string" ? String(r.result.message).trim() : "";
+          const line =
+            resMsg ||
+            (_h === "veo_workflow"
               ? "已完成：Google 登录并打开 Flow，已断开自动化连接"
-              : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）",
-            "success",
-          );
+              : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
+          toast(line, "success");
           flashBtnText(btn, "完成");
         } catch (e) {
           toast(e.message || "开号失败", "error");

@@ -994,6 +994,43 @@ class VeoSession:
                 open_pages0.append((c0, p0, u0))
         return ctxs0, open_pages0
 
+    async def _veo_detect_google_login_and_gmail_visible(self) -> tuple[bool, bool]:
+        """检测当前是否处于 Google 登录/选账号相关页，以及可见文本中是否出现 @gmail.com。
+
+        用于管理台「开号」合并按钮：有 @gmail.com（账号列表）时走连接置前+点选；否则走完整开号登录。
+        """
+        _, open_pages = await self._veo_snapshot_contexts_pages()
+        if not open_pages:
+            return False, False
+
+        is_google = False
+        chunks: list[str] = []
+        for _c, p, u in open_pages:
+            if self._veo_is_page_closed(p):
+                continue
+            ul = str(u or "").strip().lower()
+            url_hit = self._google_url_indicates_relogin_required(ul) or ("accounts.google.com" in ul)
+            title_hit = False
+            try:
+                t = (await p.title() or "").strip().lower()
+                title_hit = "sign in - google accounts" in t or "choose an account" in t
+            except Exception:
+                pass
+            if not url_hit and not title_hit:
+                continue
+            is_google = True
+            try:
+                chunks.append(str(await p.inner_text(timeout=5000) or ""))
+            except Exception:
+                chunks.append("")
+
+        if not is_google:
+            return False, False
+
+        blob = "\n".join(chunks).lower()
+        has_gmail = "@gmail.com" in blob
+        return True, has_gmail
+
     async def _perform_google_relogin_if_stuck_on_accounts(
         self,
         *,
@@ -1578,6 +1615,101 @@ async def veo_flow_open_account(
         "platform_username": platform_username,
         "flow_url": target_flow,
         "message": "已登录 Google 并打开 Flow，已断开 CDP",
+    }
+
+
+async def veo_admin_unified_open_or_connect(
+    progress_cb: ProgressCB,
+    *,
+    db: Database,
+    window_pk: int,
+    browser_vendor: str,
+    browser_base_url: str,
+    browser_access_key: Optional[str],
+    space_id: str,
+    window_key: str,
+    timeout_seconds: float,
+    headless: bool,
+    default_target_url: str,
+    google_login_timeout_ms: int,
+) -> Dict[str, Any]:
+    """管理台合并逻辑：Google 登录页且页面可见 @gmail.com → 连接置前（与原 veo-connect-bring 一致）；否则若仍为 Google 登录相关 → 完整开号；其它情况 → 连接置前。"""
+    target_url = str(default_target_url or "").strip() or "https://veo.google.com"
+    gl_ms = int(google_login_timeout_ms)
+    gl_ms = max(45_000, min(gl_ms, 240_000))
+
+    sess = get_or_create_veo_session(
+        vendor=browser_vendor,
+        base_url=browser_base_url,
+        access_key=browser_access_key,
+        space_id=space_id,
+        window_key=window_key,
+    )
+    sess.browser_headless = headless
+    sess.idle_close_disabled = True
+    try:
+        sess._cancel_idle_close()
+    except Exception:
+        pass
+
+    is_google = False
+    has_gmail = False
+    async with sess._bring_drafts_lock:
+        await sess.ensure_open(
+            args=sess.browser_open_args,
+            force_open=sess.browser_force_open,
+            headless=headless,
+            acquire_bring_lock=False,
+        )
+        await progress_cb(5, {"stage": "detect_google_page"})
+        is_google, has_gmail = await sess._veo_detect_google_login_and_gmail_visible()
+        await progress_cb(
+            8,
+            {"stage": "detect_done", "is_google_login": is_google, "has_gmail_visible": has_gmail},
+        )
+
+        if is_google and not has_gmail:
+            need_full_open_account = True
+        else:
+            need_full_open_account = False
+            await sess._bring_target_page_to_front(
+                refresh_target=True,
+                drafts_url=target_url,
+                acquire_bring_lock=False,
+                google_login_db=db,
+                google_login_window_pk=int(window_pk),
+                google_login_timeout_ms=gl_ms,
+            )
+
+    if need_full_open_account:
+        out = await veo_flow_open_account(
+            progress_cb,
+            db=db,
+            window_pk=window_pk,
+            browser_vendor=browser_vendor,
+            browser_base_url=browser_base_url,
+            browser_access_key=browser_access_key,
+            space_id=space_id,
+            window_key=window_key,
+            timeout_seconds=timeout_seconds,
+            headless=headless,
+        )
+        if isinstance(out, dict):
+            out = {**out, "branch": "full_open_account"}
+        return out if isinstance(out, dict) else {"ok": True, "branch": "full_open_account", "raw": out}
+
+    await sess.disconnect_playwright_under_bring_lock()
+    branch = "gmail_picker_connect" if (is_google and has_gmail) else "connect_bring_default"
+    return {
+        "ok": True,
+        "branch": branch,
+        "is_google_login": is_google,
+        "has_gmail_visible": has_gmail,
+        "message": (
+            "已连接并置前（检测到账号列表含 @gmail.com，已按自动点选/填表处理），已断开自动化连接"
+            if branch == "gmail_picker_connect"
+            else "已连接并置前目标页，已断开自动化连接"
+        ),
     }
 
 

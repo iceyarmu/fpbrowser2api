@@ -2856,9 +2856,14 @@ async def open_account_mapping_window(mapping_id: int, headless: bool = False, t
                 timeout_seconds=timeout_seconds,
             )
         elif handler == "veo_workflow":
-            from ..services.veo_workflow_executor import veo_flow_open_account
+            from ..services.veo_workflow_executor import veo_admin_unified_open_or_connect
 
-            result = await veo_flow_open_account(
+            try:
+                gl_ms = int(float(ctx_row.get("task_timeout_seconds") or 120) * 1000)
+            except Exception:
+                gl_ms = 120_000
+            gl_ms = max(45_000, min(gl_ms, 240_000))
+            result = await veo_admin_unified_open_or_connect(
                 _progress_cb,
                 db=db,
                 window_pk=window_pk,
@@ -2869,6 +2874,8 @@ async def open_account_mapping_window(mapping_id: int, headless: bool = False, t
                 window_key=window_key,
                 timeout_seconds=timeout_seconds,
                 headless=headless,
+                default_target_url=str(ctx_row.get("default_target_url") or "").strip(),
+                google_login_timeout_ms=gl_ms,
             )
         else:
             raise HTTPException(
