@@ -3911,7 +3911,10 @@ class Database:
         browser_pool_limit: int = 100,
         remaining_quota_exclusive_floor: int = 3,
     ) -> List[int]:
-        """与 pick_and_reserve_window_for_task 相同的候选与每浏览器上限，返回应保持在池中的 mapping_id 列表（不修改 inflight）。"""
+        """与 pick_and_reserve_window_for_task 相同的候选与每浏览器上限，返回应保持在池中的 mapping_id 列表（不修改 inflight）。
+
+        额外：仍有未释放并发槽（inflight_slots > 0）的窗口一律视为应保留在池中（is_runnable 视为满足，且不受每浏览器 pool 内 ROW_NUMBER 上限挤出），避免运行中因额度已预扣低于 floor 被误判为待关闭。
+        """
         code = (task_type_code or "").strip()
         if not code:
             return []
@@ -3949,6 +3952,7 @@ class Database:
                   SELECT
                     b.*,
                     CASE
+                      WHEN COALESCE(b.inflight_slots, 0) > 0 THEN 1
                       WHEN (
                         ((b.remaining_quota >= ?)
                           OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
@@ -3960,6 +3964,7 @@ class Database:
                     END AS is_runnable
                   FROM base b
                   WHERE b.window_status = 1
+                     OR COALESCE(b.inflight_slots, 0) > 0
                      OR (
                           b.window_status = 0
                           AND (
