@@ -3635,7 +3635,7 @@ async def veo_workflow(
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
     max_wait_seconds = float(payload.get("veo_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 1800.0)))
     poll_interval_seconds = float(payload.get("veo_pending_poll_interval_seconds") or 5.0)
-    max_submit_retries = 1
+    max_submit_retries = 2
 
     sess = get_or_create_veo_session(
         vendor=browser_vendor,
