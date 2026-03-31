@@ -42,12 +42,11 @@
         flex: 1 1 auto;
         min-height: 0;
         overflow: auto;
-        /* 兜底：防止某些布局情况下外层没“收缩”，导致列表无法滚动 */
-        max-height: calc(100dvh - 240px);
+        /* 兜底：防止某些布局情况下外层没“收缩”，导致列表无法滚动；多留约 48px 给底部分页与边距 */
+        max-height: calc(100dvh - 288px);
       }
 
-      /* 仅窗口绑定模式：隐藏上方两块卡片 */
-      body.focus-wins #cardTypeHeader,
+      /* 仅窗口绑定模式：隐藏「任务类型配置」大块；保留顶部「任务类型」卡片以便切换类型 */
       body.focus-wins #cardTypeConfig { display: none !important; }
 
       .btn-icon.btn-sm {
@@ -100,26 +99,20 @@
     <div class="container-fluid py-2" id="pageMain">
       <div class="card shadow-sm mb-2" id="cardTypeHeader">
         <div class="card-body card-body-compact">
-          <div class="d-flex flex-wrap gap-1 align-items-center">
-            <div class="fw-semibold">任务类型</div>
-            <span class="text-muted small ms-auto" id="currentTypeHintTop">未选择</span>
-            <button
-              class="btn btn-outline-secondary btn-sm"
-              id="btnToggleTypeHeader"
-              type="button"
-              data-bs-toggle="collapse"
-              data-bs-target="#typeHeaderCollapse"
-              aria-expanded="true"
-              aria-controls="typeHeaderCollapse"
-            >收起</button>
-            <button class="btn btn-primary btn-sm" id="btnNewType">新增</button>
-          </div>
-          <div class="collapse show mt-1" id="typeHeaderCollapse">
-            <div class="d-flex flex-wrap gap-1 align-items-start">
-              <div class="flex-grow-1" style="min-width: 260px; max-width: 560px;">
-                <select class="form-select" id="typeSelect"></select>
-                <div class="form-text">英文名称（code）必须唯一；对外接口用 code 作为任务类型参数。</div>
-              </div>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <div class="fw-semibold flex-shrink-0">任务类型</div>
+            <select
+              class="form-select form-select-sm"
+              id="typeSelect"
+              style="min-width: 200px; flex: 1 1 240px; max-width: 560px;"
+            ></select>
+            <div class="form-check form-switch mb-0 flex-shrink-0">
+              <input class="form-check-input" type="checkbox" role="switch" id="chkFocusWinOnly" />
+              <label class="form-check-label small" for="chkFocusWinOnly">仅窗口绑定</label>
+            </div>
+            <button class="btn btn-outline-primary btn-sm flex-shrink-0" id="btnAddWindows" type="button">添加窗口</button>
+            <div class="ms-md-auto">
+              <button class="btn btn-primary btn-sm" id="btnNewType" type="button">新增</button>
             </div>
           </div>
         </div>
@@ -129,13 +122,7 @@
         <div class="col-12 d-flex flex-column" id="mainColumn">
           <div class="card shadow-sm mb-2" id="cardTypeConfig">
             <div class="card-body card-body-compact type-config">
-              <div class="d-flex flex-wrap gap-1 align-items-center">
-                <h5 class="card-title mb-0">任务类型配置</h5>
-                <span class="text-muted small ms-auto" id="currentTypeHint">未选择</span>
-                <button class="btn btn-outline-secondary btn-sm" id="btnToggleTypeConfig" type="button" data-bs-toggle="collapse" data-bs-target="#typeConfigCollapse" aria-expanded="true" aria-controls="typeConfigCollapse">收起</button>
-              </div>
               <hr class="hr-tight" />
-              <div class="collapse show" id="typeConfigCollapse">
               <div class="row g-2">
                 <input type="hidden" id="typeId" />
                 <div class="col-12 col-md-6">
@@ -217,23 +204,11 @@
                   <button class="btn btn-outline-danger" id="btnDeleteType">删除</button>
                 </div>
               </div><!-- /row -->
-              </div><!-- /collapse -->
             </div>
           </div>
 
           <div class="card shadow-sm win-card flex-grow-1">
             <div class="card-body">
-              <div class="d-flex flex-wrap gap-1 align-items-center">
-                <h5 class="card-title mb-0">窗口绑定</h5>
-                <span class="text-muted small ms-2" id="currentTypeHintWin">未选择</span>
-                <div class="form-check form-switch ms-auto mb-0">
-                  <input class="form-check-input" type="checkbox" role="switch" id="chkFocusWinOnly" />
-                  <label class="form-check-label small" for="chkFocusWinOnly">仅窗口绑定</label>
-                </div>
-                <button class="btn btn-outline-primary btn-sm" id="btnAddWindows">添加窗口</button>
-              </div>
-              <hr class="hr-tight" />
-
               <div class="win-toolbar border rounded p-1 mb-1">
                 <div class="d-flex flex-wrap gap-1 align-items-center">
                   <div class="d-flex flex-wrap gap-1 align-items-center">
@@ -260,7 +235,7 @@
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
                     <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
                   </div>
-                  <input class="form-control form-control-sm" id="mappingFilter" placeholder="搜索：窗口名 / 账号 / 空间 / 代理 / 邀请码" style="max-width: 360px;" />
+                  <input class="form-control form-control-sm" id="mappingFilter" placeholder="搜索：窗口名 / 账号 / 空间 / 代理 / 邀请码" style="max-width: 240px;" />
                   <button class="btn btn-outline-secondary btn-sm" id="btnClearMappingFilter" title="清除搜索">✕</button>
                   <span class="small text-muted" id="mappingFilterHint"></span>
                   <div class="d-flex flex-wrap gap-1 align-items-center ms-auto">
@@ -1235,8 +1210,6 @@
       }
 
       const LS_KEYS_UI = {
-        typeHeaderCollapsed: `${LS_PREFIX}task_types.type_header_collapsed`,
-        typeConfigCollapsed: `${LS_PREFIX}task_types.type_config_collapsed`,
         focusWinOnly: `${LS_PREFIX}task_types.focus_win_only`,
         mappingSortKey: `${LS_PREFIX}task_types.mapping_sort_key`,
         mappingSortDir: `${LS_PREFIX}task_types.mapping_sort_dir`,
@@ -1996,10 +1969,8 @@
         const hint = t ? `当前：${t.name} (${t.code})` : "未选择";
         const hintEl = document.getElementById("currentTypeHint");
         const hintTopEl = document.getElementById("currentTypeHintTop");
-        const hintWinEl = document.getElementById("currentTypeHintWin");
         if (hintEl) hintEl.textContent = hint;
         if (hintTopEl) hintTopEl.textContent = hint;
-        if (hintWinEl) hintWinEl.textContent = hint;
       }
 
       async function saveType() {
@@ -4903,31 +4874,11 @@
       }
 
       function applyUiDefaultsFromLS() {
-        // 仅窗口绑定模式：隐藏“任务类型”和“任务类型配置”，只保留窗口绑定
+        // 仅窗口绑定模式：隐藏「任务类型配置」，保留顶部任务类型下拉；主区域突出窗口绑定
         const focusOnly = readBoolLS(LS_KEYS_UI.focusWinOnly, false);
         const chkFocus = document.getElementById("chkFocusWinOnly");
         if (chkFocus) chkFocus.checked = !!focusOnly;
         document.body.classList.toggle("focus-wins", !!focusOnly);
-
-        // 顶部任务类型区收起状态
-        const headerCollapsed = readBoolLS(LS_KEYS_UI.typeHeaderCollapsed, false);
-        const headerCollapseEl = document.getElementById("typeHeaderCollapse");
-        const headerBtn = document.getElementById("btnToggleTypeHeader");
-        if (headerCollapseEl) {
-          const bsH = bootstrap.Collapse.getOrCreateInstance(headerCollapseEl, { toggle: false });
-          if (headerCollapsed) bsH.hide(); else bsH.show();
-          if (headerBtn) headerBtn.textContent = headerCollapsed ? "展开" : "收起";
-        }
-
-        // 配置区收起状态
-        const collapsed = readBoolLS(LS_KEYS_UI.typeConfigCollapsed, false);
-        const collapseEl = document.getElementById("typeConfigCollapse");
-        const btn = document.getElementById("btnToggleTypeConfig");
-        if (collapseEl) {
-          const bs = bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false });
-          if (collapsed) bs.hide(); else bs.show();
-          if (btn) btn.textContent = collapsed ? "展开" : "收起";
-        }
 
         // 排序
         const sortKey = lsGet(LS_KEYS_UI.mappingSortKey) || "id";
@@ -5082,30 +5033,6 @@
       document.getElementById("thDrafts")?.addEventListener("click", () => toggleSort("sora_drafts_count", "desc"));
       document.getElementById("thInflight")?.addEventListener("click", () => toggleSort("inflight_slots", "desc"));
       document.getElementById("thPureMode")?.addEventListener("click", () => toggleSort("pure_mode", "desc"));
-
-      // 任务类型配置：收起/展开按钮文案 + 记忆
-      document.getElementById("typeConfigCollapse")?.addEventListener("shown.bs.collapse", () => {
-        lsSet(LS_KEYS_UI.typeConfigCollapsed, "0");
-        const btn = document.getElementById("btnToggleTypeConfig");
-        if (btn) btn.textContent = "收起";
-      });
-      document.getElementById("typeConfigCollapse")?.addEventListener("hidden.bs.collapse", () => {
-        lsSet(LS_KEYS_UI.typeConfigCollapsed, "1");
-        const btn = document.getElementById("btnToggleTypeConfig");
-        if (btn) btn.textContent = "展开";
-      });
-
-      // 顶部任务类型区：收起/展开按钮文案 + 记忆
-      document.getElementById("typeHeaderCollapse")?.addEventListener("shown.bs.collapse", () => {
-        lsSet(LS_KEYS_UI.typeHeaderCollapsed, "0");
-        const btn = document.getElementById("btnToggleTypeHeader");
-        if (btn) btn.textContent = "收起";
-      });
-      document.getElementById("typeHeaderCollapse")?.addEventListener("hidden.bs.collapse", () => {
-        lsSet(LS_KEYS_UI.typeHeaderCollapsed, "1");
-        const btn = document.getElementById("btnToggleTypeHeader");
-        if (btn) btn.textContent = "展开";
-      });
 
       Promise.resolve()
         .then(() => getAdminProfile())
