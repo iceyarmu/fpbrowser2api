@@ -347,27 +347,39 @@ class TaskService:
             await self._window_pool_close_mapping(mid)
             await asyncio.sleep(0)
 
-        to_open: list[int] = []
+        to_open: list[tuple[str, int]] = []
         for code, new_set in new_targets.items():
             old_set = prev.get(code, set())
-            to_open.extend(new_set - old_set)
-        for mid in to_open:
+            for mid in new_set - old_set:
+                to_open.append((code, mid))
+        for code, mid in to_open:
             if self._window_pool_stop.is_set():
                 return
-            await self._window_pool_open_mapping(mid)
+            ok = await self._window_pool_open_mapping(mid)
+            if not ok:
+                async with self._window_pool_lock:
+                    s = self._window_pool_targets.get(code)
+                    if s is not None:
+                        s.discard(mid)
+                try:
+                    await self.db.update_task_type_window(mapping_id=mid, enabled=False)
+                except Exception as e:
+                    logger.warning(
+                        "window_pool disable mapping=%s after open failure: %s", mid, e
+                    )
             await asyncio.sleep(0)
 
-    async def _window_pool_open_mapping(self, mapping_id: int) -> None:
+    async def _window_pool_open_mapping(self, mapping_id: int) -> bool:
         if self._window_pool_stop.is_set():
-            return
+            return True
         ctx = await self.db.get_task_type_window_context(mapping_id)
         if not ctx:
-            return
+            return True
         handler = (ctx.get("create_task_handler") or "").strip()
         base_url = str(ctx.get("lan_addr") or "").strip()
         window_key = str(ctx.get("window_key") or "").strip()
         if not base_url or not window_key:
-            return
+            return True
         vendor = str(ctx.get("vendor") or "generic")
         access_key = ctx.get("access_key")
         space_id = str(ctx.get("space_id") or "")
@@ -394,6 +406,7 @@ class TaskService:
                         await sess.disconnect_playwright_under_bring_lock()
                     except Exception:
                         pass
+                    return True
                 elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                     tu = target_url or "https://sora.chatgpt.com/drafts"
                     sess = get_or_create_sora_session(
@@ -419,10 +432,11 @@ class TaskService:
                         await sess.disconnect_playwright_under_bring_lock()
                     except Exception:
                         pass
+                    return True
                 else:
                     tu = target_url
                     if not tu:
-                        return
+                        return True
                     pw = get_or_create_playwright_ctx(
                         vendor=vendor,
                         base_url=base_url,
@@ -434,7 +448,7 @@ class TaskService:
                     try:
                         async with pw.driver_lock:
                             if pw.context is None:
-                                return
+                                return True
                             if pw.page is None:
                                 try:
                                     pages = list(getattr(pw.context, "pages", []) or [])
@@ -450,8 +464,10 @@ class TaskService:
                             await pw.disconnect_playwright_only_under_driver_lock()
                         except Exception:
                             pass
+                    return True
         except Exception as e:
             logger.warning("window_pool open mapping=%s err=%s", mapping_id, e)
+            return False
 
     async def _window_pool_close_mapping(self, mapping_id: int) -> None:
         ctx = await self.db.get_task_type_window_context(mapping_id)
@@ -1447,6 +1463,16 @@ class TaskService:
                         if new_cu:
                             veo_info = dict(veo_info)
                             veo_info["cooldown_until"] = str(new_cu)
+                        try:
+                            cur_q = int(veo_info.get("credits") or 0)
+                            if cur_q < 30:
+                                hi = await self.db.task_type_has_mapping_remaining_quota_above(
+                                    picked.task_code, 30
+                                )
+                                if hi:
+                                    self._signal_window_pool_replenish()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 return veo_info

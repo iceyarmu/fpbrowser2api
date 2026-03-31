@@ -3872,7 +3872,12 @@ class Database:
     async def task_type_has_mapping_remaining_quota_above(
         self, task_type_code: str, above: int
     ) -> bool:
-        """是否存在该任务类型下 remaining_quota 严格大于 above 的可用映射（用于 veo 窗口池分层）。"""
+        """是否存在该任务类型下「可视为高于 above」的可用映射（用于 veo 窗口池分层等）。
+
+        满足其一即算：
+        - remaining_quota 严格大于 above；
+        - 或库内 remaining_quota 未高于 above，但 cooldown_until 已过期（额度可能已重置而尚未刷新入库）。
+        """
         code = (task_type_code or "").strip()
         if not code:
             return False
@@ -3885,7 +3890,14 @@ class Database:
                 JOIN task_type_windows m ON m.task_type_id = t.id AND m.deleted = 0 AND m.enabled = 1
                 JOIN windows w ON m.window_pk = w.id AND w.deleted = 0 AND w.enabled = 1
                 WHERE t.code = ? AND t.deleted = 0 AND t.enabled = 1
-                  AND m.remaining_quota > ?
+                  AND (
+                    m.remaining_quota > ?
+                    OR (
+                      m.remaining_quota >= 1
+                      AND m.cooldown_until IS NOT NULL
+                      AND m.cooldown_until <= datetime('now','localtime')
+                    )
+                  )
                 LIMIT 1
                 """,
                 (code, lim),
