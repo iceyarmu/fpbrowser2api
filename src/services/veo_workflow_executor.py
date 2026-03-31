@@ -387,11 +387,36 @@ class VeoSession:
         return False
 
     async def raise_if_cloudflare_page_nonpenalized(
-        self, page, *, stage: str, target_url: str
+        self,
+        page,
+        *,
+        stage: str,
+        target_url: str,
+        window_pool_google_relogin_db: Optional[Database] = None,
+        window_pool_google_relogin_window_pk: Optional[int] = None,
+        window_pool_google_relogin_timeout_ms: Optional[int] = None,
     ) -> None:
-        """与 Sora `_raise_if_cloudflare_page_nonpenalized` 同类：bring 目标页 + 等待/重启，仍判定 CF 则抛 NonPenalizedTaskError（用于窗口池巡检）。"""
+        """与 Sora `_raise_if_cloudflare_page_nonpenalized` 同类：bring 目标页 + 等待/重启，仍判定 CF 则抛 NonPenalizedTaskError（用于窗口池巡检）。
+
+        window_pool_google_*：窗口池巡检时若检测到 Google 登录/选账号页，先按窗口凭据自动登录再 bring。
+        """
         async with self._bring_drafts_lock:
             await self.ensure_open(args=self.browser_open_args, force_open=self.browser_force_open, headless=self.browser_headless, acquire_bring_lock=False)
+            if (
+                window_pool_google_relogin_db is not None
+                and window_pool_google_relogin_window_pk is not None
+                and int(window_pool_google_relogin_window_pk) > 0
+            ):
+                try:
+                    to_ms = int(window_pool_google_relogin_timeout_ms or 120_000)
+                except Exception:
+                    to_ms = 120_000
+                to_ms = max(45_000, min(to_ms, 240_000))
+                await self._perform_google_relogin_if_stuck_on_accounts(
+                    db=window_pool_google_relogin_db,
+                    window_pk=int(window_pool_google_relogin_window_pk),
+                    timeout_ms=to_ms,
+                )
             await self._bring_target_page_to_front(
                 refresh_target=False, drafts_url=target_url, acquire_bring_lock=False
             )
@@ -760,6 +785,283 @@ class VeoSession:
         await self._push_debug_progress(page, "点击 Log in 失败（全部策略）", level="error")
         return False, has_login_button
 
+    async def _click_google_gmail_account_row(self, p: Any) -> None:
+        """Google「Choose an account」页：真实可点击区域多为外层 [role=link]，邮箱在 div[data-email]（见 Google 新版 DOM）。"""
+        gmail_re = re.compile(r"@gmail\.com", re.I)
+        timeout_ms = 15_000
+
+        async def _try_click(locator: Any, *, force: bool = False) -> bool:
+            try:
+                n = await locator.count()
+            except Exception:
+                n = 0
+            if n <= 0:
+                return False
+            el = locator.first
+            try:
+                await el.scroll_into_view_if_needed(timeout=timeout_ms)
+            except Exception:
+                pass
+            try:
+                await el.click(timeout=timeout_ms, force=force)
+                return True
+            except Exception:
+                return False
+
+        # 1) 账号行容器（DevTools：li > div[role=link][jsname=W3oRb] 包裹整行）
+        if await _try_click(p.locator('[role="link"]:has(div[data-email*="@gmail.com"])')):
+            return
+        if await _try_click(p.locator('li:has(div[data-email*="@gmail.com"]) [role="link"]')):
+            return
+        # 2) jsname=bQiQze 的邮箱格（与 data-email 同节点，部分环境需 force）
+        if await _try_click(p.locator('div[jsname="bQiQze"][data-email*="@gmail.com"]'), force=True):
+            return
+        if await _try_click(p.locator('div[data-email*="@gmail.com"]'), force=True):
+            return
+        # 3) 旧版 / 纯文案
+        if await _try_click(p.locator("div").filter(has_text=gmail_re), force=True):
+            return
+        if await _try_click(p.locator("[role='listitem']").filter(has_text=gmail_re)):
+            return
+        # 5) DOM 原生 click（部分覆盖层会挡住 Playwright 合成点击）
+        for sel in (
+            '[role="link"]:has(div[data-email*="@gmail.com"])',
+            'div[data-email*="@gmail.com"]',
+        ):
+            loc = p.locator(sel)
+            try:
+                if await loc.count() <= 0:
+                    continue
+                el = loc.first
+                try:
+                    await el.scroll_into_view_if_needed(timeout=timeout_ms)
+                except Exception:
+                    pass
+                await el.evaluate("node => (node instanceof HTMLElement && node.click())")
+                return
+            except Exception:
+                continue
+        raise RuntimeError("未找到可点击的 @gmail.com 账号行")
+
+    async def _maybe_click_google_account_picker_if_present(self, open_pages: list[tuple[Any, Any, str]]) -> bool:
+        """若某标签页为 Google 账号选择（标题或 URL），置前并点击 @gmail.com 账号行。"""
+        for _c, p, _u in open_pages:
+            try:
+                if bool(getattr(p, "is_closed", lambda: False)()):
+                    continue
+            except Exception:
+                continue
+            try:
+                title = (await p.title() or "").strip().lower()
+            except Exception:
+                title = ""
+            u_low = (_u or "").strip().lower()
+            looks_google_account_ui = (
+                "sign in - google accounts" in title
+                or "choose an account" in title
+                or (
+                    "accounts.google.com" in u_low
+                    and any(x in u_low for x in ("signin", "oauth", "selectaccount", "identifier"))
+                )
+            )
+            if not looks_google_account_ui:
+                continue
+            try:
+                await p.bring_to_front()
+            except Exception:
+                pass
+            try:
+                await self._click_google_gmail_account_row(p)
+                await self._push_debug_progress(p, "Google 账号选择页：已点击 @gmail.com 账号行", level="ok")
+                try:
+                    await asyncio.sleep(1.5)
+                except Exception:
+                    pass
+                return True
+            except Exception as e:
+                await self._push_debug_progress(
+                    p, f"Google 账号选择页：点击 @gmail.com 失败：{_short_err_msg(e)}", level="warn"
+                )
+                return False
+        return False
+
+    async def _try_google_accounts_login_autofill(
+        self,
+        open_pages: list[tuple[Any, Any, str]],
+        *,
+        db: Database,
+        window_pk: int,
+        timeout_ms: int = 90_000,
+    ) -> None:
+        """在 accounts.google.com 标签页上按窗口凭据自动填密码/邮箱/TOTP（EFA 可选）。"""
+        from .sora_plus_register_executor import (
+            google_accounts_autofill_login_steps,
+            resolve_window_platform_login_creds_optional_efa,
+        )
+
+        def _pg_closed(pg: Any) -> bool:
+            try:
+                return bool(getattr(pg, "is_closed", lambda: False)())
+            except Exception:
+                return True
+
+        acc_page: Any = None
+        for _c, p, u in open_pages:
+            if _pg_closed(p):
+                continue
+            if "accounts.google.com" in (u or "").lower():
+                acc_page = p
+                break
+        if acc_page is None:
+            return
+
+        try:
+            creds = await resolve_window_platform_login_creds_optional_efa(db, window_pk=int(window_pk))
+        except Exception as e:
+            await self._push_debug_progress(
+                acc_page, f"Google 自动登录：读取窗口凭据失败：{_short_err_msg(e)}", level="warn"
+            )
+            return
+
+        try:
+            await acc_page.bring_to_front()
+        except Exception:
+            pass
+
+        async def _pcb(_n: int, data: Dict[str, Any]) -> None:
+            msg = str((data or {}).get("msg") or "").strip()
+            if msg:
+                await self._push_debug_progress(acc_page, f"Google 自动登录：{msg}", level="info")
+
+        await google_accounts_autofill_login_steps(
+            acc_page,
+            platform_username=str(creds.get("platform_username") or ""),
+            platform_password=str(creds.get("platform_password") or ""),
+            platform_efa=creds.get("platform_efa"),
+            timeout_ms=int(timeout_ms),
+            progress_cb=_pcb,
+        )
+
+    @staticmethod
+    def _veo_is_page_closed(p: Any) -> bool:
+        try:
+            return bool(getattr(p, "is_closed", lambda: False)())
+        except Exception:
+            return True
+
+    @staticmethod
+    def _google_url_indicates_relogin_required(u: str) -> bool:
+        ul = (u or "").strip().lower()
+        if "accounts.google.com" not in ul:
+            return False
+        return any(
+            x in ul
+            for x in (
+                "/signin",
+                "/oauth",
+                "selectaccount",
+                "servicelogin",
+                "/identifier",
+                "challenge",
+                "speedbump",
+                "/v3/signin",
+            )
+        )
+
+    async def _veo_snapshot_contexts_pages(self) -> tuple[list[Any], list[tuple[Any, Any, str]]]:
+        """返回 (contexts, open_pages[(ctx,page,url)])。"""
+        ctx0 = getattr(self.pw_ctx, "context", None)
+        br0 = getattr(self.pw_ctx, "browser", None)
+        try:
+            ctxs0 = list(getattr(br0, "contexts", []) or [])
+        except Exception:
+            ctxs0 = []
+        if ctx0 is not None and ctx0 not in ctxs0:
+            ctxs0.insert(0, ctx0)
+        open_pages0: list[tuple[Any, Any, str]] = []
+        for c0 in (ctxs0 or []):
+            try:
+                pages0 = list(getattr(c0, "pages", []) or [])
+            except Exception:
+                pages0 = []
+            for p0 in pages0:
+                if self._veo_is_page_closed(p0):
+                    continue
+                try:
+                    u0 = str(getattr(p0, "url", "") or "").strip()
+                except Exception:
+                    u0 = ""
+                open_pages0.append((c0, p0, u0))
+        return ctxs0, open_pages0
+
+    async def _perform_google_relogin_if_stuck_on_accounts(
+        self,
+        *,
+        db: Database,
+        window_pk: int,
+        timeout_ms: int,
+    ) -> None:
+        """调用方须已持有 ``_bring_drafts_lock``：检测 Google 登录/选账号页并自动登录。"""
+        _, open_pages = await self._veo_snapshot_contexts_pages()
+        if not open_pages:
+            return
+        need = False
+        for _c, p, u in open_pages:
+            if self._google_url_indicates_relogin_required(str(u)):
+                need = True
+                break
+        if not need:
+            for _c, p, _u in open_pages:
+                try:
+                    if self._veo_is_page_closed(p):
+                        continue
+                    t = (await p.title() or "").strip().lower()
+                    if "sign in - google accounts" in t or "choose an account" in t:
+                        need = True
+                        break
+                except Exception:
+                    continue
+        if not need:
+            return
+        if await self._maybe_click_google_account_picker_if_present(open_pages):
+            _, open_pages = await self._veo_snapshot_contexts_pages()
+        await self._try_google_accounts_login_autofill(
+            open_pages,
+            db=db,
+            window_pk=int(window_pk),
+            timeout_ms=int(timeout_ms),
+        )
+
+    async def _nonpenalized_raise_if_google_account_logged_out(self, drafts_page: Any) -> None:
+        """未走管理台「连接置前」自动登录时，若仍停留在 Google 登录相关页则视为被登出。"""
+        _, open_pages = await self._veo_snapshot_contexts_pages()
+        for _ctx, p, u in open_pages:
+            ul = str(u or "").strip().lower()
+            if self._google_url_indicates_relogin_required(ul):
+                raise NonPenalizedTaskError("账号被登出", status_code=401)
+            if not self._veo_is_page_closed(p):
+                try:
+                    t = (await p.title() or "").strip().lower()
+                    if "sign in - google accounts" in t or "choose an account" in t:
+                        raise NonPenalizedTaskError("账号被登出", status_code=401)
+                except NonPenalizedTaskError:
+                    raise
+                except Exception:
+                    pass
+        if drafts_page is None or self._veo_is_page_closed(drafts_page):
+            return
+        try:
+            du = str(getattr(drafts_page, "url", "") or "").strip().lower()
+            if self._google_url_indicates_relogin_required(du):
+                raise NonPenalizedTaskError("账号被登出", status_code=401)
+            t = (await drafts_page.title() or "").strip().lower()
+            if "sign in - google accounts" in t or "choose an account" in t:
+                raise NonPenalizedTaskError("账号被登出", status_code=401)
+        except NonPenalizedTaskError:
+            raise
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # 核心：将目标页面置前（完整照搬 sora 的 _bring_sora_drafts_to_front）
     # ------------------------------------------------------------------
@@ -769,6 +1071,9 @@ class VeoSession:
         *,
         drafts_url: str,
         acquire_bring_lock: bool = True,
+        google_login_db: Optional[Database] = None,
+        google_login_window_pk: Optional[int] = None,
+        google_login_timeout_ms: Optional[int] = None,
     ) -> None:
         """将目标页面置前，并尽量确保整个指纹浏览器实例只保留一个目标页面。
 
@@ -778,11 +1083,22 @@ class VeoSession:
         尽量只保留一个目标页面以节省内存。
 
         acquire_bring_lock：为 False 时表示调用方已持有 ``_bring_drafts_lock``（避免与外层 ``async with`` 死锁）。
+
+        google_login_db / google_login_window_pk：仅管理台「连接置前」接口传入；若同时有值，会在合并/关闭标签前执行选 @gmail.com 账号 + 自动填密码/邮箱/TOTP。
+
+        未传入时：若 bring 结束后仍停留在 Google 登录/选账号页，抛出 ``NonPenalizedTaskError("账号被登出")``。
         """
         try:
             target_host = urlparse(drafts_url).netloc.strip().lower()
         except Exception:
             target_host = ""
+
+        gl_db = google_login_db
+        gl_wpk = google_login_window_pk
+        try:
+            gl_to = int(google_login_timeout_ms) if google_login_timeout_ms is not None else 90_000
+        except Exception:
+            gl_to = 90_000
 
         async def _inner() -> None:
             def _is_page_closed(p: Any) -> bool:
@@ -803,32 +1119,9 @@ class VeoSession:
                 except Exception:
                     return ""
 
-            async def _snapshot_contexts_pages() -> tuple[list[Any], list[tuple[Any, Any, str]]]:
-                """返回 (contexts, open_pages[(ctx,page,url)])。"""
-                ctx0 = getattr(self.pw_ctx, "context", None)
-                br0 = getattr(self.pw_ctx, "browser", None)
-                try:
-                    ctxs0 = list(getattr(br0, "contexts", []) or [])
-                except Exception:
-                    ctxs0 = []
-                if ctx0 is not None and ctx0 not in ctxs0:
-                    ctxs0.insert(0, ctx0)
-                open_pages0: list[tuple[Any, Any, str]] = []
-                for c0 in (ctxs0 or []):
-                    try:
-                        pages0 = list(getattr(c0, "pages", []) or [])
-                    except Exception:
-                        pages0 = []
-                    for p0 in pages0:
-                        if _is_page_closed(p0):
-                            continue
-                        u0 = _safe_page_url(p0)
-                        open_pages0.append((c0, p0, u0))
-                return ctxs0, open_pages0
-
             async def _keep_only_one_drafts_page(keep_page: Any) -> Any:
                 """关闭其它所有页面/多余 contexts，仅保留 keep_page。返回 keep_page。"""
-                ctxs1, open_pages1 = await _snapshot_contexts_pages()
+                ctxs1, open_pages1 = await self._veo_snapshot_contexts_pages()
                 keep_ctx = None
                 for c1, p1, _u1 in open_pages1:
                     if p1 is keep_page:
@@ -865,9 +1158,31 @@ class VeoSession:
                     pass
                 return keep_page
 
-            ctxs, open_pages = await _snapshot_contexts_pages()
+            ctxs, open_pages = await self._veo_snapshot_contexts_pages()
             if not ctxs:
                 return
+
+            if gl_db is not None and gl_wpk is not None:
+                if await self._maybe_click_google_account_picker_if_present(open_pages):
+                    ctxs, open_pages = await self._veo_snapshot_contexts_pages()
+                    if not ctxs:
+                        return
+                try:
+                    await self._try_google_accounts_login_autofill(
+                        open_pages,
+                        db=gl_db,
+                        window_pk=int(gl_wpk),
+                        timeout_ms=gl_to,
+                    )
+                except Exception as e:
+                    hint = open_pages[0][1] if open_pages else None
+                    if hint is not None:
+                        await self._push_debug_progress(
+                            hint, f"Google 自动登录异常：{_short_err_msg(e)}", level="warn"
+                        )
+                ctxs, open_pages = await self._veo_snapshot_contexts_pages()
+                if not ctxs:
+                    return
 
             drafts_page = None
             cur_page = getattr(self.pw_ctx, "page", None)
@@ -1065,6 +1380,9 @@ class VeoSession:
                             pass
             except Exception:
                 pass
+
+            if gl_db is None or gl_wpk is None:
+                await self._nonpenalized_raise_if_google_account_logged_out(drafts_page)
 
         if acquire_bring_lock:
             async with self._bring_drafts_lock:
@@ -3185,7 +3503,7 @@ async def veo_workflow(
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
     max_wait_seconds = float(payload.get("veo_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 1800.0)))
     poll_interval_seconds = float(payload.get("veo_pending_poll_interval_seconds") or 5.0)
-    max_submit_retries = max(1, min(5, int(payload.get("veo_submit_max_retries") or 3)))
+    max_submit_retries = 1
 
     sess = get_or_create_veo_session(
         vendor=browser_vendor,

@@ -134,6 +134,37 @@ async def _click_next_button(page: Any, *, timeout_ms: int) -> str:
     raise RuntimeError(f"未找到可点击的 Next 按钮（已尝试 {selectors}），last_err={last_err}")
 
 
+async def _click_google_signin_next(page: Any, *, timeout_ms: int) -> str:
+    """Google accounts 登录链路上的 Next / Continue / 下一步（较 _click_next_button 更全）。"""
+    selectors = [
+        "#identifierNext",
+        "button#identifierNext",
+        "#passwordNext",
+        "button#passwordNext",
+        'button:has-text("Next")',
+        'div[role="button"]:has-text("Next")',
+        'button:has-text("Continue")',
+        'div[role="button"]:has-text("Continue")',
+        'button:has-text("下一步")',
+        'div[role="button"]:has-text("下一步")',
+        'button:has-text("继续")',
+        'div[role="button"]:has-text("继续")',
+        'input[type="submit"][value="Next"]',
+    ]
+    per_try_timeout = int(max(1000, min(5000, timeout_ms // 4)))
+    last_err: Optional[Exception] = None
+    for sel in selectors:
+        loc = page.locator(sel).first
+        try:
+            await loc.wait_for(state="visible", timeout=per_try_timeout)
+            await loc.click(timeout=per_try_timeout)
+            return sel
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"未找到 Google 登录 Next/Continue（已尝试 {len(selectors)} 种），last_err={last_err}")
+
+
 async def _click_save_or_next_button(page: Any, *, timeout_ms: int) -> str:
     """在密码修改页点击 Change password / Save / Next。"""
     selectors = [
@@ -294,6 +325,61 @@ async def _resolve_window_platform_credentials(db: Database, *, window_pk: int) 
         "platform_username": platform_username,
         "platform_password": platform_password,
         "platform_efa": platform_efa,
+    }
+
+
+async def resolve_window_platform_login_creds_optional_efa(db: Database, *, window_pk: int) -> Dict[str, Optional[str]]:
+    """与 _resolve_window_platform_credentials 相同来源，但 platform_efa 可选（无则跳过 TOTP 自动填）。"""
+    win = await db.get_window(int(window_pk))
+    if not win:
+        raise RuntimeError(f"窗口不存在：window_pk={window_pk}")
+
+    platform_url = _s(getattr(win, "platform_url", None)) or None
+    platform_username = _s(getattr(win, "platform_account", None)) or None
+    platform_password: Optional[str] = None
+    platform_efa: Optional[str] = None
+
+    space_pk = int(getattr(win, "space_pk", 0) or 0)
+    if space_pk <= 0:
+        raise RuntimeError(f"窗口缺少 space_pk：window_pk={window_pk}")
+
+    account_id = int(getattr(win, "platform_account_id", 0) or 0)
+    if account_id > 0:
+        acc = await db.get_platform_account(space_pk=space_pk, account_id=account_id)
+        if acc:
+            platform_url = _s(getattr(acc, "platform_url", None)) or platform_url
+            platform_username = _s(getattr(acc, "platform_username", None)) or platform_username
+            platform_password = _s(getattr(acc, "platform_password", None)) or None
+            platform_efa = _s(getattr(acc, "platform_efa", None)) or None
+    else:
+        cands = await db.list_platform_accounts(space_pk)
+        target_user = (platform_username or "").strip().lower()
+        target_url = (platform_url or "").strip().lower()
+        for acc in cands:
+            u = _s(getattr(acc, "platform_username", None)).lower()
+            u_ok = bool(target_user) and u == target_user
+            if not u_ok:
+                continue
+            a_url = _s(getattr(acc, "platform_url", None)).lower()
+            if target_url and a_url and a_url != target_url:
+                continue
+            platform_url = _s(getattr(acc, "platform_url", None)) or platform_url
+            platform_password = _s(getattr(acc, "platform_password", None)) or None
+            platform_efa = _s(getattr(acc, "platform_efa", None)) or None
+            break
+
+    if not platform_url:
+        raise RuntimeError(f"窗口未绑定平台网址：window_pk={window_pk}")
+    if not platform_username:
+        raise RuntimeError(f"窗口未绑定平台账号(邮箱)：window_pk={window_pk}")
+    if not platform_password:
+        raise RuntimeError(f"窗口绑定账号缺少密码：window_pk={window_pk}")
+
+    return {
+        "platform_url": platform_url,
+        "platform_username": platform_username,
+        "platform_password": platform_password,
+        "platform_efa": platform_efa if (platform_efa or "").strip() else None,
     }
 
 
@@ -837,6 +923,108 @@ async def _wait_for_login_redirect(page: Any, *, timeout_ms: int) -> None:
             return
         await asyncio.sleep(1)
     # 超时也不报错——可能是慢网络，后续 goto 如果失败会自然抛异常
+
+
+async def google_accounts_autofill_login_steps(
+    page: Any,
+    *,
+    platform_username: str,
+    platform_password: str,
+    platform_efa: Optional[str],
+    timeout_ms: int,
+    progress_cb: Optional[ProgressCB] = None,
+) -> None:
+    """在当前已打开 accounts.google.com 页面上，按可见控件依次自动填邮箱/密码/TOTP（与开号 _do_login_flow 同源策略）。
+
+    platform_efa 为空时：若出现身份验证器输入框则记录提示并中止自动填表（短信/邮箱验证码需人工）。
+    """
+    per_step = int(max(800, min(12_000, timeout_ms // 6)))
+
+    async def _emit(msg: str, **extra: Any) -> None:
+        if progress_cb is None:
+            return
+        await progress_cb(0, {"stage": "google_autofill", "msg": msg, **extra})
+
+    deadline = time.time() + max(20.0, timeout_ms / 1000.0)
+    rounds = 0
+    max_rounds = 24
+
+    while time.time() < deadline and rounds < max_rounds:
+        rounds += 1
+        try:
+            cur = str(page.url or "").strip().lower()
+        except Exception:
+            cur = ""
+        if cur and "accounts.google.com" not in cur:
+            await _emit(f"已离开 Google 登录域：{cur[:120]}")
+            return
+
+        progressed = False
+
+        try:
+            pw = page.locator("input[type='password']").first
+            if await pw.is_visible(timeout=per_step):
+                await pw.fill(platform_password, timeout=per_step)
+                await _emit("已自动填写密码")
+                await _click_google_signin_next(page, timeout_ms=min(15_000, timeout_ms))
+                progressed = True
+                await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
+        if progressed:
+            continue
+
+        for sel in ("#identifierId", 'input[name="identifier"]', "input[type='email']"):
+            try:
+                em = page.locator(sel).first
+                if await em.is_visible(timeout=per_step):
+                    await em.fill(platform_username, timeout=per_step)
+                    await _emit("已自动填写邮箱/账号", selector=sel)
+                    await _click_google_signin_next(page, timeout_ms=min(15_000, timeout_ms))
+                    progressed = True
+                    await asyncio.sleep(1.0)
+                    break
+            except Exception:
+                continue
+
+        if progressed:
+            continue
+
+        otp_selectors = (
+            'input[name="totpPin"]',
+            "#totpPin",
+            'input[autocomplete="one-time-code"]',
+            "input[type='tel']",
+            'input[id="idvPin"]',
+            'input[name="pin"]',
+        )
+        for osp in otp_selectors:
+            try:
+                loc = page.locator(osp).first
+                if not await loc.is_visible(timeout=per_step // 2):
+                    continue
+                secret = (platform_efa or "").strip()
+                if not secret:
+                    await _emit("检测到验证码输入框，但未配置 EFA(2FA Secret)，请手动完成验证", selector=osp)
+                    return
+                code = _generate_totp_code(secret)
+                await loc.fill(code, timeout=per_step)
+                await _emit("已自动填写身份验证器验证码 (TOTP)", selector=osp)
+                await _click_google_signin_next(page, timeout_ms=min(15_000, timeout_ms))
+                progressed = True
+                await asyncio.sleep(1.2)
+                break
+            except Exception:
+                continue
+
+        if progressed:
+            continue
+
+        await asyncio.sleep(0.55)
+
+    await _wait_for_login_redirect(page, timeout_ms=min(35_000, timeout_ms))
+    await _emit("Google 登录步骤轮询结束，已等待跳转")
 
 
 async def _do_login_flow(

@@ -222,6 +222,8 @@ class CreateTaskTypeRequest(BaseModel):
     error_retry_count: int = Field(default=0, ge=0, le=10)
     default_target_url: Optional[str] = Field(default=None, max_length=2048)
     window_pool_enabled: bool = False
+    window_pool_reconcile_interval_sec: int = Field(default=600, ge=10, le=7200)
+    window_pool_cloudflare_interval_sec: int = Field(default=1800, ge=30, le=86400)
 
 
 class UpdateTaskTypeRequest(BaseModel):
@@ -237,6 +239,8 @@ class UpdateTaskTypeRequest(BaseModel):
     error_retry_count: int = Field(default=0, ge=0, le=10)
     default_target_url: Optional[str] = Field(default=None, max_length=2048)
     window_pool_enabled: bool = False
+    window_pool_reconcile_interval_sec: int = Field(default=600, ge=10, le=7200)
+    window_pool_cloudflare_interval_sec: int = Field(default=1800, ge=30, le=86400)
     enabled: bool = True
 
 
@@ -2115,6 +2119,8 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             error_retry_count=req.error_retry_count,
             default_target_url=req.default_target_url,
             window_pool_enabled=req.window_pool_enabled,
+            window_pool_reconcile_interval_sec=req.window_pool_reconcile_interval_sec,
+            window_pool_cloudflare_interval_sec=req.window_pool_cloudflare_interval_sec,
         )
         await _refresh_window_pool_after_task_type_write()
         return {"success": True, "task_type_id": tid}
@@ -2160,6 +2166,8 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             error_retry_count=req.error_retry_count,
             default_target_url=req.default_target_url,
             window_pool_enabled=req.window_pool_enabled,
+            window_pool_reconcile_interval_sec=req.window_pool_reconcile_interval_sec,
+            window_pool_cloudflare_interval_sec=req.window_pool_cloudflare_interval_sec,
         )
         await _refresh_window_pool_after_task_type_write()
         return {"success": True}
@@ -2948,6 +2956,75 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
             await sora_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
+
+    enabled_before = bool(int(ctx_row.get("enabled") or 0))
+    return {"success": True, "mapping_id": mapping_id, "enabled": enabled_before, "idle_close_disabled": True}
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/veo-connect-bring")
+async def veo_connect_bring_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
+    """连接 CDP 并置前 Veo 目标页（不重启指纹窗口）。在 _bring_drafts_lock 下执行 ensure_open + _bring_target_page_to_front。
+
+    若存在 Google 账号选择页会先点选 @gmail.com；随后在 accounts.google.com 上按窗口凭据自动填密码/邮箱/TOTP（与开号同源，EFA 可选）。
+    完成后断开本地 CDP，与 manual-start 一致。
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+
+    handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
+    if handler != "veo_workflow":
+        raise HTTPException(status_code=400, detail="仅 veo_workflow 任务类型支持该操作")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+
+    from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+
+    target_url = str(ctx_row.get("default_target_url") or "").strip() or "https://veo.google.com"
+    veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+    veo_ctx.browser_headless = headless
+    veo_ctx.idle_close_disabled = True
+    try:
+        veo_ctx._cancel_idle_close()
+    except Exception:
+        pass
+    try:
+        async with veo_ctx._bring_drafts_lock:
+            await veo_ctx.ensure_open(
+                args=veo_ctx.browser_open_args,
+                force_open=veo_ctx.browser_force_open,
+                headless=headless,
+                acquire_bring_lock=False,
+            )
+            try:
+                gl_ms = int(float(ctx_row.get("task_timeout_seconds") or 120) * 1000)
+            except Exception:
+                gl_ms = 120_000
+            gl_ms = max(45_000, min(gl_ms, 240_000))
+            wpk = int(ctx_row.get("window_pk") or 0)
+            await veo_ctx._bring_target_page_to_front(
+                refresh_target=True,
+                drafts_url=target_url,
+                acquire_bring_lock=False,
+                google_login_db=db,
+                google_login_window_pk=wpk if wpk > 0 else None,
+                google_login_timeout_ms=gl_ms,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"连接并置前失败：{e}")
+    try:
+        await veo_ctx.disconnect_playwright_under_bring_lock()
+    except Exception:
+        pass
 
     enabled_before = bool(int(ctx_row.get("enabled") or 0))
     return {"success": True, "mapping_id": mapping_id, "enabled": enabled_before, "idle_close_disabled": True}

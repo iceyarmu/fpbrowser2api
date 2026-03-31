@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class AdminUser(BaseModel):
@@ -195,10 +195,29 @@ class TaskType(BaseModel):
     default_target_url: Optional[str] = None
     # 开启后由 TaskService 后台协程按 browser_pool_limit 预热窗口并做 Cloudflare 巡检（不占 inflight_slots）
     window_pool_enabled: bool = False
+    # 窗口池与 DB 对齐周期（秒）；多任务类型同时开启池时取最小值作为全局 maintainer 周期
+    window_pool_reconcile_interval_sec: int = 600
+    # Cloudflare 巡检周期（秒）；多类型同时开启池时取最小值
+    window_pool_cloudflare_interval_sec: int = 1800
     enabled: bool = True
     deleted: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @field_validator("window_pool_reconcile_interval_sec", mode="before")
+    @classmethod
+    def _coerce_reconcile_interval(cls, v: Any) -> int:
+        if v is None:
+            return 600
+        return int(v)
+
+    @field_validator("window_pool_cloudflare_interval_sec", mode="before")
+    @classmethod
+    def _coerce_cf_interval(cls, v: Any) -> int:
+        if v is None:
+            return 1800
+        return int(v)
+
 
 class TaskTypePublic(BaseModel):
     id: Optional[int] = None

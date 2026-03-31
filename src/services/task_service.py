@@ -263,6 +263,14 @@ class TaskService:
         # 首轮尽快 reconcile 一次以预热池；之后按 _window_pool_reconcile_interval
         last_reconcile = time.monotonic() - self._window_pool_reconcile_interval
         while not self._window_pool_stop.is_set():
+            try:
+                r_sec, c_sec = await self.db.get_window_pool_maintainer_intervals_seconds()
+                self._window_pool_reconcile_interval = float(r_sec)
+                self._window_pool_cf_interval = float(c_sec)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
             now = time.monotonic()
             reconcile_due = self._window_pool_force_reconcile or (
                 now - last_reconcile >= self._window_pool_reconcile_interval
@@ -596,9 +604,20 @@ class TaskService:
                 )
                 if not sess.idle_close_disabled:
                     return
+                wpk = int(ctx.get("window_pk") or 0)
+                try:
+                    gl_ms = int(float(ctx.get("task_timeout_seconds") or 120) * 1000)
+                except Exception:
+                    gl_ms = 120_000
+                gl_ms = max(45_000, min(gl_ms, 240_000))
                 page = getattr(sess.pw_ctx, "page", None)
                 await sess.raise_if_cloudflare_page_nonpenalized(
-                    page, stage="window_pool", target_url=tu
+                    page,
+                    stage="window_pool",
+                    target_url=tu,
+                    window_pool_google_relogin_db=self.db if wpk > 0 else None,
+                    window_pool_google_relogin_window_pk=wpk if wpk > 0 else None,
+                    window_pool_google_relogin_timeout_ms=gl_ms,
                 )
                 try:
                     await sess.disconnect_playwright_under_bring_lock()

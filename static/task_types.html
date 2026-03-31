@@ -194,7 +194,17 @@
                     <input class="form-check-input" type="checkbox" id="typeWindowPoolEnabled" />
                     <label class="form-check-label" for="typeWindowPoolEnabled">开启窗口池</label>
                   </div>
-                  <div class="text-muted small">开启后服务会按每个指纹浏览器的窗口池上限预热窗口（不占任务 inflight），并约每 60 秒做 Cloudflare 巡检；派单时优先从池内 mapping 预占槽位。</div>
+                  <div class="text-muted small">开启后服务会按每个指纹浏览器的窗口池上限预热窗口（不占任务 inflight），并按下方周期与 DB 对齐及做 Cloudflare 巡检；派单时优先从池内 mapping 预占槽位。若多个任务类型同时开启窗口池，服务取各类型配置的最小周期。</div>
+                </div>
+                <div class="col-6 col-md-4">
+                  <label class="form-label form-label-tight" for="typeWindowPoolReconcileSec">池对齐周期（秒）</label>
+                  <input class="form-control form-control-sm" type="number" id="typeWindowPoolReconcileSec" min="10" max="7200" step="1" />
+                  <div class="text-muted small">与数据库窗口池目标对齐、补开/关窗，默认 600。</div>
+                </div>
+                <div class="col-6 col-md-4">
+                  <label class="form-label form-label-tight" for="typeWindowPoolCfSec">Cloudflare 巡检周期（秒）</label>
+                  <input class="form-control form-control-sm" type="number" id="typeWindowPoolCfSec" min="30" max="86400" step="1" />
+                  <div class="text-muted small">池内页面巡检间隔，默认 1800。</div>
                 </div>
                 <div class="col-12">
                   <div class="form-check form-switch">
@@ -1618,13 +1628,14 @@
 
       function getRowActionButtons(mappingId, fromEl) {
         const tr = fromEl?.closest?.("tr") || document.querySelector(`#mappingBody button[data-mid="${mappingId}"]`)?.closest("tr");
-        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
+        if (!tr) return { tr: null, openBtn: null, startBtn: null, closeBtn: null, veoConnectBringBtn: null, refreshQuotaBtn: null, refreshInviteBtn: null, refreshSubBtn: null };
         return {
           tr,
           openBtn: tr.querySelector(`button[data-act="manualOpen"][data-mid="${mappingId}"]`),
 
           startBtn: tr.querySelector(`button[data-act="manualStart"][data-mid="${mappingId}"]`),
           closeBtn: tr.querySelector(`button[data-act="manualClose"][data-mid="${mappingId}"]`),
+          veoConnectBringBtn: tr.querySelector(`button[data-act="veoConnectBring"][data-mid="${mappingId}"]`),
           transferBtn: tr.querySelector(`button[data-act="transfer"][data-mid="${mappingId}"]`),
           rollbackBtn: tr.querySelector(`button[data-act="rollback"][data-mid="${mappingId}"]`),
           refreshQuotaBtn: tr.querySelector(`button[data-act="refreshQuota"][data-mid="${mappingId}"]`),
@@ -1972,6 +1983,10 @@
         document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
         document.getElementById("typeDefaultTargetUrl").value = t?.default_target_url || "";
         document.getElementById("typeWindowPoolEnabled").checked = !!t?.window_pool_enabled;
+        document.getElementById("typeWindowPoolReconcileSec").value =
+          t?.window_pool_reconcile_interval_sec != null ? String(t.window_pool_reconcile_interval_sec) : "600";
+        document.getElementById("typeWindowPoolCfSec").value =
+          t?.window_pool_cloudflare_interval_sec != null ? String(t.window_pool_cloudflare_interval_sec) : "1800";
         document.getElementById("typeEnabled").checked = t ? !!t.enabled : true;
         // 允许编辑英文名称（code）；注意这会影响对外接口 task_type_code
         setTaskTypeConfigReadonly(!canEditTaskTypeConfig());
@@ -2010,6 +2025,10 @@
             refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
             default_target_url: document.getElementById("typeDefaultTargetUrl").value.trim() || null,
             window_pool_enabled: document.getElementById("typeWindowPoolEnabled").checked,
+            window_pool_reconcile_interval_sec:
+              parseInt(document.getElementById("typeWindowPoolReconcileSec").value, 10) || 600,
+            window_pool_cloudflare_interval_sec:
+              parseInt(document.getElementById("typeWindowPoolCfSec").value, 10) || 1800,
             enabled: document.getElementById("typeEnabled").checked,
           };
           if (!payload.name || !payload.code) throw new Error("请填写名称与英文名称");
@@ -2469,6 +2488,7 @@
                   <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
 
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
+                  ${_isVeo ? `<button class="btn btn-outline-info btn-sm btn-icon" title="连接自动化并置前目标页；若在 Google「Sign in - Google Accounts」页则自动点击含 @gmail.com 的账号" aria-label="连接置前" data-act="veoConnectBring" data-mid="${m.id}"><i class="bi bi-link-45deg" aria-hidden="true"></i><span class="visually-hidden">连接置前</span></button>` : ""}
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                   <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
@@ -2884,6 +2904,9 @@
 
         if (act === "manualStart") {
           return manualStartWindow(mappingId, el);
+        }
+        if (act === "veoConnectBring") {
+          return veoConnectBringWindow(mappingId, el);
         }
         if (act === "manualClose") {
           return manualCloseWindow(mappingId, el);
@@ -3746,11 +3769,12 @@
         try {
           // 如果刚刚触发了“关闭窗口倒计时提示”，这里顺手清掉提示，避免界面残留
           cancelCloseHintCountdown({ hideModal: true });
-          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
           // 防止重复点击：打开/关闭同时锁住
           setBtnBusy(openBtn, true, { loadingText: "清本地缓存" });
           if (startBtn) startBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
+          if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
           await clearMappingBrowserLocalCache(mappingId);
 
@@ -3763,8 +3787,33 @@
         } catch (e) {
           toast(e.message, "error");
         } finally {
-          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
           setBtnBusy(openBtn, false);
+          if (startBtn) startBtn.disabled = false;
+          if (closeBtn) closeBtn.disabled = false;
+          if (veoConnectBringBtn) veoConnectBringBtn.disabled = false;
+        }
+      }
+
+      async function veoConnectBringWindow(mappingId, fromEl) {
+        try {
+          cancelCloseHintCountdown({ hideModal: true });
+          const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
+          setBtnBusy(veoConnectBringBtn, true, { loadingText: "连接中" });
+          if (openBtn) openBtn.disabled = true;
+          if (startBtn) startBtn.disabled = true;
+          if (closeBtn) closeBtn.disabled = true;
+          const hl = getMappingHeadless(mappingId);
+          await postJson(`/api/admin/task-type-windows/${mappingId}/veo-connect-bring?headless=${hl}`, { method: "POST" });
+          updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
+          toast("已连接并置前目标页（若处于 Google 账号选择页已尝试自动点选）", "success");
+          flashBtnText(veoConnectBringBtn, "已连接");
+        } catch (e) {
+          toast(e.message, "error");
+        } finally {
+          const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
+          setBtnBusy(veoConnectBringBtn, false);
+          if (openBtn) openBtn.disabled = false;
           if (startBtn) startBtn.disabled = false;
           if (closeBtn) closeBtn.disabled = false;
         }
@@ -3773,10 +3822,11 @@
       async function manualStartWindow(mappingId, fromEl) {
         try {
           cancelCloseHintCountdown({ hideModal: true });
-          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
           setBtnBusy(startBtn, true, { loadingText: "重启中" });
           if (openBtn) openBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
+          if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
           const hl = getMappingHeadless(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}`, { method: "POST" });
@@ -3787,10 +3837,11 @@
         } catch (e) {
           toast(e.message, "error");
         } finally {
-          const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+          const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
           setBtnBusy(startBtn, false);
           if (openBtn) openBtn.disabled = false;
           if (closeBtn) closeBtn.disabled = false;
+          if (veoConnectBringBtn) veoConnectBringBtn.disabled = false;
         }
       }
 
@@ -3838,13 +3889,14 @@
 
       async function manualCloseWindow(mappingId, fromEl) {
         const m = state.mappings.find(x => x.id === mappingId);
-        const { openBtn, startBtn, closeBtn } = getRowActionButtons(mappingId, fromEl);
+        const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
         try {
           // 立即调用接口：后端自己倒计时关闭；前端只做提示更友好
           cancelCloseHintCountdown({ hideModal: true });
           setBtnBusy(closeBtn, true, { loadingText: "提交中" });
           if (openBtn) openBtn.disabled = true;
           if (startBtn) startBtn.disabled = true;
+          if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-close`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 0 });
@@ -3863,6 +3915,7 @@
           if (openBtn) openBtn.disabled = false;
           if (startBtn) startBtn.disabled = false;
           if (closeBtn) closeBtn.disabled = false;
+          if (veoConnectBringBtn) veoConnectBringBtn.disabled = false;
         }
       }
 

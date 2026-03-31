@@ -601,6 +601,8 @@ class Database:
                     ("error_retry_count", "INTEGER DEFAULT 0"),
                     ("default_target_url", "TEXT"),
                     ("window_pool_enabled", "BOOLEAN DEFAULT 0"),
+                    ("window_pool_reconcile_interval_sec", "INTEGER DEFAULT 600"),
+                    ("window_pool_cloudflare_interval_sec", "INTEGER DEFAULT 1800"),
                 ]
                 for col_name, col_type in columns_to_add:
                     if not await self._column_exists(db, "task_types", col_name):
@@ -2999,7 +3001,42 @@ class Database:
             rows = await cur.fetchall()
             return [TaskType(**dict(r)) for r in rows]
 
-    
+    async def get_window_pool_maintainer_intervals_seconds(self) -> tuple[int, int]:
+        """所有「已启用且开启窗口池」的任务类型上，取两个周期的最小值作为全局 maintainer 间隔。"""
+        async with self._read_conn() as db:
+            cur = await db.execute(
+                """
+                SELECT
+                  MIN(window_pool_reconcile_interval_sec),
+                  MIN(window_pool_cloudflare_interval_sec)
+                FROM task_types
+                WHERE deleted = 0 AND enabled = 1 AND window_pool_enabled != 0
+                """
+            )
+            row = await cur.fetchone()
+        if not row:
+            return 600, 1800
+
+        def _clamp_rec(x: Any) -> int:
+            if x is None:
+                return 600
+            try:
+                v = int(x)
+            except Exception:
+                return 600
+            return max(10, min(7200, v))
+
+        def _clamp_cf(x: Any) -> int:
+            if x is None:
+                return 1800
+            try:
+                v = int(x)
+            except Exception:
+                return 1800
+            return max(30, min(86400, v))
+
+        return _clamp_rec(row[0]), _clamp_cf(row[1])
+
     async def list_task_types_public(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskTypePublic]:
         async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -3033,6 +3070,8 @@ class Database:
         error_retry_count: int = 0,
         default_target_url: Optional[str] = None,
         window_pool_enabled: bool = False,
+        window_pool_reconcile_interval_sec: int = 600,
+        window_pool_cloudflare_interval_sec: int = 1800,
     ) -> int:
         async with self._write_conn() as db:
             cur = await db.execute(
@@ -3040,9 +3079,10 @@ class Database:
                 INSERT INTO task_types (
                   name, code, project_id, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
                   create_task_handler, refresh_quota_handler, error_retry_count, default_target_url,
-                  window_pool_enabled, enabled, deleted
+                  window_pool_enabled, window_pool_reconcile_interval_sec, window_pool_cloudflare_interval_sec,
+                  enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
@@ -3057,6 +3097,8 @@ class Database:
                     int(error_retry_count),
                     (default_target_url or "").strip() or None,
                     1 if window_pool_enabled else 0,
+                    int(window_pool_reconcile_interval_sec),
+                    int(window_pool_cloudflare_interval_sec),
                 ),
             )
             await db.commit()
@@ -3078,6 +3120,8 @@ class Database:
         error_retry_count: int = 0,
         default_target_url: Optional[str] = None,
         window_pool_enabled: bool = False,
+        window_pool_reconcile_interval_sec: int = 600,
+        window_pool_cloudflare_interval_sec: int = 1800,
     ) -> None:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -3104,7 +3148,8 @@ class Database:
                 UPDATE task_types
                 SET name=?, code=?, project_id=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
                     create_task_handler=?, refresh_quota_handler=?, error_retry_count=?, default_target_url=?,
-                    window_pool_enabled=?, enabled=?, updated_at=datetime('now','localtime')
+                    window_pool_enabled=?, window_pool_reconcile_interval_sec=?, window_pool_cloudflare_interval_sec=?,
+                    enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
                 """,
                 (
@@ -3120,6 +3165,8 @@ class Database:
                     int(error_retry_count),
                     (default_target_url or "").strip() or None,
                     1 if window_pool_enabled else 0,
+                    int(window_pool_reconcile_interval_sec),
+                    int(window_pool_cloudflare_interval_sec),
                     1 if enabled else 0,
                     task_type_id,
                 ),
