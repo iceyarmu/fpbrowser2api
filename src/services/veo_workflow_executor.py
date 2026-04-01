@@ -1009,7 +1009,7 @@ class VeoSession:
             if self._veo_is_page_closed(p):
                 continue
             ul = str(u or "").strip().lower()
-            url_hit = self._google_url_indicates_relogin_required(ul) or ("accounts.google.com" in ul)
+            url_hit = self._google_url_indicates_relogin_required(ul) or ("google.com" in ul) 
             title_hit = False
             try:
                 t = (await p.title() or "").strip().lower()
@@ -1576,7 +1576,7 @@ async def veo_flow_open_account(
                 timeout_ms=timeout_ms,
                 progress_cb=progress_cb,
             )
-
+        print(f"target_flow: {target_flow}")
         await page.goto(target_flow, wait_until="domcontentloaded", timeout=timeout_ms)
         await progress_cb(90, {"stage": "flow_opened", "url": target_flow})
 
@@ -1634,10 +1634,9 @@ async def veo_admin_unified_open_or_connect(
     google_login_timeout_ms: int,
 ) -> Dict[str, Any]:
     """管理台合并逻辑：Google 登录页且页面可见 @gmail.com → 连接置前（与原 veo-connect-bring 一致）；否则若仍为 Google 登录相关 → 完整开号；其它情况 → 连接置前。"""
-    target_url = str(default_target_url or "").strip() or "https://veo.google.com"
+    target_url = "https://accounts.google.com/"
     gl_ms = int(google_login_timeout_ms)
     gl_ms = max(45_000, min(gl_ms, 240_000))
-
     sess = get_or_create_veo_session(
         vendor=browser_vendor,
         base_url=browser_base_url,
@@ -1651,7 +1650,6 @@ async def veo_admin_unified_open_or_connect(
         sess._cancel_idle_close()
     except Exception:
         pass
-
     is_google = False
     has_gmail = False
     async with sess._bring_drafts_lock:
@@ -1661,8 +1659,18 @@ async def veo_admin_unified_open_or_connect(
             headless=headless,
             acquire_bring_lock=False,
         )
+        await sess._bring_target_page_to_front(
+            refresh_target=True,
+            drafts_url=target_url,
+            acquire_bring_lock=False,
+            google_login_db=db,
+            google_login_window_pk=int(window_pk),
+            google_login_timeout_ms=gl_ms,
+        )
+        print("--1");
         await progress_cb(5, {"stage": "detect_google_page"})
         is_google, has_gmail = await sess._veo_detect_google_login_and_gmail_visible()
+        print(f"is_google: {is_google}, has_gmail: {has_gmail}")
         await progress_cb(
             8,
             {"stage": "detect_done", "is_google_login": is_google, "has_gmail_visible": has_gmail},
@@ -1670,18 +1678,22 @@ async def veo_admin_unified_open_or_connect(
 
         if is_google and not has_gmail:
             need_full_open_account = True
-        else:
+        elif is_google and has_gmail:
             need_full_open_account = False
             await sess._bring_target_page_to_front(
-                refresh_target=True,
+                refresh_target=False,
                 drafts_url=target_url,
                 acquire_bring_lock=False,
                 google_login_db=db,
                 google_login_window_pk=int(window_pk),
                 google_login_timeout_ms=gl_ms,
             )
+        else:
+            need_full_open_account = False
+            
 
     if need_full_open_account:
+        target_url = str(default_target_url or "").strip() or "https://veo.google.com"
         out = await veo_flow_open_account(
             progress_cb,
             db=db,
@@ -3680,7 +3692,7 @@ async def veo_workflow(
     await sess.ensure_open(headless=headless)
     append_log(log_file, "[veo] browser open / CDP connected")
 
-    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=bring_prefix)
+    await sess._bring_target_page_to_front(refresh_target=True, drafts_url=bring_prefix)
     sess._cancel_idle_close()
     nav_timeout_ms = int(max(15_000, min(120_000, float(timeout_seconds) * 1000)))
     #await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
