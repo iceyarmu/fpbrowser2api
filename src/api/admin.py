@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import secrets
+import shlex
+import subprocess
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import httpx
@@ -752,6 +756,40 @@ async def update_api_key(req: UpdateAPIKeyRequest, token: str = Depends(verify_a
     await db.update_system_config(api_key=req.api_key.strip())
     await db.reload_config_to_memory()
     return {"success": True, "message": "API Key 已更新"}
+
+
+def _project_root_dir() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+@router.post("/api/admin/service-restart")
+async def service_restart(token: str = Depends(verify_admin_token)):
+    """调度执行 fpbrowser2api_service.sh restart（仅 Linux 部署；与 SSH 手动重启等价）。"""
+    await _ensure_page_access(token, "system")
+    await _ensure_admin_user(token)
+    if os.name == "nt":
+        raise HTTPException(status_code=503, detail="当前为 Windows 环境，请在本机手动启动/重启服务")
+    script = _project_root_dir() / "fpbrowser2api_service.sh"
+    if not script.is_file():
+        raise HTTPException(status_code=503, detail="未找到 fpbrowser2api_service.sh，无法通过此接口重启")
+    if not os.access(script, os.X_OK):
+        raise HTTPException(status_code=503, detail="fpbrowser2api_service.sh 无执行权限，请在服务器上 chmod +x")
+    inner = f"sleep 2 && exec bash {shlex.quote(str(script))} restart"
+    try:
+        subprocess.Popen(
+            ["/bin/bash", "-c", inner],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(script.parent),
+        )
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"无法启动重启进程: {e}") from e
+    return {
+        "success": True,
+        "message": "已调度服务重启，约数秒后进程将重新启动，页面可能暂时无法访问",
+    }
 
 
 # -------------------- project management --------------------

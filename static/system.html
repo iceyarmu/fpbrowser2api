@@ -109,6 +109,16 @@
               </div>
             </div>
           </div>
+
+          <div class="card shadow-sm border-warning mt-4">
+            <div class="card-body">
+              <h5 class="card-title">服务进程</h5>
+              <p class="text-muted small mb-3">
+                等价于在服务器项目根目录执行 <span class="mono">./fpbrowser2api_service.sh restart</span>。仅<strong>管理员</strong>可用；重启期间连接会中断，数秒后可刷新本页。
+              </p>
+              <button type="button" class="btn btn-warning" id="btnRestartService">重启服务</button>
+            </div>
+          </div>
         </div>
 
         <div class="col-12 col-lg-6">
@@ -273,6 +283,19 @@
           if (!r.ok) throw new Error(d.detail || "修改失败");
           toast(d.message || "修改成功", "success");
           setTimeout(() => (window.location.href = "/login"), 800);
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      });
+
+      document.getElementById("btnRestartService").addEventListener("click", async () => {
+        if (!confirm("确定要重启 fpbrowser2api 服务吗？当前连接将中断，请稍后刷新页面。")) return;
+        try {
+          const r = await adminFetch("/api/admin/service-restart", { method: "POST", body: JSON.stringify({}) });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "重启调度失败");
+          toast(d.message || "已调度重启", "success");
         } catch (e) {
           toast(e.message, "error");
         }
