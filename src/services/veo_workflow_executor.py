@@ -785,6 +785,82 @@ class VeoSession:
         await self._push_debug_progress(page, "点击 Log in 失败（全部策略）", level="error")
         return False, has_login_button
 
+    async def _maybe_click_get_started_button_if_prompted(self, page) -> tuple:
+        has_get_started = False
+        """尝试点击页面上的 Get started 按钮/链接。"""
+        if page is None:
+            return False, has_get_started
+
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=4000)
+        except Exception:
+            pass
+
+        scopes: list[Any] = [page]
+        try:
+            for fr in list(getattr(page, "frames", []) or []):
+                if fr is not page and fr not in scopes:
+                    scopes.append(fr)
+        except Exception:
+            pass
+
+        get_started_re = re.compile(r"get\s*started", re.IGNORECASE)
+
+        try:
+            for sc in scopes:
+                try:
+                    if hasattr(sc, "get_by_role"):
+                        btn_cnt = await sc.get_by_role("button", name=get_started_re).count()
+                        link_cnt = await sc.get_by_role("link", name=get_started_re).count()
+                        if (btn_cnt + link_cnt) > 0:
+                            has_get_started = True
+                            break
+                    loc_probe = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=get_started_re)
+                    if (await loc_probe.count()) > 0:
+                        has_get_started = True
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            has_get_started = False
+
+        if not has_get_started:
+            await self._push_debug_progress(page, "未发现 Get started 按钮/链接", level="info")
+            return False, has_get_started
+        await self._push_debug_progress(page, "发现 Get started 按钮/链接，准备点击", level="info")
+
+        for sc in scopes:
+            try:
+                scope_name = "page" if sc is page else "frame"
+                if hasattr(sc, "get_by_role"):
+                    try:
+                        btn = sc.get_by_role("button", name=get_started_re)
+                        await btn.first.click(timeout=3000)
+                        await self._push_debug_progress(page, f"点击 Get started 成功（button/{scope_name}）", level="ok")
+                        return True, has_get_started
+                    except Exception as e:
+                        await self._push_debug_progress(page, f"点击 Get started 失败（button/{scope_name}）：{_short_err_msg(e)}", level="warn")
+                    try:
+                        link = sc.get_by_role("link", name=get_started_re)
+                        await link.first.click(timeout=3000)
+                        await self._push_debug_progress(page, f"点击 Get started 成功（link/{scope_name}）", level="ok")
+                        return True, has_get_started
+                    except Exception as e:
+                        await self._push_debug_progress(page, f"点击 Get started 失败（link/{scope_name}）：{_short_err_msg(e)}", level="warn")
+
+                try:
+                    loc2 = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=get_started_re)
+                    await loc2.first.click(timeout=3000)
+                    await self._push_debug_progress(page, f"点击 Get started 成功（text fallback/{scope_name}）", level="ok")
+                    return True, has_get_started
+                except Exception as e:
+                    await self._push_debug_progress(page, f"点击 Get started 失败（text fallback/{scope_name}）：{_short_err_msg(e)}", level="warn")
+            except Exception:
+                continue
+
+        await self._push_debug_progress(page, "点击 Get started 失败（全部策略）", level="error")
+        return False, has_get_started
+
     async def _click_google_gmail_account_row(self, p: Any) -> None:
         """Google「Choose an account」页：真实可点击区域多为外层 [role=link]，邮箱在 div[data-email]（见 Google 新版 DOM）。"""
         gmail_re = re.compile(r"@gmail\.com", re.I)
@@ -1300,7 +1376,7 @@ class VeoSession:
                 except Exception:
                     pass
 
-                clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
+                clicked, has_get_started = await self._maybe_click_get_started_button_if_prompted(drafts_page)
                 if clicked:
                     try:
                         await asyncio.sleep(3.0)
@@ -1312,18 +1388,18 @@ class VeoSession:
                     except Exception:
                         pass
 
-                if not clicked and has_login_button:
-                    await self._push_debug_progress(drafts_page, "重新再试一次点击login", level="ok")
+                if not clicked and has_get_started:
+                    await self._push_debug_progress(drafts_page, "重新再试一次点击 Get started", level="ok")
                     try:
                         await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
                     except Exception:
                         pass
 
-                    clicked, has_login_button = await self._maybe_click_login_button_if_prompted(drafts_page)
+                    clicked, has_get_started = await self._maybe_click_get_started_button_if_prompted(drafts_page)
                     if clicked:
-                        await self._push_debug_progress(drafts_page, "重新再试一次点击login成功", level="ok")
+                        await self._push_debug_progress(drafts_page, "重新再试一次点击 Get started 成功", level="ok")
                     else:
-                        await self._push_debug_progress(drafts_page, "重新再试一次点击login失败", level="error")
+                        await self._push_debug_progress(drafts_page, "重新再试一次点击 Get started 失败", level="error")
             except Exception:
                 pass
 
