@@ -1337,11 +1337,11 @@ class TaskService:
                 try:
                     if nf_check_err is not None:
                         print("余额更新失败:", nf_check_err)
-                        sess._schedule_idle_close()
+                        self._signal_window_pool_replenish()
                     else:
                         remaining = int((nf_check or {}).get("remaining_count") or 0)
                         if remaining <= 2:
-                            sess._schedule_idle_close()
+                            self._signal_window_pool_replenish()
                         else:
                             sess._cancel_idle_close()
                 except Exception:
