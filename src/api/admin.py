@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..core.auth import AuthManager
 from ..core.database import Database
-from ..core.logger import setup_logging
+from ..core.logger import logger, setup_logging
 from ..core.public_api_limits import normalize_public_create_task_max_inflight
 from ..services.fp_browser_client import FPBrowserClient
 
@@ -762,22 +762,90 @@ def _project_root_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _fpbrowser2api_pid_file_path() -> Path:
+    raw = (os.environ.get("PID_FILE") or "").strip()
+    if raw:
+        return Path(raw)
+    return _project_root_dir() / "fpbrowser2api.pid"
+
+
+def _sync_pid_file_for_service_restart() -> None:
+    """写入当前进程 PID，使脚本能 stop 到正在响应请求的 uvicorn（含未用 service 脚本、直接 python main.py 启动）。"""
+    try:
+        pf = _fpbrowser2api_pid_file_path()
+        pf.parent.mkdir(parents=True, exist_ok=True)
+        pf.write_text(str(os.getpid()), encoding="ascii")
+    except OSError:
+        pass
+
+
 @router.post("/api/admin/service-restart")
 async def service_restart(token: str = Depends(verify_admin_token)):
-    """调度执行 fpbrowser2api_service.sh restart（仅 Linux 部署；与 SSH 手动重启等价）。"""
+    """调度执行服务脚本 restart（Linux: fpbrowser2api_service.sh；Windows: fpbrowser2api_service.ps1）。"""
     await _ensure_page_access(token, "system")
     await _ensure_admin_user(token)
+    root = _project_root_dir()
+    _sync_pid_file_for_service_restart()
+
     if os.name == "nt":
-        raise HTTPException(status_code=503, detail="当前为 Windows 环境，请在本机手动启动/重启服务")
-    script = _project_root_dir() / "fpbrowser2api_service.sh"
+        script = root / "fpbrowser2api_service.ps1"
+        if not script.is_file():
+            raise HTTPException(status_code=503, detail="未找到 fpbrowser2api_service.ps1，无法通过此接口重启")
+        # 与 Linux 一致：先 sleep 再 restart，避免当前请求未返回就 stop
+        ps1_quoted = str(script.resolve()).replace("'", "''")
+        inner = f"Start-Sleep -Seconds 2; & '{ps1_quoted}' restart"
+        try:
+            # 勿用 Popen 直接挂 powershell 为 uvicorn 子进程：stop 会结束 Python，子 PowerShell 常被一并终止，restart 无法跑完。
+            # cmd /c start 拉起独立进程树；CREATE_BREAKAWAY_FROM_JOB 减轻 IDE 作业对象连带结束调度进程的情况。
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            creationflags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+            subprocess.Popen(
+                [
+                    "cmd.exe",
+                    "/c",
+                    "start",
+                    "",
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    inner,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=str(script.parent),
+                creationflags=creationflags,
+            )
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"无法启动重启进程: {e}") from e
+        logger.info(
+            "service restart scheduled (Windows): pid=%s pid_file=%s",
+            os.getpid(),
+            _fpbrowser2api_pid_file_path(),
+        )
+        return {
+            "success": True,
+            "message": "已调度服务重启，约数秒后进程将重新启动，页面可能暂时无法访问",
+        }
+
+    script = root / "fpbrowser2api_service.sh"
     if not script.is_file():
         raise HTTPException(status_code=503, detail="未找到 fpbrowser2api_service.sh，无法通过此接口重启")
     if not os.access(script, os.X_OK):
         raise HTTPException(status_code=503, detail="fpbrowser2api_service.sh 无执行权限，请在服务器上 chmod +x")
-    inner = f"sleep 2 && exec bash {shlex.quote(str(script))} restart"
+    # 勿仅 Popen 单层 bash 为 uvicorn 子进程：stop 结束 Python 时，子 shell 可能被 cgroup/会话一并带走，restart 跑不完。
+    # nohup + setsid 后台：外层 bash 立刻结束，真正执行 sleep+restart 的进程被 init/systemd 收养，与 uvicorn 解耦。
+    restart_inner = f"sleep 2 && exec bash {shlex.quote(str(script))} restart"
+    launcher = (
+        f"nohup setsid bash -c {shlex.quote(restart_inner)} </dev/null >/dev/null 2>&1 &"
+    )
     try:
         subprocess.Popen(
-            ["/bin/bash", "-c", inner],
+            ["/bin/bash", "-c", launcher],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -786,6 +854,11 @@ async def service_restart(token: str = Depends(verify_admin_token)):
         )
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"无法启动重启进程: {e}") from e
+    logger.info(
+        "service restart scheduled (Linux): pid=%s pid_file=%s",
+        os.getpid(),
+        _fpbrowser2api_pid_file_path(),
+    )
     return {
         "success": True,
         "message": "已调度服务重启，约数秒后进程将重新启动，页面可能暂时无法访问",
