@@ -1834,6 +1834,7 @@ FLOW_VIDEO_SUBMIT_T2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchA
 FLOW_FLOW_UPLOAD_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/uploadImage"
 FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartImage"
 FLOW_VIDEO_SUBMIT_I2V_START_END_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartAndEndImage"
+FLOW_VIDEO_SUBMIT_R2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoReferenceImages"
 FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
 FLOW_FLOW_UPSAMPLE_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage"
 # Flow / Labs 当前常用 enterprise site key；动态解析失败时兜底（与 flow2api 一致）
@@ -2041,6 +2042,9 @@ VIDEO_ASPECT_RATIO_PORTRAIT = "VIDEO_ASPECT_RATIO_PORTRAIT"
 # 与 flow2api generation_handler MODEL_CONFIG 中 veo_3_1_i2v_s_fast_*_fl 对齐
 VEO_I2V_MODEL_LANDSCAPE_FL = "veo_3_1_i2v_s_fast_fl"
 VEO_I2V_MODEL_PORTRAIT_FL = "veo_3_1_i2v_s_fast_portrait_fl"
+# 与 flow2api generation_handler 中 veo_3_1_r2v_fast / veo_3_1_r2v_fast_portrait（Ingredients 多图）对齐
+VEO_R2V_MODEL_LANDSCAPE = "veo_3_1_r2v_fast_landscape"
+VEO_R2V_MODEL_PORTRAIT = "veo_3_1_r2v_fast_portrait"
 
 
 def _veo_resolve_i2v_aspect_ratio(payload: Dict[str, Any]) -> str:
@@ -2063,6 +2067,50 @@ def _veo_extract_url_from_image_item(item: Any) -> Optional[str]:
             if v:
                 return v
     return None
+
+
+def _veo_collect_ingredients_image_urls(payload: Dict[str, Any]) -> List[str]:
+    """Ingredients（R2V）参考图 URL：来自 `Ingredients_images`（或 `ingredients_images`），与 flow2api r2v 一致最多 3 张。"""
+    payload = payload or {}
+    raw = payload.get("Ingredients_images")
+    if raw is None:
+        raw = payload.get("ingredients_images")
+    if not isinstance(raw, list):
+        return []
+    if len(raw) > 3:
+        raise NonPenalizedTaskError("Ingredients 模式最多支持 3 张参考图", status_code=400)
+    out: List[str] = []
+    for it in raw:
+        u = _veo_extract_url_from_image_item(it)
+        if not u:
+            raise NonPenalizedTaskError("Ingredients_images 中存在无法解析的图片地址", status_code=400)
+        out.append(u)
+    return out
+
+
+def _veo_resolve_r2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
+    """R2V videoModelKey + aspectRatio，与 generation_handler 中 veo_3_1_r2v_fast* 一致。"""
+    o = _veo_resolve_orientation_str(payload)
+    if o is None:
+        raw = (
+            str(
+                payload.get("model")
+                or payload.get("veo_model")
+                or payload.get("video_model")
+                or payload.get("videoModelKey")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if "r2v_fast_portrait" in raw or raw == "veo_3_1_r2v_fast_portrait":
+            o = "portrait"
+        elif "r2v" in raw and "portrait" in raw:
+            o = "portrait"
+
+    if o == "portrait":
+        return VEO_R2V_MODEL_PORTRAIT, VIDEO_ASPECT_RATIO_PORTRAIT
+    return VEO_R2V_MODEL_LANDSCAPE, VIDEO_ASPECT_RATIO_LANDSCAPE
 
 
 def _veo_collect_i2v_image_urls(payload: Dict[str, Any]) -> List[str]:
@@ -3690,7 +3738,10 @@ async def veo_workflow(
     """VEO：指纹浏览器页面内 fetch aisandbox API。
 
     - 视频：`n_frames`（或 duration / duration_frames / 时长）经 `_pick_n_frames` 归一后 **>1**（如 300/450）
-      时走文生视频 / 图生视频，轮询 `batchCheckAsyncVideoGenerationStatus`。
+      时走文生视频 / 图生视频 / **Ingredients（R2V）多图**：若 `Ingredients_images`（或 `ingredients_images`）
+      含至少 1 张可解析地址则走 `batchAsyncGenerateVideoReferenceImages`，模型与 flow2api
+      `veo_3_1_r2v_fast` / `veo_3_1_r2v_fast_portrait` 一致，最多 3 张；否则再按首尾帧图判断 I2V 或 T2V。
+      轮询 `batchCheckAsyncVideoGenerationStatus`。
     - 图片：当上述字段 **显式为 1** 时走文生图 / 图生图：`flow/uploadImage`（图生图仅首张）
       + `projects/{id}/flowMedia:batchGenerateImages`；默认模型 NARWHAL，`use_gem_pix_2`（或 `image_model_name`=`GEM_PIX_2`）时用 GEM_PIX_2（与 flow2api 一致）。
       横竖版对应 `IMAGE_ASPECT_RATIO_LANDSCAPE` / `IMAGE_ASPECT_RATIO_PORTRAIT`。
@@ -3709,7 +3760,16 @@ async def veo_workflow(
     n_frames = _veo_resolve_n_frames(payload)
     image_mode = n_frames == 1
 
+    ingredients_urls: List[str] = []
+    want_ingredients = False
+    if not image_mode:
+        ingredients_urls = _veo_collect_ingredients_image_urls(payload)
+        want_ingredients = len(ingredients_urls) >= 1
+
     want_i2v = _veo_payload_looks_like_i2v(payload)
+    if want_ingredients:
+        want_i2v = False
+
     i2v_urls: List[str] = []
     if want_i2v:
         i2v_urls = _veo_collect_i2v_image_urls(payload)
@@ -3772,11 +3832,17 @@ async def veo_workflow(
             log_file,
             f"[veo] project_id from DB random pick mapping_id={int(task_type_window_id)} -> {project_id!r}",
         )
-    _mode = "IMAGE" if image_mode else ("I2V" if want_i2v else "T2V")
+    _mode = (
+        "IMAGE"
+        if image_mode
+        else ("INGREDIENTS_R2V" if want_ingredients else ("I2V" if want_i2v else "T2V"))
+    )
     append_log(
         log_file,
         f"[veo] workflow {_mode} n_frames={n_frames} start project_id={project_id!r} "
-        f"prompt={safe_trim(prompt, 200)!r} images={len(i2v_urls) if want_i2v else 0}",
+        f"prompt={safe_trim(prompt, 200)!r} "
+        f"ingredients={len(ingredients_urls) if want_ingredients else 0} "
+        f"images={len(i2v_urls) if want_i2v else 0}",
     )
     await progress_cb(
         1,
@@ -3784,10 +3850,14 @@ async def veo_workflow(
             "stage": "init",
             "workflow_kind": "image" if image_mode else "video",
             "n_frames": n_frames,
-            "video_mode": "i2v" if want_i2v else "t2v",
+            "video_mode": (
+                "r2v"
+                if want_ingredients
+                else ("i2v" if want_i2v else "t2v")
+            ),
             "prompt": safe_trim(prompt, 200),
             "project_id": project_id,
-            "image_count": len(i2v_urls) if want_i2v else 0,
+            "image_count": len(ingredients_urls) if want_ingredients else (len(i2v_urls) if want_i2v else 0),
         },
     )
 
@@ -3904,7 +3974,9 @@ async def veo_workflow(
             user_paygate_tier=user_tier,
         )
 
-    if want_i2v:
+    if want_ingredients:
+        base_model_key, aspect_ratio = _veo_resolve_r2v_model(payload)
+    elif want_i2v:
         aspect_ratio = _veo_resolve_i2v_aspect_ratio(payload)
         base_model_key = (
             VEO_I2V_MODEL_PORTRAIT_FL
@@ -3916,6 +3988,18 @@ async def veo_workflow(
     model_key = _veo_adjust_model_key_for_tier(base_model_key, user_tier)
     if model_key != base_model_key:
         append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
+
+    ingredients_raw_batches: List[bytes] = []
+    if want_ingredients:
+        await progress_cb(6, {"stage": "download_images", "count": len(ingredients_urls)})
+        for i, u in enumerate(ingredients_urls):
+            raw_b = await _veo_download_image_bytes_for_i2v(
+                u,
+                label=f"Ingredients 参考图 {i + 1}",
+                timeout_seconds=download_timeout,
+                user_agent=None,
+            )
+            ingredients_raw_batches.append(raw_b)
 
     i2v_raw_batches: List[bytes] = []
     if want_i2v:
@@ -3952,6 +4036,32 @@ async def veo_workflow(
 
         start_media_id: Optional[str] = None
         end_media_id: Optional[str] = None
+        r2v_reference_images: List[Dict[str, Any]] = []
+        if want_ingredients:
+            for i, raw_b in enumerate(ingredients_raw_batches):
+                await progress_cb(
+                    7 + i,
+                    {
+                        "stage": "upload_image",
+                        "index": i + 1,
+                        "total": len(ingredients_urls),
+                        "video_mode": "r2v",
+                    },
+                )
+                mid = await _veo_flow_upload_image_in_window(
+                    page=page,
+                    access_token=str(at),
+                    project_id=project_id,
+                    image_bytes=raw_b,
+                    log_file=log_file,
+                )
+                r2v_reference_images.append(
+                    {"imageUsageType": "IMAGE_USAGE_TYPE_ASSET", "mediaId": mid}
+                )
+                append_log(
+                    log_file,
+                    f"[veo][r2v] uploaded Ingredients 参考图 {i + 1} mediaId={safe_trim(mid, 80)!r}",
+                )
         if want_i2v:
             media_ids: List[str] = []
             for i, raw_b in enumerate(i2v_raw_batches):
@@ -4001,11 +4111,27 @@ async def veo_workflow(
             session_id = _veo_generate_session_id()
             scene_id = str(uuid.uuid4())
 
-            if want_i2v:
+            submit_url: str
+            req_item: Dict[str, Any]
+            if want_ingredients:
+                submit_url = FLOW_VIDEO_SUBMIT_R2V_URL
+                req_item = {
+                    "aspectRatio": aspect_ratio,
+                    "seed": random.randint(1, 99999),
+                    "textInput": {
+                        "structuredPrompt": {
+                            "parts": [{"text": prompt}],
+                        },
+                    },
+                    "videoModelKey": model_key,
+                    "referenceImages": r2v_reference_images,
+                    "metadata": {"sceneId": scene_id},
+                }
+            elif want_i2v:
                 assert start_media_id is not None
                 if end_media_id:
                     submit_url = FLOW_VIDEO_SUBMIT_I2V_START_END_URL
-                    req_item: Dict[str, Any] = {
+                    req_item = {
                         "aspectRatio": aspect_ratio,
                         "seed": random.randint(1, 99999),
                         "textInput": {"prompt": prompt},
@@ -4039,26 +4165,39 @@ async def veo_workflow(
                     "metadata": {"sceneId": scene_id},
                 }
 
-            json_data: Dict[str, Any] = {
-                "clientContext": {
-                    "recaptchaContext": {
-                        "token": recaptcha_token,
-                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-                    },
-                    "sessionId": session_id,
-                    "projectId": project_id,
-                    "tool": "PINHOLE",
-                    "userPaygateTier": user_tier,
+            client_ctx: Dict[str, Any] = {
+                "recaptchaContext": {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
                 },
-                "requests": [req_item],
+                "sessionId": session_id,
+                "projectId": project_id,
+                "tool": "PINHOLE",
+                "userPaygateTier": user_tier,
             }
+            if want_ingredients:
+                json_data = {
+                    "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+                    "clientContext": client_ctx,
+                    "requests": [req_item],
+                    "useV2ModelConfig": True,
+                }
+            else:
+                json_data = {
+                    "clientContext": client_ctx,
+                    "requests": [req_item],
+                }
 
             await progress_cb(
                 10,
                 {
                     "stage": "submit_task",
                     "attempt": attempt + 1,
-                    "video_mode": "i2v" if want_i2v else "t2v",
+                    "video_mode": (
+                        "r2v"
+                        if want_ingredients
+                        else ("i2v" if want_i2v else "t2v")
+                    ),
                 },
             )
 
@@ -4098,14 +4237,19 @@ async def veo_workflow(
                 continue
 
             operations = ops
-            if not want_i2v:
+            if not want_i2v and not want_ingredients:
                 op0 = ops[0] if isinstance(ops[0], dict) else {}
                 raw_name = (op0.get("operation") or {}).get("name")
                 t2v_thumb_media_name = str(raw_name or "").strip() or None
             append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
             break
         else:
-            _submit_fail = "图生视频提交失败" if want_i2v else "文生视频提交失败"
+            if want_ingredients:
+                _submit_fail = "Ingredients 多图视频提交失败"
+            elif want_i2v:
+                _submit_fail = "图生视频提交失败"
+            else:
+                _submit_fail = "文生视频提交失败"
             raise RuntimeError(last_submit_err or _submit_fail)
 
         await progress_cb(25, {"stage": "polling", "operations": len(operations)})
@@ -4130,6 +4274,8 @@ async def veo_workflow(
 
         if want_i2v:
             thumb_url = i2v_urls[0]
+        elif want_ingredients:
+            thumb_url = ingredients_urls[0]
         else:
             thumb_url = ""
             if t2v_thumb_media_name:
@@ -4150,12 +4296,21 @@ async def veo_workflow(
                         "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
                     )
 
+        if want_ingredients:
+            _done_msg = "VEO Ingredients（多图参考）视频完成"
+            _vtype = "r2v"
+        elif want_i2v:
+            _done_msg = "VEO 图生视频完成"
+            _vtype = "i2v"
+        else:
+            _done_msg = "VEO 文生视频完成"
+            _vtype = "t2v"
         out: Dict[str, Any] = {
             "type": "veo_workflow_video",
-            "message": "VEO 图生视频完成" if want_i2v else "VEO 文生视频完成",
+            "message": _done_msg,
             "share_url": video_url,
             "thumb_url": thumb_url,
-            "video_type": "i2v" if want_i2v else "t2v",
+            "video_type": _vtype,
             "model_key": model_key,
             "aspect_ratio": aspect_ratio,
             "project_id": project_id,
@@ -4163,6 +4318,8 @@ async def veo_workflow(
         }
         if want_i2v:
             out["i2v_image_count"] = len(i2v_urls)
+        if want_ingredients:
+            out["ingredients_image_count"] = len(ingredients_urls)
         return out
 
     async with sess._bring_drafts_lock:
