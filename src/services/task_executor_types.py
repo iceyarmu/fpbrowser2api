@@ -21,7 +21,14 @@ class NonPenalizedTaskError(RuntimeError):
 
     no_penalty: bool = True
 
-    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        content_violation: bool = False,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.content_violation = bool(content_violation)
 

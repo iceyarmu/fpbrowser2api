@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import random
 import re
 import time
@@ -2165,6 +2166,24 @@ async def _veo_download_image_bytes_for_i2v(
     return prepared
 
 
+def _veo_upload_response_indicates_minor_upload(*, response_body: str) -> bool:
+    """上游 flow/uploadImage 对未成年人相关参考图返回 ErrorInfo.reason=PUBLIC_ERROR_MINOR_UPLOAD。"""
+    raw = str(response_body or "")
+    if "PUBLIC_ERROR_MINOR_UPLOAD" not in raw:
+        return False
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return True
+    details = (obj.get("error") or {}).get("details")
+    if not isinstance(details, list):
+        return True
+    for item in details:
+        if isinstance(item, dict) and "PUBLIC_ERROR_MINOR_UPLOAD" in str(item.get("reason") or ""):
+            return True
+    return "PUBLIC_ERROR_MINOR_UPLOAD" in raw
+
+
 async def _veo_flow_upload_image_in_window(
     *,
     page: Any,
@@ -2200,7 +2219,14 @@ async def _veo_flow_upload_image_in_window(
     )
     st = tx.get("status")
     if st is not None and int(st) >= 400:
-        body = safe_trim(str(tx.get("response_body") or ""), 500)
+        raw_body = str(tx.get("response_body") or "")
+        body = safe_trim(raw_body, 500)
+        if _veo_upload_response_indicates_minor_upload(response_body=raw_body):
+            raise NonPenalizedTaskError(
+                "参考图中包含未成年，无法作为参考图上传",
+                status_code=400,
+                content_violation=True,
+            )
         raise NonPenalizedTaskError(f"上传参考图失败：HTTP {st} {body}", status_code=502)
     resp = tx.get("_json")
     if not isinstance(resp, dict):

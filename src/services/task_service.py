@@ -1640,6 +1640,8 @@ class TaskService:
                     or "cameo_permission_denied" in _err_lower
                     or "包含违禁画面" in str(e)
                     or "包含违规内容" in str(e)
+                    or "参考图中包含未成年" in str(e)
+                    or bool(getattr(e, "content_violation", False))
                 )
                 # ---- 错误重试逻辑 ----
                 max_retries = picked.error_retry_count
