@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import random
+from math import gcd
 import re
 import time
 import uuid
@@ -1855,6 +1856,9 @@ VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 # 与 flow2api generation_handler gemini-3.1-flash-image-*（NARWHAL）一致
 IMAGE_ASPECT_RATIO_LANDSCAPE = "IMAGE_ASPECT_RATIO_LANDSCAPE"
 IMAGE_ASPECT_RATIO_PORTRAIT = "IMAGE_ASPECT_RATIO_PORTRAIT"
+IMAGE_ASPECT_RATIO_SQUARE = "IMAGE_ASPECT_RATIO_SQUARE"
+IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE = "IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE"
+IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR = "IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR"
 VEO_IMAGE_MODEL_NARWHAL = "NARWHAL"
 # 与 flow2api generation_handler gemini-3.0-pro-image-*（GEM_PIX_2）一致
 VEO_IMAGE_MODEL_GEM_PIX_2 = "GEM_PIX_2"
@@ -3178,11 +3182,122 @@ def _veo_resolve_n_frames(payload: Dict[str, Any]) -> int:
     return _pick_n_frames(duration_v)
 
 
-def _veo_resolve_image_aspect_ratio(payload: Dict[str, Any]) -> str:
-    """文生图/图生图：横竖屏规则与 I2V/T2V 一致，默认横版。"""
-    o = _veo_resolve_orientation_str(payload)
-    if o == "portrait":
+_VEO_KNOWN_IMAGE_ASPECT_RATIOS = frozenset(
+    {
+        IMAGE_ASPECT_RATIO_LANDSCAPE,
+        IMAGE_ASPECT_RATIO_PORTRAIT,
+        IMAGE_ASPECT_RATIO_SQUARE,
+        IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE,
+        IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR,
+    }
+)
+
+
+def _veo_normalize_explicit_image_aspect_ratio(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    s = str(raw).strip().upper().replace("-", "_")
+    return s if s in _VEO_KNOWN_IMAGE_ASPECT_RATIOS else None
+
+
+def _veo_image_aspect_from_dimensions(w: int, h: int) -> Optional[str]:
+    """由像素宽高推断 Flow 图片 aspectRatio；无法归一到已知比例时按横竖给 16:9 / 9:16 类枚举。"""
+    if w <= 0 or h <= 0:
+        return None
+    if w == h:
+        return IMAGE_ASPECT_RATIO_SQUARE
+    g = gcd(w, h)
+    a, b = w // g, h // g
+    if a > b:
+        if a * 9 == b * 16:
+            return IMAGE_ASPECT_RATIO_LANDSCAPE
+        if a * 3 == b * 4:
+            return IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE
+        r = w / h
+        if abs(r - 16 / 9) < 0.04:
+            return IMAGE_ASPECT_RATIO_LANDSCAPE
+        if abs(r - 4 / 3) < 0.04:
+            return IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE
+        return IMAGE_ASPECT_RATIO_LANDSCAPE
+    if b > a:
+        if b * 9 == a * 16:
+            return IMAGE_ASPECT_RATIO_PORTRAIT
+        if b * 3 == a * 4:
+            return IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR
+        r = h / w
+        if abs(r - 16 / 9) < 0.04:
+            return IMAGE_ASPECT_RATIO_PORTRAIT
+        if abs(r - 4 / 3) < 0.04:
+            return IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR
         return IMAGE_ASPECT_RATIO_PORTRAIT
+    return IMAGE_ASPECT_RATIO_SQUARE
+
+
+def _veo_pick_image_aspect_from_ratio_string(ratio: Optional[str]) -> Optional[str]:
+    """从 `3:4`、`1920x1080` 等解析图片比例（不调用视频用的 `_veo_resolve_orientation_str`）。"""
+    if not ratio:
+        return None
+    s = str(ratio).strip().lower().replace("：", ":")
+    wh = _veo_try_parse_wh_in_ratio_string(s)
+    if wh:
+        got = _veo_image_aspect_from_dimensions(wh[0], wh[1])
+        if got:
+            return got
+    for m in re.finditer(r"(\d+)\s*:\s*(\d+)", s):
+        try:
+            cw, ch = int(m.group(1)), int(m.group(2))
+        except ValueError:
+            continue
+        got = _veo_image_aspect_from_dimensions(cw, ch)
+        if got:
+            return got
+    return None
+
+
+def _veo_resolve_image_aspect_ratio(payload: Dict[str, Any]) -> str:
+    """文生图/图生图：支持 1:1、4:3、3:4、16:9、9:16（及 `IMAGE_ASPECT_RATIO_*` 显式值），默认横版 16:9 类。
+
+    与视频的 `_veo_resolve_orientation_str` 分离：视频仅 16:9/9:16；图片多 Square / 4:3 / 3:4。
+    """
+    payload = payload or {}
+    for key in ("image_aspect_ratio", "veo_image_aspect_ratio", "aspect_ratio"):
+        got = _veo_normalize_explicit_image_aspect_ratio(payload.get(key))
+        if got:
+            return got
+
+    wh = _veo_parse_pixel_pair_from_payload(payload)
+    if wh:
+        got = _veo_image_aspect_from_dimensions(wh[0], wh[1])
+        if got:
+            return got
+
+    ratio = str(
+        payload.get("size_ratio") or payload.get("aspect_ratio") or payload.get("ratio") or payload.get("尺寸") or ""
+    ).strip() or None
+    if ratio:
+        got = _veo_pick_image_aspect_from_ratio_string(ratio)
+        if got:
+            return got
+
+    ori = str(payload.get("orientation") or "").strip().lower()
+    if ori == "portrait":
+        return IMAGE_ASPECT_RATIO_PORTRAIT
+    if ori == "landscape":
+        return IMAGE_ASPECT_RATIO_LANDSCAPE
+
+    raw_ar = str(
+        payload.get("video_aspect_ratio") or payload.get("aspectRatio") or payload.get("veo_aspect_ratio") or ""
+    ).strip()
+    if raw_ar:
+        got = _veo_pick_image_aspect_from_ratio_string(raw_ar)
+        if got:
+            return got
+        u = raw_ar.upper()
+        if "PORTRAIT" in u or "竖" in raw_ar:
+            return IMAGE_ASPECT_RATIO_PORTRAIT
+        if "LANDSCAPE" in u or "横" in raw_ar:
+            return IMAGE_ASPECT_RATIO_LANDSCAPE
+
     return IMAGE_ASPECT_RATIO_LANDSCAPE
 
 
@@ -3782,7 +3897,7 @@ async def veo_workflow(
       轮询 `batchCheckAsyncVideoGenerationStatus`。
     - 图片：当上述字段 **显式为 1** 时走文生图 / 图生图：`flow/uploadImage`（图生图仅首张）
       + `projects/{id}/flowMedia:batchGenerateImages`；默认模型 NARWHAL，`use_gem_pix_2`（或 `image_model_name`=`GEM_PIX_2`）时用 GEM_PIX_2（与 flow2api 一致）。
-      横竖版对应 `IMAGE_ASPECT_RATIO_LANDSCAPE` / `IMAGE_ASPECT_RATIO_PORTRAIT`。
+      比例支持 `IMAGE_ASPECT_RATIO_*` 显式值及 1:1 / 4:3 / 3:4 / 16:9 / 9:16（或宽高像素），默认横版。
       `resolution` / `veo_image_resolution` 等为 **2k** 时在生成后调用 `flow/upsampleImage`：`share_url` 为 2K 的 `data:image/jpeg;base64,...`，`origin_image_url` 为 1K fife 直链；放大失败时回退为 1K 并写入 `upsample_error`。
 
     project_id 解析顺序：payload（veo_project_id / project_id / current_project_id）
