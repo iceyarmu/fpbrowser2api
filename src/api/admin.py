@@ -2474,6 +2474,16 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
+    if handler == "grok_workflow":
+        plan_title = "Grok Imagine（浏览器 Cookie 会话）"
+        await db.update_task_type_window(mapping_id=mapping_id, sora_plan_title=plan_title)
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "plan_title": plan_title,
+            "subscription_end": None,
+        }
+
     if handler == "veo_workflow":
         # 在指纹浏览器页面内请求 credits（与 Sora 的 page_fetch_json 一致，走窗口网络栈）
         from ..services.veo_workflow_executor import (  # type: ignore
@@ -2694,6 +2704,12 @@ async def convert_sora_session_token_to_access_token(
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
+    if handler == "grok_workflow":
+        raise HTTPException(
+            status_code=400,
+            detail="grok_workflow 不支持从此接口自动获取令牌：请在上方「保存」中手工粘贴 Grok SSO（与 grok2api 池化 token 同源，可选），或依赖指纹窗口内已登录的 Cookie。",
+        )
+
     if handler == "veo_workflow":
         default_target_url = str(ctx_row.get("default_target_url") or "").strip()
         target_url = default_target_url or "https://labs.google/fx"
@@ -2800,6 +2816,26 @@ async def manual_open_mapping_window(
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
+    elif handler == "grok_workflow":
+        from ..services.grok_workflow_executor import get_or_create_grok_session  # type: ignore
+
+        grok_ctx = get_or_create_grok_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        grok_ctx.browser_headless = headless
+        grok_ctx.browser_pure_mode = effective_pure
+        grok_ctx.idle_close_disabled = True
+        try:
+            grok_ctx._cancel_idle_close()
+        except Exception:
+            pass
+        try:
+            await grok_ctx.pw_ctx.open_fingerprint_window_only(
+                args=[],
+                force_open=False,
+                headless=headless,
+                pure_mode=effective_pure,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
     else:
         from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
 
@@ -2842,14 +2878,34 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
-    from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
+    handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
+    if handler == "grok_workflow":
+        from ..services.grok_workflow_executor import get_or_create_grok_session  # type: ignore
 
-    sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
-    sora_ctx.idle_close_disabled = False
-    try:
-        sora_ctx._schedule_idle_close()
-    except Exception:
-        pass
+        grok_ctx = get_or_create_grok_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        grok_ctx.idle_close_disabled = False
+        try:
+            grok_ctx._schedule_idle_close()
+        except Exception:
+            pass
+    elif handler == "veo_workflow":
+        from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+
+        veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        veo_ctx.idle_close_disabled = False
+        try:
+            veo_ctx._schedule_idle_close()
+        except Exception:
+            pass
+    else:
+        from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
+
+        sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        sora_ctx.idle_close_disabled = False
+        try:
+            sora_ctx._schedule_idle_close()
+        except Exception:
+            pass
 
     return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": False}
 
@@ -3022,10 +3078,24 @@ async def open_account_mapping_window(
                 google_login_timeout_ms=gl_ms,
                 pure_mode=effective_pure,
             )
+        elif handler == "grok_workflow":
+            from ..services.grok_workflow_executor import grok_admin_open_connect_page  # type: ignore
+
+            result = await grok_admin_open_connect_page(
+                browser_vendor=vendor,
+                browser_base_url=base_url,
+                browser_access_key=access_key,
+                space_id=space_id,
+                window_key=window_key,
+                headless=headless,
+                default_target_url=str(ctx_row.get("default_target_url") or "").strip(),
+                pure_mode=effective_pure,
+                timeout_seconds=timeout_seconds,
+            )
         else:
             raise HTTPException(
                 status_code=400,
-                detail="当前任务类型不支持开号（仅 sora_gen_video / veo_workflow）",
+                detail="当前任务类型不支持开号（仅 sora_gen_video / veo_workflow / grok_workflow）",
             )
     except HTTPException:
         raise
@@ -3091,6 +3161,38 @@ async def manual_start_mapping_window(
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
         try:
             await veo_ctx.disconnect_playwright_under_bring_lock()
+        except Exception:
+            pass
+    elif handler == "grok_workflow":
+        from ..services.grok_workflow_executor import DEFAULT_GROK_TARGET, get_or_create_grok_session  # type: ignore
+
+        target_url = default_target_url or DEFAULT_GROK_TARGET
+        grok_ctx = get_or_create_grok_session(
+            vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
+        )
+        grok_ctx.browser_headless = headless
+        grok_ctx.browser_pure_mode = effective_pure
+        grok_ctx.idle_close_disabled = True
+        try:
+            grok_ctx._cancel_idle_close()
+        except Exception:
+            pass
+        try:
+            await grok_ctx.close_and_drop()
+        except Exception:
+            pass
+        try:
+            await grok_ctx.ensure_open(
+                args=grok_ctx.browser_open_args,
+                force_open=True,
+                headless=headless,
+                pure_mode=effective_pure,
+            )
+            await grok_ctx._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
+        try:
+            await grok_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
     else:

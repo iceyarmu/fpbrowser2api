@@ -36,6 +36,12 @@ def _sora_task_error_needs_forced_access_token_refresh(exc: BaseException) -> bo
     return False
 from .sora_wm_remove_executor import sora_wm_remove
 from .sora_plus_register_executor import sora_plus_register
+from .grok_workflow_executor import (
+    DEFAULT_GROK_TARGET,
+    get_or_create_grok_session,
+    grok_ref_url_count,
+    grok_workflow,
+)
 from .veo_workflow_executor import (
     _veo_resolve_n_frames,
     get_or_create_veo_session,
@@ -119,6 +125,8 @@ def _remaining_quota_exclusive_floor_for_pick(
         return 3
     if code == "veo_workflow":
         return 30 if _veo_resolve_n_frames(payload or {}) > 1 else 10
+    if code == "grok_workflow":
+        return 30 if grok_ref_url_count(payload or {}) > 1 else 10
     return 3
 
 
@@ -325,7 +333,7 @@ class TaskService:
             if not code:
                 continue
             handler = (t.create_task_handler or "").strip()
-            if handler == "veo_workflow":
+            if handler in ("veo_workflow", "grok_workflow"):
                 hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
                 floor = 30 if hi else 10
             else:
@@ -415,6 +423,29 @@ class TaskService:
                     except Exception:
                         pass
                     return True
+                elif handler == "grok_workflow":
+                    tu = target_url or DEFAULT_GROK_TARGET
+                    gs = get_or_create_grok_session(
+                        vendor=vendor,
+                        base_url=base_url,
+                        access_key=access_key,
+                        space_id=space_id,
+                        window_key=window_key,
+                    )
+                    gs.browser_headless = headless
+                    gs.idle_close_disabled = True
+                    gs._cancel_idle_close()
+                    await gs.ensure_open(
+                        args=gs.browser_open_args,
+                        force_open=gs.browser_force_open,
+                        headless=headless,
+                    )
+                    await gs._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
+                    try:
+                        await gs.disconnect_playwright_under_bring_lock()
+                    except Exception:
+                        pass
+                    return True
                 elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                     tu = target_url or "https://sora.chatgpt.com/drafts"
                     sess = get_or_create_sora_session(
@@ -500,6 +531,16 @@ class TaskService:
                 )
                 sess.idle_close_disabled = False
                 sess._schedule_idle_close()
+            elif handler == "grok_workflow":
+                gs = get_or_create_grok_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                gs.idle_close_disabled = False
+                gs._schedule_idle_close()
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                 sess = get_or_create_sora_session(
                     vendor=vendor,
@@ -545,6 +586,15 @@ class TaskService:
                     window_key=window_key,
                 )
                 await sess.close_and_drop()
+            elif handler == "grok_workflow":
+                gs = get_or_create_grok_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                await gs.close_and_drop()
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                 sess = get_or_create_sora_session(
                     vendor=vendor,
@@ -621,6 +671,23 @@ class TaskService:
                 )
                 try:
                     await sess.disconnect_playwright_under_bring_lock()
+                except Exception:
+                    pass
+            elif handler == "grok_workflow":
+                tu = target_url or DEFAULT_GROK_TARGET
+                gs = get_or_create_grok_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                if not gs.idle_close_disabled:
+                    return
+                page = getattr(gs.pw_ctx, "page", None)
+                await window_pool_guard_unknown_handler_page(page, stage="window_pool", target_url=tu)
+                try:
+                    await gs.disconnect_playwright_under_bring_lock()
                 except Exception:
                     pass
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
@@ -864,6 +931,15 @@ class TaskService:
             try:
                 if _veo_resolve_n_frames(payload or {}) > 1:
                     await self.db.consume_mapping_quota(picked.mapping_id, amount=20)
+            except Exception:
+                pass
+        elif handler == "grok_workflow":
+            try:
+                n = grok_ref_url_count(payload or {})
+                if n > 1:
+                    await self.db.consume_mapping_quota(picked.mapping_id, amount=20)
+                elif n == 1:
+                    await self.db.consume_mapping_quota(picked.mapping_id, amount=10)
             except Exception:
                 pass
 
@@ -1550,6 +1626,27 @@ class TaskService:
                         ),
                         timeout=float(picked.timeout_seconds),
                     )
+                elif picked.create_task_handler == "grok_workflow":
+                    grok_payload = dict(payload or {})
+                    result = await asyncio.wait_for(
+                        grok_workflow(
+                            grok_payload,
+                            progress_cb,
+                            browser_vendor=picked.browser_vendor,
+                            browser_base_url=picked.browser_base_url,
+                            browser_access_key=picked.browser_access_key,
+                            space_id=picked.space_id,
+                            window_key=picked.window_key,
+                            timeout_seconds=float(picked.timeout_seconds),
+                            default_target_url=picked.default_target_url,
+                            headless=picked.headless,
+                            access_token=picked.sora_access_token,
+                            access_expires=picked.sora_access_expires,
+                            db=self.db,
+                            task_type_window_id=picked.mapping_id,
+                        ),
+                        timeout=float(picked.timeout_seconds),
+                    )
                 elif picked.create_task_handler == "sora_wm_remove":
                     result = await asyncio.wait_for(
                         sora_wm_remove(
@@ -1597,6 +1694,8 @@ class TaskService:
 
                 if picked.create_task_handler == "veo_workflow":
                     await _refresh_veo_balance_best_effort()
+                elif picked.create_task_handler == "grok_workflow":
+                    pass
                 elif picked.create_task_handler == "sora_gen_video":
                     await _refresh_sora_balance_best_effort()
                 try:
@@ -1617,6 +1716,8 @@ class TaskService:
             except Exception as e:
                 if picked.create_task_handler == "veo_workflow":
                     await _refresh_veo_balance_best_effort()
+                elif picked.create_task_handler == "grok_workflow":
+                    pass
                 elif picked.create_task_handler == "sora_gen_video":
                     await _refresh_sora_balance_best_effort()
                     if _sora_task_error_needs_forced_access_token_refresh(e):
@@ -1732,6 +1833,15 @@ class TaskService:
                                     window_key=picked.window_key,
                                 )
                                 v_sess._schedule_idle_close()
+                            elif (picked.create_task_handler or "").strip() == "grok_workflow":
+                                g_sess = get_or_create_grok_session(
+                                    vendor=picked.browser_vendor,
+                                    base_url=picked.browser_base_url,
+                                    access_key=picked.browser_access_key,
+                                    space_id=picked.space_id,
+                                    window_key=picked.window_key,
+                                )
+                                g_sess._schedule_idle_close()
                             else:
                                 sess = get_or_create_sora_session(
                                     vendor=picked.browser_vendor,

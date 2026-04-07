@@ -606,7 +606,7 @@
               <div class="col-12">
                 <label class="form-label mono">过期时间（expires）</label>
                 <input class="form-control mono" id="tokenExpires" placeholder="可选：例如 2026-02-20T12:34:56.000Z" />
-                <div class="form-text">
+                <div class="form-text" id="tokenEditFormHelp">
                   点击“更新”将在对应指纹浏览器窗口内自动请求 <span class="mono">/api/auth/session</span> 获取并保存（走该窗口代理）。
                   “保存”仅用于手工填写 <span class="mono">access_token</span> 的场景。
                 </div>
@@ -2450,12 +2450,16 @@
           const _handler = String(state.current?.create_task_handler || "").trim().toLowerCase();
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
-          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow";
+          const _isGrok = _handler === "grok_workflow";
+          const _targetPageHandler = _isVeo || _isGrok;
+          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow";
           const _openTitle = "会先清空该窗口本地缓存，再仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
-          const _startTitle = _isVeo ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
+          const _startTitle = _targetPageHandler ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           const _openAccountTitle = _isVeo
             ? "开号/连接：连接后自动判断是否为 Google 登录页；若页面可见 @gmail.com（选账号列表）则走「连接置前」自动点选；否则走完整 Google 登录并打开 Flow（完成后断开 CDP）"
-            : "开号：Sora 走 Plus 注册自动化；Veo 为 Google 登录并打开 Flow（完成后断开 CDP）";
+            : _isGrok
+              ? "连接：打开 Grok 默认页并断开 CDP；默认用窗口 Cookie，可选在「access_token」列保存 Grok SSO（与 grok2api 同源）"
+              : "开号：Sora 走 Plus 注册自动化；Veo 为 Google 登录并打开 Flow（完成后断开 CDP）";
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -2496,12 +2500,12 @@
                 <div
                   class="token-click truncate-1"
                   style="max-width: 360px;"
-                  title="点击复制 access_token"
+                  title="${_isGrok ? "点击复制 Grok SSO（可选）；若为空则打开编辑框" : "点击复制 access_token"}"
                   data-role="accessToken"
                   data-mid="${m.id}"
                   data-token="${escapeHtml(m.sora_access_token || "")}"
                 ><span class="fw-semibold" data-role="accessTokenMasked" data-mid="${m.id}">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
-                <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="获取/更新 access_token" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="${_isGrok ? "编辑 Grok SSO（可选）；不支持自动获取" : "获取/更新 access_token"}" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
               </div>
               <div><span class="fw-semibold" data-role="accessTokenExpires" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
             </td>
@@ -2694,7 +2698,15 @@
               const m = (state.mappings || []).find(x => String(x.id || "") === String(mid));
               tok = String(m?.sora_access_token || "").trim();
             }
-            if (!tok) return toast("access_token 为空", "warning");
+            if (!tok) {
+              const gh = String(state.current?.create_task_handler || "").trim().toLowerCase();
+              if (gh === "grok_workflow" && !Number.isNaN(mid)) {
+                openTokenModal(mid);
+                toast("可在此粘贴 Grok SSO（可选，与 grok2api 令牌同源）", "info");
+                return;
+              }
+              return toast("access_token 为空", "warning");
+            }
             copyToClipboard(tok)
               .then(() => toast("已复制 access_token", "success"))
               .catch(() => toast("复制失败，请手动复制", "error"));
@@ -3007,8 +3019,8 @@
             sora_subscription_end: d?.subscription_end != null ? d.subscription_end : "",
           };
           const _subHandler = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          // veo_workflow：刷新会员信息只更新套餐名，不刷新余额（与后端 refresh-subscription-info 一致）
-          if (_subHandler !== "veo_workflow" && d && typeof d.credits === "number") {
+          // veo_workflow / grok_workflow：刷新会员信息只更新套餐名，不刷新余额（与后端 refresh-subscription-info 一致）
+          if (_subHandler !== "veo_workflow" && _subHandler !== "grok_workflow" && d && typeof d.credits === "number") {
             patch.remaining_quota = d.credits;
           }
           updateMappingRowUI(mappingId, patch);
@@ -3641,6 +3653,12 @@
       async function autoFetchAccessToken(mappingId, btnEl) {
         const btn = btnEl?.closest("[data-act='convertAccessToken']") || btnEl;
         if (!btn) return;
+        const gh = String(state.current?.create_task_handler || "").trim().toLowerCase();
+        if (gh === "grok_workflow") {
+          openTokenModal(mappingId);
+          toast("Grok 不支持自动获取：请手工粘贴 SSO 或仅用窗口登录 Cookie", "info");
+          return;
+        }
         try {
           setBtnBusy(btn, true, { loadingText: "⏳" });
           const hl = getMappingHeadless(mappingId);
@@ -3664,9 +3682,32 @@
       function openTokenModal(mappingId) {
         const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
         document.getElementById("tokenEditMappingId").value = String(mappingId);
-        const hint = `窗口：${m?.window_name || "-"} · 账号：${m?.platform_account || "-"} · mapping_id=${String(mappingId)}`;
+        const gh = String(state.current?.create_task_handler || "").trim().toLowerCase();
+        let hint = `窗口：${m?.window_name || "-"} · 账号：${m?.platform_account || "-"} · mapping_id=${String(mappingId)}`;
+        if (gh === "grok_workflow") {
+          hint += " · Grok：此处保存 xAI SSO（可选，与 grok2api 池化 token 同源）；留空则任务仅用指纹窗口已登录 Cookie。任务 payload 也可用 grok_access_token / access_token 覆盖。";
+        }
         const hintEl = document.getElementById("tokenEditHint");
         if (hintEl) hintEl.textContent = hint;
+        const helpEl = document.getElementById("tokenEditFormHelp");
+        if (helpEl) {
+          if (gh === "grok_workflow") {
+            helpEl.innerHTML =
+              "Grok 任务类型：<strong>不支持</strong>「更新」自动拉取。请「保存」手工粘贴 SSO，或保持为空仅用窗口 Cookie。过期时间字段可为空。";
+          } else {
+            helpEl.innerHTML =
+              "点击「更新」将在对应指纹浏览器窗口内自动请求 <span class=\"mono\">/api/auth/session</span> 获取并保存（走该窗口代理）。「保存」仅用于手工填写 <span class=\"mono\">access_token</span> 的场景。";
+          }
+        }
+        const upd = document.getElementById("btnUpdateToken");
+        if (upd) {
+          upd.disabled = gh === "grok_workflow";
+          upd.title = gh === "grok_workflow" ? "Grok 不支持从此处自动拉取 SSO" : "";
+        }
+        const _tokLabels = document.querySelectorAll("#tokenModal .modal-body .form-label.mono");
+        if (_tokLabels.length > 0) {
+          _tokLabels[0].textContent = gh === "grok_workflow" ? "access_token（Grok SSO，可选）" : "access_token";
+        }
         document.getElementById("tokenAccessToken").value = String(m?.sora_access_token || "");
         document.getElementById("tokenExpires").value = String(m?.sora_access_expires || "");
         tokenModal.show();
@@ -3701,7 +3742,10 @@
           toast(e.message || "保存失败", "error");
         } finally {
           setBtnBusy(btn, false);
-          if (btnUpdate) btnUpdate.disabled = false;
+          if (btnUpdate) {
+            const gh2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
+            btnUpdate.disabled = gh2 === "grok_workflow";
+          }
         }
       }
 
@@ -3709,6 +3753,11 @@
         const btn = document.getElementById("btnUpdateToken");
         const btnSave = document.getElementById("btnConvertToken");
         try {
+          const gh0 = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          if (gh0 === "grok_workflow") {
+            toast("Grok 不支持从此处自动获取 SSO", "warning");
+            return;
+          }
           const mappingId = parseInt(document.getElementById("tokenEditMappingId").value, 10);
           if (Number.isNaN(mappingId)) throw new Error("mapping_id 无效");
 
@@ -3813,7 +3862,7 @@
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
           const _h2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(_h2 === "veo_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
+          toast(_h2 === "veo_workflow" || _h2 === "grok_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
           flashBtnText(startBtn, "已重启");
         } catch (e) {
           toast(e.message, "error");
@@ -3855,7 +3904,9 @@
             resMsg ||
             (_h === "veo_workflow"
               ? "已完成：Google 登录并打开 Flow，已断开自动化连接"
-              : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
+              : _h === "grok_workflow"
+                ? "已打开 Grok 页面，已断开自动化连接（请在本窗口完成登录）"
+                : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
           toast(line, "success");
           flashBtnText(btn, "完成");
         } catch (e) {
