@@ -13,6 +13,9 @@
 - 文生视频（无参考图）
 - 多参考图生成视频（与 grok2api 一致：`imageReferences` + `fileAttachments`，最多 7 张）
 
+默认生成 **720p**、**10 秒**、**16:9**（横屏）；比例/时长字段解析与 ``veo_workflow_executor`` 一致（``size_ratio``/``orientation``/``n_frames``/``时长`` 等）。
+返回 ``video_url`` 优先为 ``imagine-public.x.ai`` 可分享直链，另附 ``video_asset_url``（``assets.grok.com`` 绝对路径，便于带 Cookie 下载）。
+
 入口：`grok_workflow`（由 `task_service._run_task` 调用）。
 """
 
@@ -38,13 +41,25 @@ from .playwright_broswer_context import (
     page_fetch_tx,
     safe_trim,
 )
-from .veo_workflow_executor import _build_debug_progress_panel_script, _short_err_msg
+from .veo_workflow_executor import (
+    _build_debug_progress_panel_script,
+    _short_err_msg,
+    _veo_resolve_orientation_str,
+)
 from .sora_task_executor import _download_bytes_local_async
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 MEDIA_POST_API = "https://grok.com/rest/media/post/create"
 UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
+
+# 流式响应里 videoUrl 常为相对路径；与 grok2api 一致拼 assets + imagine-public 分享链
+_GROK_ASSETS_ORIGIN = "https://assets.grok.com"
+_GROK_SHARE_VIDEO_TMPL = "https://imagine-public.x.ai/imagine-public/share-videos/{video_id}.mp4?cache=1"
+_GROK_GEN_POST_ID_RE = re.compile(r"/generated/([0-9a-fA-F-]{32,36})/", re.IGNORECASE)
+_GROK_GEN_VIDEO_TAIL_RE = re.compile(
+    r"/([0-9a-fA-F-]{32,36})/generated_video", re.IGNORECASE
+)
 
 _GROK_SESSIONS: Dict[str, "GrokSession"] = {}
 
@@ -198,31 +213,93 @@ def grok_ref_url_count(payload: Optional[Dict[str, Any]]) -> int:
     return len(_grok_collect_reference_image_urls(payload or {}))
 
 
-def _normalize_aspect_ratio(payload: Dict[str, Any]) -> str:
-    raw = _one_str(payload.get("aspect_ratio") or payload.get("size"))
+def _grok_share_video_id_from_url(url: str) -> str:
+    """与 grok2api ``_extract_video_id`` 同源：从路径取出帖/视频 UUID。"""
+    s = _one_str(url)
+    m = _GROK_GEN_POST_ID_RE.search(s)
+    if m:
+        return m.group(1)
+    m = _GROK_GEN_VIDEO_TAIL_RE.search(s)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _grok_normalize_video_urls(raw: str) -> Dict[str, str]:
+    """返回可下载的 assets 绝对 URL + 可分享的 imagine-public 链（与 grok2api 公开资源 URL 形态一致）。"""
+    u = _one_str(raw)
+    if not u:
+        return {"video_url": "", "video_asset_url": "", "video_share_url": ""}
+    if u.startswith("//"):
+        u = "https:" + u
+    if u.startswith("http://") or u.startswith("https://"):
+        asset = u
+    else:
+        asset = f"{_GROK_ASSETS_ORIGIN.rstrip('/')}/{u.lstrip('/')}"
+    vid = _grok_share_video_id_from_url(asset)
+    share = _GROK_SHARE_VIDEO_TMPL.format(video_id=vid) if vid else ""
+    # 主字段：优先公开分享（免登录直链），否则回退 assets
+    main = share or asset
+    return {"video_url": main, "video_asset_url": asset, "video_share_url": share}
+
+
+def _grok_resolve_aspect_ratio(payload: Dict[str, Any]) -> str:
+    """比例：先走 Veo 同款朝向/尺寸字段解析，再回落 Grok 比例串；默认 16:9（横屏）。"""
+    p = payload or {}
+    o = _veo_resolve_orientation_str(p)
+    if o == "portrait":
+        return "9:16"
+    if o == "landscape":
+        return "16:9"
+    raw = _one_str(
+        p.get("aspect_ratio")
+        or p.get("size")
+        or p.get("size_ratio")
+        or p.get("ratio")
+        or p.get("尺寸")
+    )
     if raw in _SIZE_TO_ASPECT:
         return _SIZE_TO_ASPECT[raw]
     if raw in ("16:9", "9:16", "3:2", "2:3", "1:1"):
         return raw
-    return "3:2"
+    return "16:9"
 
 
-def _normalize_video_length(payload: Dict[str, Any]) -> int:
-    for k in ("video_length", "seconds", "duration"):
+def _grok_resolve_video_length_seconds(payload: Dict[str, Any]) -> int:
+    """时长（秒）：读取与 Veo/Sora 一致的 ``duration``/``时长``/``n_frames`` 等，默认 10s， clamp 6–30。"""
+    p = payload or {}
+    for k in ("video_length", "seconds", "duration", "时长"):
         try:
-            v = int(float(payload.get(k) or 0))
+            v = int(float(p.get(k) or 0))
             if v > 0:
                 return max(6, min(30, v))
         except (TypeError, ValueError):
             pass
-    return 6
+    for k in ("n_frames", "duration_frames"):
+        try:
+            nf = int(float(p.get(k) or 0))
+        except (TypeError, ValueError):
+            nf = 0
+        if nf == 300:
+            return 10
+        if nf == 450:
+            return 15
+        if nf >= 30:
+            secs = max(6, min(30, nf // 30))
+            return secs
+    return 10
 
 
-def _normalize_resolution(payload: Dict[str, Any]) -> str:
-    r = _one_str(payload.get("resolution_name") or payload.get("resolution") or payload.get("quality")).lower()
-    if r == "high" or r == "720p":
+def _grok_resolve_resolution(payload: Dict[str, Any]) -> str:
+    """默认 720p；显式 sd/480p 可降为 480p。"""
+    r = _one_str(
+        payload.get("resolution_name") or payload.get("resolution") or payload.get("quality")
+    ).lower()
+    if r in ("480p", "sd", "low", "标清"):
+        return "480p"
+    if r in ("high", "720p", "hd", "高清"):
         return "720p"
-    return "480p"
+    return "720p"
 
 
 def _normalize_preset(payload: Dict[str, Any]) -> str:
@@ -1315,9 +1392,9 @@ async def grok_workflow(
     if len(ref_urls) > 7:
         raise NonPenalizedTaskError("参考图最多 7 张", status_code=400)
 
-    aspect_ratio = _normalize_aspect_ratio(p)
-    video_length = _normalize_video_length(p)
-    resolution = _normalize_resolution(p)
+    aspect_ratio = _grok_resolve_aspect_ratio(p)
+    video_length = _grok_resolve_video_length_seconds(p)
+    resolution = _grok_resolve_resolution(p)
     preset = _normalize_preset(p)
     dynamic_statsig = bool(p.get("grok_dynamic_statsig"))
 
@@ -1435,14 +1512,31 @@ async def grok_workflow(
             )
 
             await progress_cb(55, {"stage": "app_chat", "message_len": len(message)})
-            video_url = await _grok_post_app_chat_stream(
+            video_raw = await _grok_post_app_chat_stream(
                 page, body=chat_body, log_file=log_file, dynamic_statsig=dynamic_statsig
+            )
+            vurls = _grok_normalize_video_urls(video_raw)
+            video_url = vurls["video_url"]
+            video_asset_url = vurls["video_asset_url"]
+            video_share_url = vurls["video_share_url"]
+            append_log(
+                log_file,
+                f"[grok] video urls main={safe_trim(video_url, 120)!r} asset={safe_trim(video_asset_url, 120)!r}",
             )
 
             elapsed_ms = int(max(0.0, (time.time() - started) * 1000.0))
-            await progress_cb(100, {"stage": "done", "video_url": video_url, "elapsed_ms": elapsed_ms})
+            await progress_cb(
+                100,
+                {
+                    "stage": "done",
+                    "video_url": video_url,
+                    "video_asset_url": video_asset_url,
+                    "video_share_url": video_share_url,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
 
-            return {
+            out: Dict[str, Any] = {
                 "type": "grok_workflow_video",
                 "message": "Grok 多参考图视频生成完成" if len(ref_urls) > 1 else ("Grok 图生视频完成" if ref_urls else "Grok 文生视频完成"),
                 "video_url": video_url,
@@ -1455,6 +1549,11 @@ async def grok_workflow(
                 "preset": preset,
                 "elapsed_ms": elapsed_ms,
             }
+            if video_asset_url:
+                out["video_asset_url"] = video_asset_url
+            if video_share_url:
+                out["video_share_url"] = video_share_url
+            return out
         finally:
             try:
                 await sess.disconnect_playwright_under_bring_lock()
