@@ -1460,6 +1460,7 @@ class SoraSession:
     browser_open_args: list[str] = field(default_factory=list)
     browser_force_open: bool = False
     browser_headless: bool = False
+    browser_pure_mode: bool = True
 
     # 鉴权信息（从指纹浏览器网络抓取）
     bearer_token: Optional[str] = None
@@ -1814,6 +1815,7 @@ class SoraSession:
                     args=self.browser_open_args,
                     force_open=self.browser_force_open,
                     headless=self.browser_headless,
+                    pure_mode=self.browser_pure_mode,
                 )
                 try:
                     code = int((rsp or {}).get("code", -1))
@@ -1851,6 +1853,7 @@ class SoraSession:
                 force_open=False,
                 headless=self.browser_headless,
                 require_page=False,
+                pure_mode=self.browser_pure_mode,
             )
         except Exception as e:
             try:
@@ -2295,11 +2298,15 @@ class SoraSession:
         force_open: bool = False,
         headless: bool = False,
         acquire_bring_lock: bool = True,
+        pure_mode: Optional[bool] = None,
     ) -> None:
         self.last_used_at = time.time()
+        pm = self.browser_pure_mode if pure_mode is None else bool(pure_mode)
         # 串行化窗口 open/close：避免并发 ensure_open 与 Cloudflare 自愈重启产生竞态。
         async def _inner() -> None:
-            await self.pw_ctx.ensure_open(args=args, force_open=force_open, headless=headless, require_page=False)
+            await self.pw_ctx.ensure_open(
+                args=args, force_open=force_open, headless=headless, require_page=False, pure_mode=pm
+            )
         if acquire_bring_lock:
             async with self._bring_drafts_lock:
                 await _inner()

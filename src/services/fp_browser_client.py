@@ -164,6 +164,7 @@ class FPBrowserClient:
         args: Optional[List[str]] = None,
         force_open: bool = False,
         headless: bool = False,
+        pure_mode: bool = True,
     ) -> Dict[str, Any]:
         """打开指纹浏览器窗口，并返回自动化连接信息（主要是 CDP endpoint：data.http / data.ws）。
 
@@ -198,15 +199,18 @@ class FPBrowserClient:
             args.append("--autoplay-policy=user-gesture-required")
             args.append("--blink-settings=imagesEnabled=false")
         else:
-            ##args.append("--disable-software-rasterizer")
-            ##args.append("--disable-animations")
-            ##args.append("--disable-threaded-animation")
-            ##args.append("--disable-threaded-scrolling")
-            args.append("--mute-audio")
-            ##args.append("--disable-extensions")
-            ##args.append("--autoplay-policy=user-gesture-required")
-            args.append("--blink-settings=imagesEnabled=false")
-            pass
+            if not pure_mode:
+                pass;
+            else:
+                ##args.append("--disable-software-rasterizer")
+                ##args.append("--disable-animations")
+                ##args.append("--disable-threaded-animation")
+                ##args.append("--disable-threaded-scrolling")
+                args.append("--mute-audio")
+                ##args.append("--disable-extensions")
+                ##args.append("--autoplay-policy=user-gesture-required")
+                args.append("--blink-settings=imagesEnabled=false")
+                pass
 
         return await self._roxy_open_browser(
             base_url=base_url,

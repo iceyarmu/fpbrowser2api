@@ -253,6 +253,7 @@ class VeoSession:
         self.browser_open_args: list[str] = []
         self.browser_force_open: bool = False
         self.browser_headless: bool = False
+        self.browser_pure_mode: bool = True
 
         self.debug_panel_seq: int = 0
         self.debug_panel_entries: list[Dict[str, str]] = []
@@ -270,12 +271,16 @@ class VeoSession:
         force_open: bool = False,
         headless: bool = False,
         acquire_bring_lock: bool = False,
+        pure_mode: Optional[bool] = None,
     ) -> None:
         """确保指纹浏览器窗口已打开、CDP 已连接。"""
         self.last_used_at = time.time()
+        pm = self.browser_pure_mode if pure_mode is None else bool(pure_mode)
         # 串行化窗口 open/close：避免并发 ensure_open 与 Cloudflare 自愈重启产生竞态。
         async def _inner() -> None:
-            await self.pw_ctx.ensure_open(args=args, force_open=force_open, headless=headless, require_page=False)
+            await self.pw_ctx.ensure_open(
+                args=args, force_open=force_open, headless=headless, require_page=False, pure_mode=pm
+            )
         if acquire_bring_lock:
             async with self._bring_drafts_lock:
                 await _inner()
@@ -665,6 +670,7 @@ class VeoSession:
                     args=self.browser_open_args,
                     force_open=self.browser_force_open,
                     headless=self.browser_headless,
+                    pure_mode=self.browser_pure_mode,
                 )
                 try:
                     code = int((rsp or {}).get("code", -1))
@@ -699,6 +705,7 @@ class VeoSession:
                 force_open=False,
                 headless=self.browser_headless,
                 require_page=False,
+                pure_mode=self.browser_pure_mode,
             )
         except Exception as e:
             try:
@@ -1594,6 +1601,7 @@ async def veo_flow_open_account(
     timeout_seconds: float,
     flow_url: Optional[str] = None,
     headless: bool = False,
+    pure_mode: bool = True,
 ) -> Dict[str, Any]:
     """按窗口凭据完成 Google 登录，打开 Google Flow，再断开本地 CDP（保留指纹浏览器窗口）。"""
     from .sora_plus_register_executor import (
@@ -1622,6 +1630,7 @@ async def veo_flow_open_account(
         window_key=window_key,
     )
     sess.browser_headless = headless
+    sess.browser_pure_mode = pure_mode
     sess.idle_close_disabled = True
     try:
         sess._cancel_idle_close()
@@ -1709,6 +1718,7 @@ async def veo_admin_unified_open_or_connect(
     headless: bool,
     default_target_url: str,
     google_login_timeout_ms: int,
+    pure_mode: bool = True,
 ) -> Dict[str, Any]:
     """管理台合并逻辑：Google 登录页且页面可见 @gmail.com → 连接置前（与原 veo-connect-bring 一致）；否则若仍为 Google 登录相关 → 完整开号；其它情况 → 连接置前。"""
     target_url = "https://accounts.google.com/"
@@ -1722,6 +1732,7 @@ async def veo_admin_unified_open_or_connect(
         window_key=window_key,
     )
     sess.browser_headless = headless
+    sess.browser_pure_mode = pure_mode
     sess.idle_close_disabled = True
     try:
         sess._cancel_idle_close()
@@ -1782,6 +1793,7 @@ async def veo_admin_unified_open_or_connect(
             window_key=window_key,
             timeout_seconds=timeout_seconds,
             headless=headless,
+            pure_mode=pure_mode,
         )
         if isinstance(out, dict):
             out = {**out, "branch": "full_open_account"}

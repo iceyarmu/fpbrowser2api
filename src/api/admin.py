@@ -46,6 +46,19 @@ def set_dependencies(database: Database) -> None:
     db = database
 
 
+def _effective_browser_pure_mode(ctx_row: Dict[str, Any], query_pure_mode: Optional[bool]) -> bool:
+    """指纹 browser_open 的 pure_mode：查询参数优先，否则用绑定 pure_mode 列（True=纯净）。"""
+    if query_pure_mode is not None:
+        return bool(query_pure_mode)
+    raw = ctx_row.get("pure_mode")
+    if raw is None:
+        return True
+    try:
+        return bool(int(raw))
+    except (TypeError, ValueError):
+        return bool(raw)
+
+
 async def _get_user_by_token(token: str):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2740,7 +2753,14 @@ async def convert_sora_session_token_to_access_token(
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-open")
-async def manual_open_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
+async def manual_open_mapping_window(
+    mapping_id: int,
+    headless: bool = False,
+    pure_mode: Optional[bool] = Query(
+        None, description="指纹 browser_open 纯净模式；省略时按绑定 pure_mode 列"
+    ),
+    token: str = Depends(verify_admin_token),
+):
     """手动仅打开指纹浏览器窗口并禁止空闲自动关闭；不连接 CDP、不导航/初始化页面（降低自动化风控触发）。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2758,12 +2778,14 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
+    effective_pure = _effective_browser_pure_mode(ctx_row, pure_mode)
 
     if handler == "veo_workflow":
         from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
 
         veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         veo_ctx.browser_headless = headless
+        veo_ctx.browser_pure_mode = effective_pure
         veo_ctx.idle_close_disabled = True
         try:
             veo_ctx._cancel_idle_close()
@@ -2774,6 +2796,7 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
                 args=veo_ctx.browser_open_args,
                 force_open=veo_ctx.browser_force_open,
                 headless=headless,
+                pure_mode=effective_pure,
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
@@ -2782,6 +2805,7 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
 
         sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         sora_ctx.browser_headless = headless
+        sora_ctx.browser_pure_mode = effective_pure
         sora_ctx.idle_close_disabled = True
         try:
             sora_ctx._cancel_idle_close()
@@ -2792,6 +2816,7 @@ async def manual_open_mapping_window(mapping_id: int, headless: bool = False, to
                 args=sora_ctx.browser_open_args,
                 force_open=sora_ctx.browser_force_open,
                 headless=headless,
+                pure_mode=effective_pure,
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
@@ -2922,7 +2947,14 @@ async def clear_mapping_browser_cache(
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/open-account")
-async def open_account_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
+async def open_account_mapping_window(
+    mapping_id: int,
+    headless: bool = False,
+    pure_mode: Optional[bool] = Query(
+        None, description="指纹 browser_open 纯净模式；省略时按绑定 pure_mode 列"
+    ),
+    token: str = Depends(verify_admin_token),
+):
     """开号：sora_gen_video 走 sora_plus_register；veo_workflow 走 Google 登录后打开 Flow 并断开 CDP。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
@@ -2946,6 +2978,7 @@ async def open_account_mapping_window(mapping_id: int, headless: bool = False, t
 
     timeout_seconds = float(ctx_row.get("task_timeout_seconds") or 600)
     timeout_seconds = max(120.0, min(timeout_seconds, 3600.0))
+    effective_pure = _effective_browser_pure_mode(ctx_row, pure_mode)
 
     async def _progress_cb(_pct: int, _meta: Optional[Dict[str, Any]] = None) -> None:
         return
@@ -2955,7 +2988,7 @@ async def open_account_mapping_window(mapping_id: int, headless: bool = False, t
             from ..services.sora_plus_register_executor import sora_plus_register
 
             result = await sora_plus_register(
-                {"headless": headless},
+                {"headless": headless, "pure_mode": effective_pure},
                 _progress_cb,
                 db=db,
                 window_pk=window_pk,
@@ -2987,6 +3020,7 @@ async def open_account_mapping_window(mapping_id: int, headless: bool = False, t
                 headless=headless,
                 default_target_url=str(ctx_row.get("default_target_url") or "").strip(),
                 google_login_timeout_ms=gl_ms,
+                pure_mode=effective_pure,
             )
         else:
             raise HTTPException(
@@ -3002,7 +3036,14 @@ async def open_account_mapping_window(mapping_id: int, headless: bool = False, t
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-start")
-async def manual_start_mapping_window(mapping_id: int, headless: bool = False, token: str = Depends(verify_admin_token)):
+async def manual_start_mapping_window(
+    mapping_id: int,
+    headless: bool = False,
+    pure_mode: Optional[bool] = Query(
+        None, description="指纹 browser_open 纯净模式；省略时按绑定 pure_mode 列"
+    ),
+    token: str = Depends(verify_admin_token),
+):
     """立刻关闭指纹浏览器窗口并重新打开，进入 Sora drafts / Veo 目标页。
 
     不修改绑定上的 enabled（启用）状态，仅做窗口重启与页面置前。
@@ -3025,6 +3066,7 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
     default_target_url = str(ctx_row.get("default_target_url") or "").strip()
+    effective_pure = _effective_browser_pure_mode(ctx_row, pure_mode)
 
     if handler == "veo_workflow":
         from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
@@ -3032,6 +3074,7 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
         target_url = default_target_url or "https://veo.google.com"
         veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         veo_ctx.browser_headless = headless
+        veo_ctx.browser_pure_mode = effective_pure
         veo_ctx.idle_close_disabled = True
         try:
             veo_ctx._cancel_idle_close()
@@ -3056,6 +3099,7 @@ async def manual_start_mapping_window(mapping_id: int, headless: bool = False, t
         target_url = default_target_url or "https://sora.chatgpt.com/drafts"
         sora_ctx = get_or_create_sora_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         sora_ctx.browser_headless = headless
+        sora_ctx.browser_pure_mode = effective_pure
         sora_ctx.idle_close_disabled = True
         try:
             sora_ctx._cancel_idle_close()

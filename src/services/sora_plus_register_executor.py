@@ -407,7 +407,9 @@ async def _close_other_pages(context: Any, keep_page: Any) -> int:
     return closed
 
 
-async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True, headless: bool = False) -> Any:
+async def _bring_sora_drafts_to_front(
+    ctx: Any, *, refresh_target: bool = True, headless: bool = False, pure_mode: bool = True
+) -> Any:
     """将 `https://chatgpt.com/` 页面置前，不关闭其它页面。"""
     drafts_url = "https://chatgpt.com/"
     drafts_host = "chatgpt.com"
@@ -736,6 +738,7 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True, 
                     args=[],
                     force_open=False,
                     headless=headless,
+                    pure_mode=pure_mode,
                 )
             except Exception:
                 pass
@@ -763,7 +766,9 @@ async def _bring_sora_drafts_to_front(ctx: Any, *, refresh_target: bool = True, 
 
         # 仅重连 browser/context，不强制探测/创建 page
         try:
-            await ctx.ensure_open(args=[], force_open=False, headless=headless, require_page=False)
+            await ctx.ensure_open(
+                args=[], force_open=False, headless=headless, require_page=False, pure_mode=pure_mode
+            )
         except Exception:
             pass
 
@@ -1564,6 +1569,7 @@ async def sora_plus_register(
     """打开平台页 -> Google 登录 -> 跳转 ChatGPT -> Continue with Google 登录。"""
     source_payload = payload if isinstance(payload, dict) else {}
     headless = bool(source_payload.get("headless", False))
+    pure_mode = bool(source_payload.get("pure_mode", True))
     timeout_ms = int(max(10_000, min(float(timeout_seconds) * 1000, 120_000)))
 
     await progress_cb(1, {"stage": "resolve_credentials", "window_pk": int(window_pk)})
@@ -1581,7 +1587,7 @@ async def sora_plus_register(
         space_id=space_id,
         window_key=window_key,
     )
-    await ctx.ensure_open(args=[], force_open=False, headless=headless)
+    await ctx.ensure_open(args=[], force_open=False, headless=headless, pure_mode=pure_mode)
 
     await progress_cb(3, {"stage": "open_browser", "platform_url": platform_url})
     async with ctx.driver_lock:
@@ -1629,7 +1635,7 @@ async def sora_plus_register(
                 await progress_cb(59, {"stage": "video_url_opened", "url": target_video_url})
         except Exception as e:
             await progress_cb(59, {"stage": "video_url_open_failed", "url": target_video_url, "error": str(e)})
-    page = await _bring_sora_drafts_to_front(ctx, refresh_target=False, headless=headless)
+    page = await _bring_sora_drafts_to_front(ctx, refresh_target=False, headless=headless, pure_mode=pure_mode)
     panel_data = {
         "title": "Sora Plus 注册数据",
         "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),

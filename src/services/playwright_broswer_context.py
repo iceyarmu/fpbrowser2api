@@ -526,6 +526,7 @@ class PlaywrightBrowserContext:
         force_open: bool = False,
         headless: bool = False,
         require_page: bool = True,
+        pure_mode: bool = True,
     ) -> None:
         self.last_used_at = time.time()
 
@@ -592,6 +593,7 @@ class PlaywrightBrowserContext:
                     args=args or [],
                     force_open=bool(force_open),
                     headless=bool(headless),
+                    pure_mode=bool(pure_mode),
                 )
                 if (rsp or {}).get("code") != 0:
                     try:
@@ -706,6 +708,7 @@ class PlaywrightBrowserContext:
         args: Optional[List[str]] = None,
         force_open: bool = False,
         headless: bool = False,
+        pure_mode: bool = True,
     ) -> None:
         """仅通过指纹 API 打开/唤起窗口：不 connect_over_cdp、不挑选或初始化 page。"""
         await self.disconnect_playwright_only()
@@ -719,6 +722,7 @@ class PlaywrightBrowserContext:
                 args=list(args or []),
                 force_open=bool(force_open),
                 headless=bool(headless),
+                pure_mode=bool(pure_mode),
             )
             if (rsp or {}).get("code") != 0:
                 raw_endpoint = ""
