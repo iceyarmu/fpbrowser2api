@@ -2232,6 +2232,13 @@ def _veo_upload_response_indicates_minor_upload(*, response_body: str) -> bool:
     return "PUBLIC_ERROR_MINOR_UPLOAD" in raw
 
 
+def _veo_video_op_error_indicates_audio_filtered(*, message: str, code: str) -> bool:
+    """视频轮询失败时 operation.error 含 PUBLIC_ERROR_AUDIO_FILTERED（平台拦截疑似侵权音频）。"""
+    m = str(message or "")
+    c = str(code or "")
+    return "PUBLIC_ERROR_AUDIO_FILTERED" in m or "PUBLIC_ERROR_AUDIO_FILTERED" in c
+
+
 async def _veo_flow_upload_image_in_window(
     *,
     page: Any,
@@ -2364,6 +2371,12 @@ async def _veo_poll_operations_until_video_url(
             err = ((op0.get("operation") or {}).get("error") or {})
             msg = str(err.get("message") or "未知错误")
             code = str(err.get("code") or "")
+            if _veo_video_op_error_indicates_audio_filtered(message=msg, code=code):
+                raise NonPenalizedTaskError(
+                    "生成音频侵权：平台判定音频涉及版权问题已拦截，无法完成视频生成。任务已标记为违规，请修改与音乐、配音或音效相关的描述后重试。",
+                    status_code=400,
+                    content_violation=True,
+                )
             raise NonPenalizedTaskError(f"视频生成失败: {msg}" + (f" ({code})" if code else ""), status_code=502)
 
         if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
