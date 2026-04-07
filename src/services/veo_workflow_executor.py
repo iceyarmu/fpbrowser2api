@@ -2251,6 +2251,13 @@ def _veo_video_op_error_indicates_audio_filtered(*, message: str, code: str) -> 
     return "PUBLIC_ERROR_AUDIO_FILTERED" in m or "PUBLIC_ERROR_AUDIO_FILTERED" in c
 
 
+def _veo_video_op_error_indicates_prominent_people_filter(*, message: str, code: str) -> bool:
+    """视频轮询失败时含 PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED（平台拦截名人/肖像相关生成）。"""
+    m = str(message or "")
+    c = str(code or "")
+    return "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in m or "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in c
+
+
 async def _veo_flow_upload_image_in_window(
     *,
     page: Any,
@@ -2386,6 +2393,12 @@ async def _veo_poll_operations_until_video_url(
             if _veo_video_op_error_indicates_audio_filtered(message=msg, code=code):
                 raise NonPenalizedTaskError(
                     "生成音频侵权：平台判定音频涉及版权问题已拦截，无法完成视频生成。任务已标记为违规，请修改与音乐、配音或音效相关的描述后重试。",
+                    status_code=400,
+                    content_violation=True,
+                )
+            if _veo_video_op_error_indicates_prominent_people_filter(message=msg, code=code):
+                raise NonPenalizedTaskError(
+                    "名人/肖像限制：平台判定内容涉及可识别人物或名人形象已拦截，无法完成视频生成。任务已标记为违规，请避免指定真实人物、名人或易联想到特定个人的描述与参考图后重试。",
                     status_code=400,
                     content_violation=True,
                 )
