@@ -99,17 +99,7 @@ async def lifespan(app: FastAPI):
         # 不阻断启动：即便清理失败，也让服务起来方便排查
         logger.exception("启动清理失败（忽略）：%s", e)
 
-    # 2.6) 启动时清空 request_logs（已不再写入该表；清空历史行并利于收缩库文件体积）
-    try:
-        rebuilt = await db.clear_request_logs()
-        if rebuilt:
-            logger.warning(
-                "request_logs 数据页曾损坏（如 malformed），已 DROP 并重建空表（启动时）"
-            )
-        else:
-            logger.info("已清空 request_logs 表（启动时）")
-    except Exception as e:
-        logger.warning("启动时清空 request_logs 失败（忽略）：%s", e)
+    # 不在启动时清空 request_logs：避免重启即丢失审计/排查数据；需清理请走管理端清空接口。
 
     # 3) DB 配置回写到内存 config（API key / proxy / debug / log_to_file）
     syscfg = await db.reload_config_to_memory()
