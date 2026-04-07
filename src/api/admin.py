@@ -2704,6 +2704,7 @@ async def convert_sora_session_token_to_access_token(
     if not base_url or not space_id or not window_key:
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
+    print(f"handler: {handler}")
     if handler == "grok_workflow":
         raise HTTPException(
             status_code=400,

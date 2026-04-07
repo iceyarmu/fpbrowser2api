@@ -23,6 +23,7 @@ import base64
 import json
 import random
 import re
+import string
 import time
 import uuid
 from pathlib import Path
@@ -62,6 +63,31 @@ def _grok_key(vendor: str, base_url: str, space_id: str, window_key: str) -> str
     return f"grok|{vendor}|{base_url}|{space_id}|{window_key}"
 
 
+# 与 grok2api ``StatsigGenerator`` 一致；错误格式的 ``x-statsig-id`` 易触发 anti-bot 403。
+_GROK_STATSIG_STATIC_B64 = (
+    "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="
+)
+_GROK_SENTRY_BAGGAGE = (
+    "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,"
+    "sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c"
+)
+
+
+def _grok_statsig_id(*, dynamic: bool = False) -> str:
+    """生成 ``x-statsig-id``（须为 Base64 形态，勿用 UUID hex）。"""
+    if not dynamic:
+        return _GROK_STATSIG_STATIC_B64
+    lo = string.ascii_lowercase + string.digits
+    alnum = string.ascii_lowercase + string.digits
+    if random.choice([True, False]):
+        rand = "".join(random.choices(alnum, k=5))
+        msg = f"e:TypeError: Cannot read properties of null (reading 'children['{rand}']')"
+    else:
+        rand = "".join(random.choices(lo, k=10))
+        msg = f"e:TypeError: Cannot read properties of undefined (reading '{rand}')"
+    return base64.b64encode(msg.encode("utf-8")).decode("ascii")
+
+
 def _grok_normalize_sso_token(raw: Optional[str]) -> str:
     """与 grok2api ``build_sso_cookie`` 一致：去掉 ``sso=`` 前缀与空白。"""
     s = _one_str(raw)
@@ -70,12 +96,16 @@ def _grok_normalize_sso_token(raw: Optional[str]) -> str:
     return s
 
 
-def _grok_browser_json_headers() -> Dict[str, str]:
-    """浏览器内 fetch 可用的 JSON 头（对齐 grok2api ``build_headers`` 中的请求追踪字段）。"""
+def _grok_browser_json_headers(*, dynamic_statsig: bool = False) -> Dict[str, str]:
+    """浏览器内 fetch 可用的 JSON 头（对齐 grok2api ``build_headers``：Accept/Baggage/Statsig 等）。"""
+    # grok2api JSON POST 使用 Accept */*，非 application/json
     return {
-        "Accept": "application/json",
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Baggage": _GROK_SENTRY_BAGGAGE,
         "Content-Type": "application/json",
-        "x-statsig-id": uuid.uuid4().hex,
+        "Priority": "u=1, i",
+        "x-statsig-id": _grok_statsig_id(dynamic=dynamic_statsig),
         "x-xai-request-id": str(uuid.uuid4()),
     }
 
@@ -1137,12 +1167,15 @@ async def _grok_page_fetch_json(
     method: str,
     json_data: Optional[Dict[str, Any]],
     log_file: Path,
+    dynamic_statsig: bool = False,
 ) -> Dict[str, Any]:
-    headers = _grok_browser_json_headers()
+    headers = _grok_browser_json_headers(dynamic_statsig=dynamic_statsig)
     return await page_fetch_json(page, url=url, method=method, headers=headers, json_data=json_data, log_file=log_file)
 
 
-async def _grok_create_media_post(page: Any, *, prompt: str, log_file: Path) -> str:
+async def _grok_create_media_post(
+    page: Any, *, prompt: str, log_file: Path, dynamic_statsig: bool = False
+) -> str:
     tx = await _grok_page_fetch_json(
         page,
         url=MEDIA_POST_API,
@@ -1152,6 +1185,7 @@ async def _grok_create_media_post(page: Any, *, prompt: str, log_file: Path) -> 
             "prompt": _one_str(prompt) or " ",
         },
         log_file=log_file,
+        dynamic_statsig=dynamic_statsig,
     )
     obj = tx.get("_json")
     if not isinstance(obj, dict):
@@ -1172,6 +1206,7 @@ async def _grok_upload_one_image(
     image_url: str,
     index: int,
     log_file: Path,
+    dynamic_statsig: bool = False,
 ) -> Tuple[str, str]:
     """下载并上传到 Grok assets；返回 (fileMetadataId, assets_https_url)。"""
     u = _one_str(image_url)
@@ -1203,6 +1238,7 @@ async def _grok_upload_one_image(
         method="POST",
         json_data={"fileName": fname, "fileMimeType": mime, "content": content_b64},
         log_file=log_file,
+        dynamic_statsig=dynamic_statsig,
     )
     obj = tx.get("_json")
     if not isinstance(obj, dict):
@@ -1217,7 +1253,9 @@ async def _grok_upload_one_image(
     return fid, f"https://assets.grok.com/{furi}"
 
 
-async def _grok_post_app_chat_stream(page: Any, *, body: Dict[str, Any], log_file: Path) -> str:
+async def _grok_post_app_chat_stream(
+    page: Any, *, body: Dict[str, Any], log_file: Path, dynamic_statsig: bool = False
+) -> str:
     """整段读取流式响应 body，解析最终 videoUrl。"""
     if page is None:
         raise RuntimeError("page 为 None")
@@ -1225,7 +1263,7 @@ async def _grok_post_app_chat_stream(page: Any, *, body: Dict[str, Any], log_fil
         page,
         url=CHAT_API,
         method="POST",
-        headers=_grok_browser_json_headers(),
+        headers=_grok_browser_json_headers(dynamic_statsig=dynamic_statsig),
         json_data=body,
         log_file=log_file,
     )
@@ -1281,6 +1319,7 @@ async def grok_workflow(
     video_length = _normalize_video_length(p)
     resolution = _normalize_resolution(p)
     preset = _normalize_preset(p)
+    dynamic_statsig = bool(p.get("grok_dynamic_statsig"))
 
     monitor_log_path = _one_str(p.get("monitor_log_path")) or None
     target_page = _one_str(default_target_url) or _one_str(p.get("grok_url") or p.get("target_url")) or DEFAULT_GROK_TARGET
@@ -1353,7 +1392,13 @@ async def grok_workflow(
                     10 + i * 3,
                     {"stage": "upload_reference", "index": i + 1, "total": len(ref_urls)},
                 )
-                fid, https_u = await _grok_upload_one_image(page, image_url=u, index=i, log_file=log_file)
+                fid, https_u = await _grok_upload_one_image(
+                    page,
+                    image_url=u,
+                    index=i,
+                    log_file=log_file,
+                    dynamic_statsig=dynamic_statsig,
+                )
                 asset_ids.append(fid)
                 image_https.append(https_u)
                 append_log(log_file, f"[grok] uploaded ref {i + 1} id={safe_trim(fid, 40)!r}")
@@ -1365,7 +1410,9 @@ async def grok_workflow(
                     "提示词含 @图N 占位符但未提供参考图", status_code=400
                 )
 
-            post_id = await _grok_create_media_post(page, prompt=prompt_text, log_file=log_file)
+            post_id = await _grok_create_media_post(
+                page, prompt=prompt_text, log_file=log_file, dynamic_statsig=dynamic_statsig
+            )
             append_log(log_file, f"[grok] media post id={safe_trim(post_id, 48)!r}")
 
             vcfg: Dict[str, Any] = {
@@ -1388,7 +1435,9 @@ async def grok_workflow(
             )
 
             await progress_cb(55, {"stage": "app_chat", "message_len": len(message)})
-            video_url = await _grok_post_app_chat_stream(page, body=chat_body, log_file=log_file)
+            video_url = await _grok_post_app_chat_stream(
+                page, body=chat_body, log_file=log_file, dynamic_statsig=dynamic_statsig
+            )
 
             elapsed_ms = int(max(0.0, (time.time() - started) * 1000.0))
             await progress_cb(100, {"stage": "done", "video_url": video_url, "elapsed_ms": elapsed_ms})
