@@ -3607,6 +3607,6 @@ async def get_logs(limit: int = 200, token: str = Depends(verify_admin_token)):
 async def clear_logs(token: str = Depends(verify_admin_token)):
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
-    await db.clear_request_logs()
-    return {"success": True}
+    rebuilt = await db.clear_request_logs()
+    return {"success": True, "rebuilt": rebuilt}
 

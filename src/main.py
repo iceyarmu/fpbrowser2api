@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 import re
@@ -19,7 +18,6 @@ from .api import admin, routes
 from .core.config import config
 from .core.database import Database
 from .core.logger import logger, setup_logging
-from .core.models import RequestLog
 
 
 db = Database()
@@ -100,6 +98,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         # 不阻断启动：即便清理失败，也让服务起来方便排查
         logger.exception("启动清理失败（忽略）：%s", e)
+
+    # 2.6) 启动时清空 request_logs（已不再写入该表；清空历史行并利于收缩库文件体积）
+    try:
+        rebuilt = await db.clear_request_logs()
+        if rebuilt:
+            logger.warning(
+                "request_logs 数据页曾损坏（如 malformed），已 DROP 并重建空表（启动时）"
+            )
+        else:
+            logger.info("已清空 request_logs 表（启动时）")
+    except Exception as e:
+        logger.warning("启动时清空 request_logs 失败（忽略）：%s", e)
 
     # 3) DB 配置回写到内存 config（API key / proxy / debug / log_to_file）
     syscfg = await db.reload_config_to_memory()
@@ -195,78 +205,51 @@ app.add_middleware(
 
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
-    """记录请求日志到数据库（简化版，适合后台排查）。
+    """管理台写操作权限校验。
 
-    注意：为避免影响性能，仅记录小体积 body；大文件上传不记录内容。
+    说明：不再将每条请求写入 SQLite 的 request_logs 表，避免高频 API（如轮询任务状态）
+    导致数据库体积快速增长；需要排查时可依赖 log_to_file / 应用日志。
     """
-    start = time.perf_counter()
-    status_code = 500
-    req_body = None
-    resp_body = None
-    try:
-        # 仅在 JSON/文本时尝试读取
-        content_type = (request.headers.get("content-type") or "").lower()
-        if "application/json" in content_type:
-            try:
-                raw = await request.body()
-                if raw and len(raw) <= 64 * 1024:
-                    req_body = raw.decode("utf-8", errors="ignore")
-            except Exception:
-                pass
-
-        # 非管理员只允许读取管理台接口；写操作统一仅管理员可执行
-        path = request.url.path
-        method = (request.method or "").upper()
-        if path.startswith("/api/admin") and method in {"POST", "PUT", "PATCH", "DELETE"}:
-            bypass_paths = {
-                "/api/admin/login",
-                "/api/login",
-                "/api/admin/logout",
-                "/api/logout",
-                "/api/admin/change-password",
-            }
-            non_admin_write_allow_patterns = [
-                r"^/api/admin/task-types/\d+/windows$",
-                r"^/api/admin/task-type-windows/\d+$",
-                r"^/api/admin/spaces/\d+/windows/[^/]+/set-proxy$",
-                r"^/api/admin/spaces/\d+/windows/[^/]+/set-core-version$",
-                r"^/api/admin/spaces/\d+/windows/[^/]+/move$",
-                r"^/api/admin/spaces/\d+/windows/[^/]+/remark$",
-            ]
-            allow_non_admin_write = any(re.match(p, path) for p in non_admin_write_allow_patterns)
-            if path not in bypass_paths and not allow_non_admin_write:
-                authorization = request.headers.get("authorization") or ""
-                if not authorization.startswith("Bearer "):
-                    return Response(content='{"detail":"Missing authorization"}', media_type="application/json", status_code=401)
-                token = authorization[7:]
-                username = admin.active_admin_tokens.get(token)
-                if not username:
-                    return Response(content='{"detail":"Invalid or expired admin token"}', media_type="application/json", status_code=401)
-                user = await db.get_admin_user(username)
-                if not user or not bool(getattr(user, "is_admin", False)):
-                    return Response(content='{"detail":"仅管理员可执行此操作"}', media_type="application/json", status_code=403)
-
-        response: Response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        duration = time.perf_counter() - start
+    # 与原先一致：JSON 请求预读 body 以便 Starlette 缓存，供下游路由重复读取
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
         try:
-            # 不阻断主流程：日志写入失败直接忽略
-            actor = "admin" if request.url.path.startswith("/api/admin") else "api"
-            await db.add_request_log(
-                RequestLog(
-                    actor=actor,
-                    method=request.method,
-                    path=request.url.path,
-                    request_body=req_body,
-                    response_body=resp_body,
-                    status_code=int(status_code),
-                    duration=float(duration),
-                )
-            )
+            await request.body()
         except Exception:
             pass
+
+    path = request.url.path
+    method = (request.method or "").upper()
+    if path.startswith("/api/admin") and method in {"POST", "PUT", "PATCH", "DELETE"}:
+        bypass_paths = {
+            "/api/admin/login",
+            "/api/login",
+            "/api/admin/logout",
+            "/api/logout",
+            "/api/admin/change-password",
+        }
+        non_admin_write_allow_patterns = [
+            r"^/api/admin/task-types/\d+/windows$",
+            r"^/api/admin/task-type-windows/\d+$",
+            r"^/api/admin/spaces/\d+/windows/[^/]+/set-proxy$",
+            r"^/api/admin/spaces/\d+/windows/[^/]+/set-core-version$",
+            r"^/api/admin/spaces/\d+/windows/[^/]+/move$",
+            r"^/api/admin/spaces/\d+/windows/[^/]+/remark$",
+        ]
+        allow_non_admin_write = any(re.match(p, path) for p in non_admin_write_allow_patterns)
+        if path not in bypass_paths and not allow_non_admin_write:
+            authorization = request.headers.get("authorization") or ""
+            if not authorization.startswith("Bearer "):
+                return Response(content='{"detail":"Missing authorization"}', media_type="application/json", status_code=401)
+            token = authorization[7:]
+            username = admin.active_admin_tokens.get(token)
+            if not username:
+                return Response(content='{"detail":"Invalid or expired admin token"}', media_type="application/json", status_code=401)
+            user = await db.get_admin_user(username)
+            if not user or not bool(getattr(user, "is_admin", False)):
+                return Response(content='{"detail":"仅管理员可执行此操作"}', media_type="application/json", status_code=403)
+
+    return await call_next(request)
 
 
 app.include_router(routes.router)

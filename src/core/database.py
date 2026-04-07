@@ -26,7 +26,6 @@ from .models import (
     PlatformAccount,
     Project,
     ProxyInfo,
-    RequestLog,
     SystemConfig,
     Task,
     TaskType,
@@ -1200,18 +1199,7 @@ class Database:
                 )
             await db.commit()
 
-    # ---------- request logs ----------
-    async def add_request_log(self, log: RequestLog) -> None:
-        async with self._write_conn() as db:
-            await db.execute(
-                """
-                INSERT INTO request_logs (actor, method, path, request_body, response_body, status_code, duration)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (log.actor, log.method, log.path, log.request_body, log.response_body, log.status_code, log.duration),
-            )
-            await db.commit()
-
+    # ---------- request logs（仅查询/清理；已不再写入，避免表无限膨胀）----------
     async def get_request_logs(self, limit: int = 200) -> List[Dict[str, Any]]:
         async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
@@ -1222,10 +1210,50 @@ class Database:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def clear_request_logs(self) -> None:
+    async def clear_request_logs(self) -> bool:
+        """清空 request_logs。若表数据页损坏（malformed 等），则 DROP 后按 init_db 同结构重建空表。
+
+        Returns:
+            True 表示因损坏走了 DROP 重建；False 表示普通 DELETE 清空成功。
+        """
+        # 与 init_db 中 request_logs 定义保持一致
+        ddl = """
+                CREATE TABLE request_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor TEXT,
+                    method TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    request_body TEXT,
+                    response_body TEXT,
+                    status_code INTEGER NOT NULL,
+                    duration FLOAT NOT NULL,
+                    created_at TIMESTAMP DEFAULT (datetime('now','localtime'))
+                )
+                """
         async with self._write_conn() as db:
-            await db.execute("DELETE FROM request_logs")
-            await db.commit()
+            try:
+                await db.execute("DELETE FROM request_logs")
+                await db.commit()
+                return False
+            except Exception as e:
+                msg = str(e).lower()
+                if (
+                    "malformed" not in msg
+                    and "database disk image" not in msg
+                    and "corrupt" not in msg
+                ):
+                    raise
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                await db.execute("DROP TABLE IF EXISTS request_logs")
+                await db.execute(ddl.strip())
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_req_logs_created_at ON request_logs(created_at)"
+                )
+                await db.commit()
+                return True
 
     # ---------- project tree (single-query optimization) ----------
     async def get_project_tree(
