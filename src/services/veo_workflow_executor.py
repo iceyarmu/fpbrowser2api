@@ -37,7 +37,7 @@ from .playwright_broswer_context import (
     safe_trim,
 )
 from .sora_task_executor import (
-    _download_bytes_local_async,
+    _download_remote_image_bytes_with_limit_async,
     _pick_n_frames,
     _prepare_first_frame_image_for_upload_async,
 )
@@ -2203,10 +2203,15 @@ async def _veo_download_image_bytes_for_i2v(
     user_agent: Optional[str],
 ) -> bytes:
     try:
-        img_bytes, img_headers = await _download_bytes_local_async(
-            url, timeout_seconds=timeout_seconds, user_agent=user_agent
+        img_bytes, img_headers = await _download_remote_image_bytes_with_limit_async(
+            url,
+            label=label,
+            timeout_seconds=timeout_seconds,
+            user_agent=user_agent,
         )
     except Exception as e:
+        if isinstance(e, NonPenalizedTaskError):
+            raise
         raise NonPenalizedTaskError(
             f"{label}下载失败（请检查地址是否可访问）：url={safe_trim(str(url), 400)!r} err={e}",
             status_code=400,

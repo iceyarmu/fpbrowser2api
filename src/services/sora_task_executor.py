@@ -564,7 +564,13 @@ def _prepare_first_frame_image_for_upload(
     return out_bytes, "image.png", "image/png"
 
 
-def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent: Optional[str] = None) -> Tuple[bytes, Dict[str, str]]:
+def _download_bytes_local(
+    url: str,
+    *,
+    timeout_seconds: float = 30.0,
+    user_agent: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+) -> Tuple[bytes, Dict[str, str]]:
     """本地下载资源（按当前实现：不走指纹浏览器下载首帧图）。"""
     u = str(url or "").strip()
     if not u:
@@ -581,12 +587,30 @@ def _download_bytes_local(url: str, *, timeout_seconds: float = 30.0, user_agent
         headers["User-Agent"] = str(user_agent)
     req = Request(u, headers=headers, method="GET")
     with urlopen(req, timeout=max(1.0, float(timeout_seconds))) as resp:
-        data = resp.read()
         try:
             hdrs = dict(getattr(resp, "headers", {}) or {})
         except Exception:
             hdrs = {}
-        return bytes(data or b""), hdrs
+        total = 0
+        chunks: list[bytes] = []
+        if max_bytes is not None:
+            try:
+                cl = hdrs.get("Content-Length") or hdrs.get("content-length")
+                if cl is not None and int(cl) > int(max_bytes):
+                    raise RuntimeError(f"下载资源大小超过限制：Content-Length={cl} max_bytes={max_bytes}")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if max_bytes is not None and total > int(max_bytes):
+                raise RuntimeError(f"下载资源大小超过限制：max_bytes={max_bytes}")
+            chunks.append(chunk)
+        return b"".join(chunks), hdrs
 
 
 async def _download_bytes_local_async(
@@ -594,6 +618,7 @@ async def _download_bytes_local_async(
     *,
     timeout_seconds: float = 30.0,
     user_agent: Optional[str] = None,
+    max_bytes: Optional[int] = None,
 ) -> Tuple[bytes, Dict[str, str]]:
     """异步包装：将本地阻塞下载放入线程池，避免阻塞事件循环。"""
     return await asyncio.to_thread(
@@ -601,7 +626,49 @@ async def _download_bytes_local_async(
         url,
         timeout_seconds=timeout_seconds,
         user_agent=user_agent,
+        max_bytes=max_bytes,
     )
+
+
+REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+
+async def _download_remote_image_bytes_with_limit_async(
+    url: str,
+    *,
+    label: str,
+    timeout_seconds: float = 30.0,
+    user_agent: Optional[str] = None,
+    max_bytes: int = REMOTE_IMAGE_MAX_BYTES,
+) -> Tuple[bytes, Dict[str, str]]:
+    """下载远程图片并在下载阶段提前拦截超大文件，避免后续 Pillow 解码超限。"""
+    try:
+        img_bytes, img_headers = await _download_bytes_local_async(
+            url,
+            timeout_seconds=timeout_seconds,
+            user_agent=user_agent,
+            max_bytes=max_bytes,
+        )
+    except Exception as e:
+        msg = str(e or "")
+        if "max_bytes=" in msg or "Content-Length=" in msg:
+            limit_mb = max(1, int(max_bytes) // (1024 * 1024))
+            raise NonPenalizedTaskError(
+                f"{label}包含违规内容：图片大小超过 {limit_mb}MB 限制，请更换更小图片后重试。"
+                f" url={safe_trim(str(url), 400)!r}",
+                status_code=400,
+                content_violation=True,
+            ) from e
+        raise
+    if len(img_bytes) > int(max_bytes):
+        limit_mb = max(1, int(max_bytes) // (1024 * 1024))
+        raise NonPenalizedTaskError(
+            f"{label}包含违规内容：图片大小超过 {limit_mb}MB 限制，请更换更小图片后重试。"
+            f" url={safe_trim(str(url), 400)!r}",
+            status_code=400,
+            content_violation=True,
+        )
+    return img_bytes, img_headers
 
 
 async def _prepare_first_frame_image_for_upload_async(
@@ -1255,12 +1322,15 @@ async def _sora_create_task_pw(
     inpaint_items: list[Dict[str, Any]] = []
     if first_image_url:
         try:
-            img_bytes, img_headers = await _download_bytes_local_async(
+            img_bytes, img_headers = await _download_remote_image_bytes_with_limit_async(
                 first_image_url,
+                label="首帧图片",
                 timeout_seconds=30.0,
                 user_agent=user_agent,
             )
         except Exception as e:
+            if isinstance(e, NonPenalizedTaskError):
+                raise
             raise NonPenalizedTaskError(
                 f"首帧图片下载失败（请检查图片地址是否正确/可访问）：url={safe_trim(str(first_image_url), 400)!r} err={e}"
             ) from e
@@ -4044,4 +4114,3 @@ async def sora_gen_video(
         "thumb_url": publish_result.get("thumb_url"),
         "drafts_count": publish_result.get("drafts_count", 0),
     }
-
