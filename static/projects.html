@@ -19,6 +19,11 @@
       .browser-actions { flex: 0 0 auto; display: flex; gap: 6px; }
       #proxiesModal .modal-dialog { max-width: 96vw; }
       #accountsModal .modal-dialog { max-width: 98vw; }
+      .proxy-sync-mismatch {
+        background-color: #dc3545 !important;
+        border-color: #dc3545 !important;
+        color: #fff !important;
+      }
     </style>
   </head>
   <body class="bg-light">
@@ -2236,6 +2241,38 @@
         return `${ip}|${country}|安全:${risk}-${asnType}|绑定:${bind}`;
       }
 
+      function getSelectedProxyDisplayIp(sel, items = null) {
+        if (!sel) return "";
+        const value = String(sel.value || sel.dataset.current_proxy_id || "").trim();
+        if (!value || value === "0") return "";
+        if (value === "__custom__") {
+          return String(sel.dataset.proxy_addr || "").trim();
+        }
+        const proxyId = parseInt(value, 10) || 0;
+        if (proxyId <= 0) return "";
+        const list = Array.isArray(items) ? items : normalizeProxies(proxiesCache.get(parseInt(sel.dataset.space_pk || "0", 10) || 0) || []);
+        const picked = list.find(x => String(x.proxy_id || x.id || "") === String(proxyId));
+        if (picked) {
+          return String(picked.last_ip || picked.host || "").trim();
+        }
+        return "";
+      }
+
+      function updateWindowProxySyncButtonState(sel, items = null) {
+        if (!sel) return;
+        const td = sel.closest("td");
+        if (!td) return;
+        const btn = td.querySelector(`button[data-action="sync_window_proxy_addr"]`);
+        if (!btn) return;
+        const syncedIp = String(sel.dataset.proxy_addr || "").trim();
+        const selectedIp = getSelectedProxyDisplayIp(sel, items);
+        const mismatch = !!syncedIp && !!selectedIp && syncedIp !== selectedIp;
+        btn.classList.toggle("proxy-sync-mismatch", mismatch);
+        btn.classList.toggle("btn-outline-secondary", !mismatch);
+        btn.classList.toggle("btn-danger", mismatch);
+        btn.classList.toggle("text-white", mismatch);
+      }
+
       function resolveProxyTaskIp(p) {
         return String(p?.last_ip || p?.host || "").trim();
       }
@@ -2611,6 +2648,7 @@
             sel.dataset.current_proxy_id = String(r.inferredProxyId);
           }
           delete sel.dataset._proxyPopulated;
+          updateWindowProxySyncButtonState(sel, items);
         });
       }
 
@@ -3138,6 +3176,7 @@
             el.value = "0";
           }
           delete el.dataset._proxyPopulated;
+          updateWindowProxySyncButtonState(el, proxyItems);
         } catch (_e) { /* ignore */ }
 
         (async () => {
@@ -3498,4 +3537,3 @@
     </script>
   </body>
 </html>
-
