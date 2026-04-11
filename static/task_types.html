@@ -225,12 +225,13 @@
                     <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-danger" id="btnBulkTransfer">批量转移</button>
-                    <button class="btn btn-outline-warning" id="btnBulkHeadlessOn">批量打开无头</button>
-                    <button class="btn btn-outline-secondary" id="btnBulkHeadlessOff">批量关闭无头</button>
-                    <button class="btn btn-outline-success" id="btnBulkEnableOn" title="将勾选窗口的「启用」列设为开启">批量打开启用</button>
-                    <button class="btn btn-outline-secondary" id="btnBulkEnableOff" title="将勾选窗口的「启用」列设为关闭">批量关闭启用</button>
-                    <button class="btn btn-outline-primary" id="btnBulkPureModeOn" title="将勾选窗口的「纯净」列设为开启">批量开启纯净</button>
-                    <button class="btn btn-outline-secondary" id="btnBulkPureModeOff" title="将勾选窗口的「纯净」列设为关闭">批量关闭纯净</button>
+                    <button class="btn btn-outline-warning" id="btnBulkHeadlessOn">批量开无头</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkHeadlessOff">批量关无头</button>
+                    <button class="btn btn-outline-success" id="btnBulkEnableOn" title="将勾选窗口的「启用」列设为开启">批量开启用</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkEnableOff" title="将勾选窗口的「启用」列设为关闭">批量关启用</button>
+                    <button class="btn btn-outline-warning" id="btnBulkResetConsecutiveErrors" title="将勾选窗口的连续错误清零，并清空错误重置时间">批量重置错误</button>
+                    <button class="btn btn-outline-primary" id="btnBulkPureModeOn" title="将勾选窗口的「纯净」列设为开启">批量开纯净</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkPureModeOff" title="将勾选窗口的「纯净」列设为关闭">批量关纯净</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
                     <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
@@ -4582,6 +4583,7 @@
         setBtnDisabledById("btnBulkHeadlessOff", true);
         setBtnDisabledById("btnBulkEnableOn", true);
         setBtnDisabledById("btnBulkEnableOff", true);
+        setBtnDisabledById("btnBulkResetConsecutiveErrors", true);
         setBtnDisabledById("btnBulkPureModeOn", true);
         setBtnDisabledById("btnBulkPureModeOff", true);
         setBtnDisabledById("btnBulkSetCore", true);
@@ -4607,6 +4609,7 @@
           setBtnDisabledById("btnBulkHeadlessOff", false);
           setBtnDisabledById("btnBulkEnableOn", false);
           setBtnDisabledById("btnBulkEnableOff", false);
+          setBtnDisabledById("btnBulkResetConsecutiveErrors", false);
           setBtnDisabledById("btnBulkPureModeOn", false);
           setBtnDisabledById("btnBulkPureModeOff", false);
           setBtnDisabledById("btnBulkSetCore", false);
@@ -4706,6 +4709,41 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "禁用失败");
             updateMappingRowUI(mappingId, { enabled: false });
+          },
+        });
+      }
+
+      async function bulkResetConsecutiveErrorsSelected() {
+        const ids = getSelectedMappingIds();
+        if (!ids.length) return toast("请先勾选窗口", "error");
+        const targets = ids
+          .map((mappingId) => (state.mappings || []).find(x => String(x.id || "") === String(mappingId)))
+          .filter(Boolean);
+        const effectiveTargets = targets.filter((m) => {
+          const ce = Number(m?.consecutive_errors || 0) || 0;
+          const hasCooldown = !!String(m?.error_cooldown_until || "").trim();
+          return ce > 0 || hasCooldown;
+        });
+        if (!effectiveTargets.length) {
+          toast("所选窗口的连续错误已为 0，且无错误重置时间", "success");
+          return;
+        }
+        const ok = confirm(
+          `确定批量重置这 ${effectiveTargets.length} 个绑定的错误状态吗？\n将把连续错误清零，并清空错误重置时间（error_cooldown_until）。`
+        );
+        if (!ok) return;
+        await runBulkAction({
+          label: "批量重置连续错误",
+          ids: effectiveTargets.map(m => parseInt(m.id, 10)).filter(x => Number.isFinite(x) && x > 0),
+          runner: async (mappingId) => {
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ consecutive_errors: 0, error_cooldown_until: "" }),
+            });
+            if (!r) throw new Error("请求失败");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "重置失败");
+            updateMappingRowUI(mappingId, { consecutive_errors: 0, error_cooldown_until: "" });
           },
         });
       }
@@ -4987,6 +5025,7 @@
       document.getElementById("btnBulkHeadlessOff")?.addEventListener("click", bulkHeadlessOffSelected);
       document.getElementById("btnBulkEnableOn")?.addEventListener("click", bulkEnableOnSelected);
       document.getElementById("btnBulkEnableOff")?.addEventListener("click", bulkEnableOffSelected);
+      document.getElementById("btnBulkResetConsecutiveErrors")?.addEventListener("click", bulkResetConsecutiveErrorsSelected);
       document.getElementById("btnBulkPureModeOn")?.addEventListener("click", bulkPureModeOnSelected);
       document.getElementById("btnBulkPureModeOff")?.addEventListener("click", bulkPureModeOffSelected);
       document.getElementById("btnBulkSetCore")?.addEventListener("click", bulkSetCoreVersionSelected);
@@ -5108,4 +5147,3 @@
     </script>
   </body>
 </html>
-
