@@ -462,6 +462,8 @@ def _prepare_first_frame_image_for_upload(
         raise NonPenalizedTaskError(f"图片处理依赖缺失：请安装 Pillow。err={e}") from e
 
     ImageFile.LOAD_TRUNCATED_IMAGES = True
+    soft_max_pixels = 48_000_000
+    hard_max_pixels = 512_000_000
 
     if not image_bytes:
         raise NonPenalizedTaskError("首帧图片下载失败：下载内容为空")
@@ -476,19 +478,48 @@ def _prepare_first_frame_image_for_upload(
     _ALL_SUPPORTED = _NATIVE_FORMATS | _CONVERTIBLE_FORMATS
 
     try:
+        previous_max_pixels = getattr(Image, "MAX_IMAGE_PIXELS", None)
+        Image.MAX_IMAGE_PIXELS = hard_max_pixels
         with Image.open(io.BytesIO(image_bytes)) as src:
-            src.load()
             source_format = str(src.format or "").upper()
             if source_format not in _ALL_SUPPORTED:
                 raise NonPenalizedTaskError(
                     f"不支持的首帧图片格式：检测到 {source_format!r}，"
                     f"仅支持 {'/'.join(sorted(_ALL_SUPPORTED))}（注意：格式由文件内容决定，而非 URL 扩展名）"
                 )
+            width, height = src.size
+            total_pixels = int(width) * int(height)
+            if total_pixels > hard_max_pixels:
+                raise NonPenalizedTaskError(
+                    f"首帧图片分辨率过高：{width}x{height}（{total_pixels} 像素），"
+                    "请更换更小图片后重试。"
+                )
+            if source_format in {"JPEG", "JPG"} and total_pixels > soft_max_pixels:
+                scale = (soft_max_pixels / float(total_pixels)) ** 0.5
+                draft_size = (
+                    max(1, int(width * scale)),
+                    max(1, int(height * scale)),
+                )
+                # 对超大 JPEG 先在解码阶段降采样，避免占用过高内存。
+                src.draft("RGB", draft_size)
+            src.load()
             base_img = ImageOps.exif_transpose(src)
+            if (base_img.size[0] * base_img.size[1]) > soft_max_pixels:
+                scale = (soft_max_pixels / float(base_img.size[0] * base_img.size[1])) ** 0.5
+                resized = (
+                    max(1, int(base_img.size[0] * scale)),
+                    max(1, int(base_img.size[1] * scale)),
+                )
+                base_img = base_img.resize(resized, Image.Resampling.LANCZOS)
     except NonPenalizedTaskError:
         raise
     except Exception as e:
         raise NonPenalizedTaskError(f"首帧图片解析失败（请检查图片地址/图片内容）：err={e}") from e
+    finally:
+        try:
+            Image.MAX_IMAGE_PIXELS = previous_max_pixels
+        except Exception:
+            pass
 
     if source_format in ("PNG",):
         preferred_format = "PNG"
