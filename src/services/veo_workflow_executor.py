@@ -61,6 +61,53 @@ def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
     return s[: max(10, max_len - 3)] + "..."
 
 
+def _veo_is_unsafe_generation_error(tx: Optional[Dict[str, Any]]) -> bool:
+    """判断上游响应是否为内容违规类拦截（不应计入窗口连续错误）。"""
+    if not isinstance(tx, dict):
+        return False
+
+    try:
+        body_text = str(tx.get("response_body") or "").strip()
+    except Exception:
+        body_text = ""
+
+    payload: Any = tx.get("_json")
+    if payload is None and body_text:
+        try:
+            payload = json.loads(body_text)
+        except Exception:
+            payload = None
+
+    details = None
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            details = err.get("details")
+
+    if isinstance(details, list):
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            reason = str(item.get("reason") or "").strip()
+            if reason == "PUBLIC_ERROR_UNSAFE_GENERATION":
+                return True
+
+    return "PUBLIC_ERROR_UNSAFE_GENERATION" in body_text
+
+
+def _veo_raise_if_unsafe_generation(tx: Optional[Dict[str, Any]], *, status_code: Optional[int] = None) -> None:
+    """命中 VEO 内容安全拦截时抛出不计罚异常。"""
+    if not _veo_is_unsafe_generation_error(tx):
+        return
+    body = safe_trim(str((tx or {}).get("response_body") or ""), 500)
+    code = int(status_code or (tx or {}).get("status") or 400)
+    raise NonPenalizedTaskError(
+        f"VEO 生成失败，内容包含违规信息（PUBLIC_ERROR_UNSAFE_GENERATION）：{body}",
+        status_code=code,
+        content_violation=True,
+    )
+
+
 def _veo_parse_access_expires(raw: Any) -> Optional[datetime]:
     """解析 Labs / NextAuth 返回的 expires（ISO-8601、带 Z、或 SQLite 本地时间串）。"""
     s = str(raw or "").strip()
@@ -3715,6 +3762,7 @@ async def _veo_execute_image_mode(
     
             st = tx.get("status")
             if st is not None and int(st) >= 400:
+                _veo_raise_if_unsafe_generation(tx, status_code=int(st))
                 body = safe_trim(str(tx.get("response_body") or ""), 500)
                 last_submit_err = f"HTTP {st} {body}"
                 print(f"last_submit_err: {last_submit_err}")
@@ -4381,6 +4429,7 @@ async def veo_workflow(
 
             st = tx.get("status")
             if st is not None and int(st) >= 400:
+                _veo_raise_if_unsafe_generation(tx, status_code=int(st))
                 body = safe_trim(str(tx.get("response_body") or ""), 500)
                 last_submit_err = f"HTTP {st} {body}"
                 append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
