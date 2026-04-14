@@ -2215,6 +2215,27 @@ def _veo_collect_i2v_image_urls(payload: Dict[str, Any]) -> List[str]:
     return urls
 
 
+def _veo_collect_image_generation_reference_urls(payload: Dict[str, Any]) -> List[str]:
+    """解析图片生成参考图 URL：优先 `images` 数组，兼容单图字段 `first_image_url` / `image_url`。"""
+    payload = payload or {}
+    imgs = payload.get("images")
+    if isinstance(imgs, list) and len(imgs) > 0:
+        out: List[str] = []
+        for it in imgs:
+            u = _veo_extract_url_from_image_item(it)
+            if not u:
+                raise NonPenalizedTaskError("images 数组中存在无法解析的图片地址", status_code=400)
+            out.append(u)
+        return out
+
+    first = str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip()
+    if not first:
+        first = str(payload.get("image_url") or payload.get("imageUrl") or "").strip()
+    if first:
+        return [first]
+    return []
+
+
 def _veo_strip_i2v_fl_for_single_frame(model_key: str) -> str:
     """与 flow2api generation_handler 单首帧分支一致：去掉 model_key 中的 _fl 后缀（含 _fl_ 在中间的情况）。"""
     mk = str(model_key or "")
@@ -3602,6 +3623,7 @@ async def _veo_execute_image_mode(
     """n_frames==1：页面内调用 `flowMedia:batchGenerateImages`（对齐 flow2api `FlowClient.generate_image`）。
 
     payload：`use_gem_pix_2` / `veo_use_gem_pix_2` 为真或 `image_model_name`/`veo_image_model` 为 GEM_PIX_2 时使用 GEM_PIX_2，否则 NARWHAL。
+    `images` 支持多张参考图输入；若未提供 `images`，仍兼容 `first_image_url` / `image_url` 单图输入。
     `resolution` / `image_resolution` / `veo_image_resolution` 为 2k 时在生成成功后调用 `flow/upsampleImage`，最终 `share_url` 为 data URL（与 flow2api 无缓存时一致）；`origin_image_url` 仍为 1K 的 fife 直链。
     """
     image_aspect = _veo_resolve_image_aspect_ratio(payload)
@@ -3609,24 +3631,32 @@ async def _veo_execute_image_mode(
     res_label, want_2k = _veo_resolve_image_output_resolution(payload)
     want_i2i = _veo_payload_looks_like_i2v(payload)
     image_inputs: List[Dict[str, Any]] = []
-    raw_i2i_bytes: Optional[bytes] = None
+    i2i_urls: List[str] = []
+    raw_i2i_batches: List[bytes] = []
+    i2i_image_count = 0
     page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
 
     if want_i2i:
-        i2i_urls = _veo_collect_i2v_image_urls(payload)
+        i2i_urls = _veo_collect_image_generation_reference_urls(payload)
         if len(i2i_urls) < 1:
             raise NonPenalizedTaskError(
                 "图生图需要提供至少一张参考图（first_image_url / image_url / images 等）",
                 status_code=400,
             )
-        first_u = i2i_urls[0]
-        await progress_cb(8, {"stage": "download_images", "count": 1, "workflow_kind": "image"})
-        raw_i2i_bytes = await _veo_download_image_bytes_for_i2v(
-            first_u,
-            label="参考图",
-            timeout_seconds=download_timeout,
-            user_agent=None,
+        i2i_image_count = len(i2i_urls)
+        await progress_cb(
+            8,
+            {"stage": "download_images", "count": i2i_image_count, "workflow_kind": "image"},
         )
+        for i, ref_url in enumerate(i2i_urls):
+            raw_i2i_batches.append(
+                await _veo_download_image_bytes_for_i2v(
+                    ref_url,
+                    label="参考图" if i2i_image_count == 1 else f"参考图 {i + 1}",
+                    timeout_seconds=download_timeout,
+                    user_agent=None,
+                )
+            )
     else:
         await progress_cb(8, {"stage": "text_to_image", "workflow_kind": "image"})
         append_log(log_file, "[veo][image] t2i (no reference images)")
@@ -3657,22 +3687,31 @@ async def _veo_execute_image_mode(
             raise RuntimeError("page 未初始化")
 
         if want_i2i:
-            rb = raw_i2i_bytes
-            if rb is None:
+            if not raw_i2i_batches:
                 raise RuntimeError("图生图参考图数据缺失")
-            await progress_cb(
-                8,
-                {"stage": "upload_image", "index": 1, "total": 1, "workflow_kind": "image"},
-            )
-            mid = await _veo_flow_upload_image_in_window(
-                page=page,
-                access_token=str(access_token),
-                project_id=project_id,
-                image_bytes=rb,
-                log_file=log_file,
-            )
-            image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
-            append_log(log_file, f"[veo][image] i2i uploaded reference mediaId={safe_trim(mid, 80)!r}")
+            for i, rb in enumerate(raw_i2i_batches):
+                await progress_cb(
+                    8,
+                    {
+                        "stage": "upload_image",
+                        "index": i + 1,
+                        "total": len(raw_i2i_batches),
+                        "workflow_kind": "image",
+                    },
+                )
+                mid = await _veo_flow_upload_image_in_window(
+                    page=page,
+                    access_token=str(access_token),
+                    project_id=project_id,
+                    image_bytes=rb,
+                    log_file=log_file,
+                )
+                image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
+                append_log(
+                    log_file,
+                    f"[veo][image] i2i uploaded reference {i + 1}/{len(raw_i2i_batches)} "
+                    f"mediaId={safe_trim(mid, 80)!r}",
+                )
 
         submit_url = _veo_flow_media_batch_generate_images_url(project_id)
         last_submit_err: Optional[str] = None
@@ -3734,7 +3773,7 @@ async def _veo_execute_image_mode(
                     "stage": "submit_image_task",
                     "attempt": attempt + 1,
                     "workflow_kind": "image",
-                    "image_mode": "i2i" if want_i2i else "t2i",
+                    "image_mode": "multi_i2i" if i2i_image_count > 1 else ("i2i" if want_i2i else "t2i"),
                 },
             )
 
@@ -3887,14 +3926,22 @@ async def _veo_execute_image_mode(
             )
             append_log(
                 log_file,
-                f"[veo][image] workflow {'I2I' if want_i2i else 'T2I'} done elapsed_ms={elapsed_ms} resolution={res_label}",
+                f"[veo][image] workflow "
+                f"{'MULTI_I2I' if i2i_image_count > 1 else ('I2I' if want_i2i else 'T2I')} "
+                f"done elapsed_ms={elapsed_ms} resolution={res_label}",
+            )
+            image_mode = "multi_i2i" if i2i_image_count > 1 else ("i2i" if want_i2i else "t2i")
+            message = (
+                "Nana Banana 多图生图完成"
+                if i2i_image_count > 1
+                else ("Nana Banana图生图完成" if want_i2i else "Nana Banana 文生图完成")
             )
             out: Dict[str, Any] = {
                 "type": "veo_workflow_image",
-                "message": "Nana Banana图生图完成" if want_i2i else "Nana Banana 文生图完成",
+                "message": message,
                 "share_url": share_url,
                 "workflow_kind": "image",
-                "image_mode": "i2i" if want_i2i else "t2i",
+                "image_mode": image_mode,
                 "model_name": model_name,
                 "image_aspect_ratio": image_aspect,
                 "image_resolution": res_label,
@@ -3902,6 +3949,8 @@ async def _veo_execute_image_mode(
                 "elapsed_ms": elapsed_ms,
                 "n_frames": 1,
             }
+            if want_i2i:
+                out["reference_image_count"] = i2i_image_count
             if want_2k or upsample_ok:
                 out["upsample_url"] = share_url
             if upsample_err:
