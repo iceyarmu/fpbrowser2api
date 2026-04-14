@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import random
 from math import gcd
@@ -1909,6 +1910,8 @@ IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR = "IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR
 VEO_IMAGE_MODEL_NARWHAL = "NARWHAL"
 # 与 flow2api generation_handler gemini-3.0-pro-image-*（GEM_PIX_2）一致
 VEO_IMAGE_MODEL_GEM_PIX_2 = "GEM_PIX_2"
+VEO_IMAGE_GENERATION_MAX_REFERENCE_IMAGES = 10
+VEO_IMAGE_REFERENCE_MAX_PIXELS_4K = 3840 * 2160
 UPSAMPLE_IMAGE_RESOLUTION_2K = "UPSAMPLE_IMAGE_RESOLUTION_2K"
 
 PAYGATE_TIER_NOT_PAID = "PAYGATE_TIER_NOT_PAID"
@@ -2220,6 +2223,11 @@ def _veo_collect_image_generation_reference_urls(payload: Dict[str, Any]) -> Lis
     payload = payload or {}
     imgs = payload.get("images")
     if isinstance(imgs, list) and len(imgs) > 0:
+        if len(imgs) > VEO_IMAGE_GENERATION_MAX_REFERENCE_IMAGES:
+            raise NonPenalizedTaskError(
+                f"多图生图最多支持 {VEO_IMAGE_GENERATION_MAX_REFERENCE_IMAGES} 张参考图",
+                status_code=400,
+            )
         out: List[str] = []
         for it in imgs:
             u = _veo_extract_url_from_image_item(it)
@@ -2261,6 +2269,32 @@ def _veo_detect_image_mime_type(image_bytes: bytes) -> str:
     if image_bytes[:6] == b"\x00\x00\x00\x0cjP":
         return "image/jp2"
     return "image/jpeg"
+
+
+def _veo_raise_if_image_exceeds_4k_limit(image_bytes: bytes, *, label: str) -> None:
+    """限制参考图分辨率不超过 4K（按 3840x2160 等效像素总量校验）。"""
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+    except Exception as e:
+        raise NonPenalizedTaskError(f"图片处理依赖缺失：请安装 Pillow。err={e}") from e
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            w, h = img.size
+    except Exception as e:
+        raise NonPenalizedTaskError(f"{label} 不是有效图片或无法解析尺寸：{e}", status_code=400) from e
+
+    try:
+        pixels = int(w) * int(h)
+    except Exception:
+        pixels = 0
+    if w <= 0 or h <= 0 or pixels <= 0:
+        raise NonPenalizedTaskError(f"{label} 尺寸无效", status_code=400)
+    if pixels > VEO_IMAGE_REFERENCE_MAX_PIXELS_4K:
+        raise NonPenalizedTaskError(
+            f"{label} 分辨率过高：{w}x{h}，不能超过 4K（最大 3840x2160 等效像素）",
+            status_code=400,
+        )
 
 
 async def _veo_download_image_bytes_for_i2v(
@@ -3649,14 +3683,16 @@ async def _veo_execute_image_mode(
             {"stage": "download_images", "count": i2i_image_count, "workflow_kind": "image"},
         )
         for i, ref_url in enumerate(i2i_urls):
+            label = "参考图" if i2i_image_count == 1 else f"参考图 {i + 1}"
             raw_i2i_batches.append(
                 await _veo_download_image_bytes_for_i2v(
                     ref_url,
-                    label="参考图" if i2i_image_count == 1 else f"参考图 {i + 1}",
+                    label=label,
                     timeout_seconds=download_timeout,
                     user_agent=None,
                 )
             )
+            _veo_raise_if_image_exceeds_4k_limit(raw_i2i_batches[-1], label=label)
     else:
         await progress_cb(8, {"stage": "text_to_image", "workflow_kind": "image"})
         append_log(log_file, "[veo][image] t2i (no reference images)")
