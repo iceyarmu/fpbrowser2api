@@ -1742,6 +1742,9 @@ class TaskService:
                     or "包含违禁画面" in str(e)
                     or "包含违规内容" in str(e)
                     or "参考图中包含未成年" in str(e)
+                    or "分辨率过高" in str(e)
+                    or "不能超过 4k" in _err_lower
+                    or "不能超过4k" in _err_lower
                     or bool(getattr(e, "content_violation", False))
                 )
                 # ---- 错误重试逻辑 ----
@@ -1951,4 +1954,3 @@ class TaskService:
                         pass
                     self._task_payloads.pop(task_id, None)
                     logger.exception("task retry error: %s err=%s", task_id, retry_err)
-

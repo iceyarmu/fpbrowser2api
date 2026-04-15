@@ -2294,6 +2294,7 @@ def _veo_raise_if_image_exceeds_4k_limit(image_bytes: bytes, *, label: str) -> N
         raise NonPenalizedTaskError(
             f"{label} 分辨率过高：{w}x{h}，不能超过 4K（最大 3840x2160 等效像素）",
             status_code=400,
+            content_violation=True,
         )
 
 
