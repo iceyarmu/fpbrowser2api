@@ -1980,6 +1980,7 @@ def _veo_project_page_url(*, project_id: str, hint_url: str) -> str:
 
 
 def _veo_payload_looks_like_i2v(payload: Dict[str, Any]) -> bool:
+    """仅用于图生视频判定。"""
     vt = str(payload.get("video_type") or payload.get("veo_video_type") or "").strip().lower()
     if vt in ("i2v", "image_to_video", "img2vid", "img2video"):
         return True
@@ -1992,6 +1993,19 @@ def _veo_payload_looks_like_i2v(payload: Dict[str, Any]) -> bool:
         return True
     last_u = str(payload.get("last_image_url") or payload.get("lastImageUrl") or "").strip()
     if last_u:
+        return True
+    return False
+
+
+def _veo_payload_has_image_generation_references(payload: Dict[str, Any]) -> bool:
+    """仅用于图生图判定：`images` 为多参考图输入，单图字段仅在未传 `images` 时兼容。"""
+    payload = payload or {}
+    imgs = payload.get("images")
+    if isinstance(imgs, list) and len(imgs) > 0:
+        return True
+    if str(payload.get("first_image_url") or payload.get("firstImageUrl") or "").strip():
+        return True
+    if str(payload.get("image_url") or payload.get("imageUrl") or "").strip():
         return True
     return False
 
@@ -3664,7 +3678,7 @@ async def _veo_execute_image_mode(
     image_aspect = _veo_resolve_image_aspect_ratio(payload)
     model_name = _veo_resolve_image_model_name(payload)
     res_label, want_2k = _veo_resolve_image_output_resolution(payload)
-    want_i2i = _veo_payload_looks_like_i2v(payload)
+    want_i2i = _veo_payload_has_image_generation_references(payload)
     image_inputs: List[Dict[str, Any]] = []
     i2i_urls: List[str] = []
     raw_i2i_batches: List[bytes] = []
@@ -4058,7 +4072,9 @@ async def veo_workflow(
         ingredients_urls = _veo_collect_ingredients_image_urls(payload)
         want_ingredients = len(ingredients_urls) >= 1
 
-    want_i2v = _veo_payload_looks_like_i2v(payload)
+    want_i2v = False
+    if not image_mode:
+        want_i2v = _veo_payload_looks_like_i2v(payload)
     if want_ingredients:
         want_i2v = False
 
