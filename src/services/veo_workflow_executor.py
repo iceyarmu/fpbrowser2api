@@ -1428,8 +1428,11 @@ class VeoSession:
 
                 await asyncio.sleep(3.0)
 
-            #TODO esc
             try:
+                overlay = drafts_page.locator('[role="dialog"]')
+                if await overlay.count() > 0:
+                    await overlay.first.click(timeout=1000)
+                    await asyncio.sleep(0.2)
                 await drafts_page.keyboard.press("Escape")
             except Exception:
                 pass
