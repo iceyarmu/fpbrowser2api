@@ -1428,6 +1428,12 @@ class VeoSession:
 
                 await asyncio.sleep(3.0)
 
+            #TODO esc
+            try:
+                await drafts_page.keyboard.press("Escape")
+            except Exception:
+                pass
+
             # 若出现未登录提示，尽量先触发登录
             try:
                 try:
