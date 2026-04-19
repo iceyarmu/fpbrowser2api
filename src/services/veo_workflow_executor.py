@@ -861,20 +861,31 @@ class VeoSession:
         except Exception:
             pass
 
-        get_started_re = re.compile(r"get\s*started", re.IGNORECASE)
+        button_patterns = [
+            ("Get started", re.compile(r"get\s*started", re.IGNORECASE)),
+            ("使ってみる", re.compile(r"使ってみる")),
+        ]
+
+        matched_label: str = ""
+        matched_re: Any = None
 
         try:
             for sc in scopes:
                 try:
-                    if hasattr(sc, "get_by_role"):
-                        btn_cnt = await sc.get_by_role("button", name=get_started_re).count()
-                        link_cnt = await sc.get_by_role("link", name=get_started_re).count()
-                        if (btn_cnt + link_cnt) > 0:
+                    for label, pat in button_patterns:
+                        if hasattr(sc, "get_by_role"):
+                            btn_cnt = await sc.get_by_role("button", name=pat).count()
+                            link_cnt = await sc.get_by_role("link", name=pat).count()
+                            if (btn_cnt + link_cnt) > 0:
+                                has_get_started = True
+                                matched_label, matched_re = label, pat
+                                break
+                        loc_probe = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=pat)
+                        if (await loc_probe.count()) > 0:
                             has_get_started = True
+                            matched_label, matched_re = label, pat
                             break
-                    loc_probe = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=get_started_re)
-                    if (await loc_probe.count()) > 0:
-                        has_get_started = True
+                    if has_get_started:
                         break
                 except Exception:
                     continue
@@ -882,40 +893,40 @@ class VeoSession:
             has_get_started = False
 
         if not has_get_started:
-            await self._push_debug_progress(page, "未发现 Get started 按钮/链接", level="info")
+            await self._push_debug_progress(page, "未发现 Get started / 使ってみる 按钮/链接", level="info")
             return False, has_get_started
-        await self._push_debug_progress(page, "发现 Get started 按钮/链接，准备点击", level="info")
+        await self._push_debug_progress(page, f"发现 {matched_label} 按钮/链接，准备点击", level="info")
 
         for sc in scopes:
             try:
                 scope_name = "page" if sc is page else "frame"
                 if hasattr(sc, "get_by_role"):
                     try:
-                        btn = sc.get_by_role("button", name=get_started_re)
+                        btn = sc.get_by_role("button", name=matched_re)
                         await btn.first.click(timeout=3000)
-                        await self._push_debug_progress(page, f"点击 Get started 成功（button/{scope_name}）", level="ok")
+                        await self._push_debug_progress(page, f"点击 {matched_label} 成功（button/{scope_name}）", level="ok")
                         return True, has_get_started
                     except Exception as e:
-                        await self._push_debug_progress(page, f"点击 Get started 失败（button/{scope_name}）：{_short_err_msg(e)}", level="warn")
+                        await self._push_debug_progress(page, f"点击 {matched_label} 失败（button/{scope_name}）：{_short_err_msg(e)}", level="warn")
                     try:
-                        link = sc.get_by_role("link", name=get_started_re)
+                        link = sc.get_by_role("link", name=matched_re)
                         await link.first.click(timeout=3000)
-                        await self._push_debug_progress(page, f"点击 Get started 成功（link/{scope_name}）", level="ok")
+                        await self._push_debug_progress(page, f"点击 {matched_label} 成功（link/{scope_name}）", level="ok")
                         return True, has_get_started
                     except Exception as e:
-                        await self._push_debug_progress(page, f"点击 Get started 失败（link/{scope_name}）：{_short_err_msg(e)}", level="warn")
+                        await self._push_debug_progress(page, f"点击 {matched_label} 失败（link/{scope_name}）：{_short_err_msg(e)}", level="warn")
 
                 try:
-                    loc2 = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=get_started_re)
+                    loc2 = sc.locator('button, a, [role="button"], [role="link"]').filter(has_text=matched_re)
                     await loc2.first.click(timeout=3000)
-                    await self._push_debug_progress(page, f"点击 Get started 成功（text fallback/{scope_name}）", level="ok")
+                    await self._push_debug_progress(page, f"点击 {matched_label} 成功（text fallback/{scope_name}）", level="ok")
                     return True, has_get_started
                 except Exception as e:
-                    await self._push_debug_progress(page, f"点击 Get started 失败（text fallback/{scope_name}）：{_short_err_msg(e)}", level="warn")
+                    await self._push_debug_progress(page, f"点击 {matched_label} 失败（text fallback/{scope_name}）：{_short_err_msg(e)}", level="warn")
             except Exception:
                 continue
 
-        await self._push_debug_progress(page, "点击 Get started 失败（全部策略）", level="error")
+        await self._push_debug_progress(page, f"点击 {matched_label} 失败（全部策略）", level="error")
         return False, has_get_started
 
     async def _click_google_gmail_account_row(self, p: Any) -> None:

@@ -97,6 +97,7 @@ CREATE_TASK_HANDLERS: Dict[str, Tuple[str, CreateTaskHandler]] = {
     "sora_plus_register": ("Sora注册Plus）", create_task__sora_gen_video),
     "veo_workflow": ("veo生成视频", create_task__sora_gen_video),
     "grok_workflow": ("Grok Imagine 视频（指纹浏览器：文生/多图参考；可选 mapping SSO 或 payload grok_access_token）", create_task__sora_gen_video),
+    "dreamina_workflow": ("Dreamina Seedance 视频生成（指纹浏览器：文生/图生；Cookie 鉴权）", create_task__sora_gen_video),
 }
 
 

@@ -49,6 +49,11 @@ from .veo_workflow_executor import (
     veo_fetch_next_update_cooldown_from_one_google_activity,
     veo_workflow,
 )
+from .jimeng_task_executor import (
+    DEFAULT_DREAMINA_TARGET,
+    get_or_create_dreamina_session,
+    dreamina_workflow,
+)
 
 
 @dataclass
@@ -127,6 +132,8 @@ def _remaining_quota_exclusive_floor_for_pick(
         return 30 if _veo_resolve_n_frames(payload or {}) > 1 else 10
     if code == "grok_workflow":
         return 30 if grok_ref_url_count(payload or {}) > 1 else 10
+    if code == "dreamina_workflow":
+        return 3
     return 3
 
 
@@ -333,7 +340,7 @@ class TaskService:
             if not code:
                 continue
             handler = (t.create_task_handler or "").strip()
-            if handler in ("veo_workflow", "grok_workflow"):
+            if handler in ("veo_workflow", "grok_workflow", "dreamina_workflow"):
                 hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
                 floor = 30 if hi else 10
             else:
@@ -446,6 +453,29 @@ class TaskService:
                     except Exception:
                         pass
                     return True
+                elif handler == "dreamina_workflow":
+                    tu = target_url or DEFAULT_DREAMINA_TARGET
+                    ds = get_or_create_dreamina_session(
+                        vendor=vendor,
+                        base_url=base_url,
+                        access_key=access_key,
+                        space_id=space_id,
+                        window_key=window_key,
+                    )
+                    ds.browser_headless = headless
+                    ds.idle_close_disabled = True
+                    ds._cancel_idle_close()
+                    await ds.ensure_open(
+                        args=ds.browser_open_args,
+                        force_open=ds.browser_force_open,
+                        headless=headless,
+                    )
+                    await ds._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
+                    try:
+                        await ds.disconnect_playwright_under_bring_lock()
+                    except Exception:
+                        pass
+                    return True
                 elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                     tu = target_url or "https://sora.chatgpt.com/drafts"
                     sess = get_or_create_sora_session(
@@ -541,6 +571,16 @@ class TaskService:
                 )
                 gs.idle_close_disabled = False
                 gs._schedule_idle_close()
+            elif handler == "dreamina_workflow":
+                ds = get_or_create_dreamina_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                ds.idle_close_disabled = False
+                ds._schedule_idle_close()
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                 sess = get_or_create_sora_session(
                     vendor=vendor,
@@ -595,6 +635,15 @@ class TaskService:
                     window_key=window_key,
                 )
                 await gs.close_and_drop()
+            elif handler == "dreamina_workflow":
+                ds = get_or_create_dreamina_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                await ds.close_and_drop()
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
                 sess = get_or_create_sora_session(
                     vendor=vendor,
@@ -688,6 +737,23 @@ class TaskService:
                 await window_pool_guard_unknown_handler_page(page, stage="window_pool", target_url=tu)
                 try:
                     await gs.disconnect_playwright_under_bring_lock()
+                except Exception:
+                    pass
+            elif handler == "dreamina_workflow":
+                tu = target_url or DEFAULT_DREAMINA_TARGET
+                ds = get_or_create_dreamina_session(
+                    vendor=vendor,
+                    base_url=base_url,
+                    access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                )
+                if not ds.idle_close_disabled:
+                    return
+                page = getattr(ds.pw_ctx, "page", None)
+                await window_pool_guard_unknown_handler_page(page, stage="window_pool", target_url=tu)
+                try:
+                    await ds.disconnect_playwright_under_bring_lock()
                 except Exception:
                     pass
             elif handler in ("sora_gen_video", "sora_wm_remove", "sora_plus_register"):
@@ -1647,6 +1713,27 @@ class TaskService:
                         ),
                         timeout=float(picked.timeout_seconds),
                     )
+                elif picked.create_task_handler == "dreamina_workflow":
+                    dreamina_payload = dict(payload or {})
+                    result = await asyncio.wait_for(
+                        dreamina_workflow(
+                            dreamina_payload,
+                            progress_cb,
+                            browser_vendor=picked.browser_vendor,
+                            browser_base_url=picked.browser_base_url,
+                            browser_access_key=picked.browser_access_key,
+                            space_id=picked.space_id,
+                            window_key=picked.window_key,
+                            timeout_seconds=float(picked.timeout_seconds),
+                            default_target_url=picked.default_target_url,
+                            headless=picked.headless,
+                            access_token=picked.sora_access_token,
+                            access_expires=picked.sora_access_expires,
+                            db=self.db,
+                            task_type_window_id=picked.mapping_id,
+                        ),
+                        timeout=float(picked.timeout_seconds),
+                    )
                 elif picked.create_task_handler == "sora_wm_remove":
                     result = await asyncio.wait_for(
                         sora_wm_remove(
@@ -1694,7 +1781,7 @@ class TaskService:
 
                 if picked.create_task_handler == "veo_workflow":
                     await _refresh_veo_balance_best_effort()
-                elif picked.create_task_handler == "grok_workflow":
+                elif picked.create_task_handler in ("grok_workflow", "dreamina_workflow"):
                     pass
                 elif picked.create_task_handler == "sora_gen_video":
                     await _refresh_sora_balance_best_effort()
@@ -1716,7 +1803,7 @@ class TaskService:
             except Exception as e:
                 if picked.create_task_handler == "veo_workflow":
                     await _refresh_veo_balance_best_effort()
-                elif picked.create_task_handler == "grok_workflow":
+                elif picked.create_task_handler in ("grok_workflow", "dreamina_workflow"):
                     pass
                 elif picked.create_task_handler == "sora_gen_video":
                     await _refresh_sora_balance_best_effort()
@@ -1845,6 +1932,15 @@ class TaskService:
                                     window_key=picked.window_key,
                                 )
                                 g_sess._schedule_idle_close()
+                            elif (picked.create_task_handler or "").strip() == "dreamina_workflow":
+                                d_sess = get_or_create_dreamina_session(
+                                    vendor=picked.browser_vendor,
+                                    base_url=picked.browser_base_url,
+                                    access_key=picked.browser_access_key,
+                                    space_id=picked.space_id,
+                                    window_key=picked.window_key,
+                                )
+                                d_sess._schedule_idle_close()
                             else:
                                 sess = get_or_create_sora_session(
                                     vendor=picked.browser_vendor,
