@@ -849,6 +849,11 @@ class VeoSession:
             return False, has_get_started
 
         try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        try:
             await page.wait_for_load_state("domcontentloaded", timeout=4000)
         except Exception:
             pass
