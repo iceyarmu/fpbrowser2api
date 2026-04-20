@@ -214,11 +214,52 @@ async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
     return credits
 
 
+async def refresh_quota__dreamina_credits(ctx: RefreshQuotaContext) -> int:
+    """Dreamina：通过指纹浏览器读取 commerce API 余额（total_credit）。"""
+    row = ctx.mapping_row or {}
+    vendor = str(row.get("vendor") or "roxy")
+    base_url = str(row.get("lan_addr") or "")
+    access_key = row.get("access_key")
+    space_id = str(row.get("space_id") or "")
+    window_key = str(row.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise RuntimeError("mapping 缺少 vendor/lan_addr/space_id/window_key，无法打开指纹窗口")
+
+    default_target_url = str(row.get("default_target_url") or "").strip()
+    target_url = default_target_url or "https://dreamina.capcut.com/ai-tool/video/generate"
+
+    from .jimeng_task_executor import (  # type: ignore
+        get_or_create_dreamina_session,
+        dreamina_fetch_credits_in_window,
+    )
+
+    sess = get_or_create_dreamina_session(
+        vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
+    )
+    if "_headless" in row:
+        sess.browser_headless = bool(row["_headless"])
+
+    info = await dreamina_fetch_credits_in_window(sess=sess, target_url=target_url)
+    total_credit = int(info.get("total_credit") or 0)
+
+    kwargs: Dict[str, Any] = {
+        "mapping_id": int(row.get("id") or 0),
+        "remaining_quota": total_credit,
+        "sora_remaining_count": total_credit,
+    }
+    cu = info.get("cooldown_until")
+    if cu:
+        kwargs["cooldown_until"] = str(cu)
+    await ctx.db.update_task_type_window(**kwargs)
+    return total_credit
+
+
 REFRESH_QUOTA_HANDLERS: Dict[str, Tuple[str, RefreshQuotaHandler]] = {
     "noop": ("默认：不刷新（保持当前值）", refresh_quota__noop),
     "reset_to_daily": ("示例：重置为 daily_quota", refresh_quota__reset_to_daily),
     "sora_nf_check": ("Sora：读取余额 backend/nf/check", refresh_quota__sora_nf_check),
     "veo_flow_credits": ("VEO/Labs：指纹窗口内读取 credits（aisandbox，需 AT）", refresh_quota__veo_flow_credits),
+    "dreamina_credits": ("Dreamina：指纹窗口内读取余额（commerce API，total_credit）", refresh_quota__dreamina_credits),
 }
 
 

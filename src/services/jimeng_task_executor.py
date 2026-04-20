@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import time
 from pathlib import Path
@@ -47,6 +48,8 @@ _MODEL_T2V_PRO = "seedance_1_0_pro_t2v_250428"
 _MODEL_I2V_PRO = "seedance_1_0_pro_i2v_250428"
 _MODEL_T2V_LITE = "seedance_1_0_lite_t2v_250428"
 _MODEL_I2V_LITE = "seedance_1_0_lite_i2v_250428"
+
+_DREAMINA_CREDITS_URL = "https://commerce.us.capcut.com/commerce/v1/benefits/user_credit_history"
 
 # 任务状态码
 _STATUS_SUCCESS = "success"
@@ -594,6 +597,50 @@ def get_or_create_dreamina_session(
     else:
         sess.pw_ctx.access_key = access_key
     return sess
+
+
+async def dreamina_fetch_credits_in_window(
+    sess: "DreaminaSession",
+    *,
+    target_url: str,
+) -> Dict[str, Any]:
+    """在指纹窗口内 fetch Dreamina 余额接口，返回 {total_credit, cooldown_until}。"""
+    log_file = sess._log_file
+
+    await sess.ensure_open(headless=sess.browser_headless)
+    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+
+    page = sess.pw_ctx.page
+    if page is None:
+        raise RuntimeError("Dreamina 页面未初始化（pw_ctx.page 为空）")
+
+    tx = await page_fetch_json(
+        page,
+        url=_DREAMINA_CREDITS_URL,
+        method="POST",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+        },
+        json_data={"count": 20, "cursor": "0"},
+        log_file=log_file,
+    )
+    obj = tx.get("_json") or {}
+    data = obj.get("data") or {}
+    total_credit = int(data.get("total_credit") or 0)
+
+    cooldown_until: Optional[str] = None
+    for rec in (data.get("records") or []):
+        if str(rec.get("trade_source") or "") == "FREEMIUM_RECEIVE":
+            life_end = rec.get("life_end")
+            if life_end:
+                cooldown_until = datetime.datetime.fromtimestamp(
+                    int(life_end), tz=datetime.timezone.utc
+                ).isoformat()
+            break
+
+    append_log(log_file, f"[dreamina] credits total_credit={total_credit} cooldown_until={cooldown_until!r}")
+    return {"total_credit": total_credit, "cooldown_until": cooldown_until}
 
 
 # ---- 主入口 ----
