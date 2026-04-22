@@ -586,6 +586,15 @@
         return null;
       }
 
+      function getProxySourceSpaceLabel(spacePk) {
+        const s = findSpaceByPk(spacePk);
+        if (!s) return `空间#${String(spacePk || "-")}`;
+        const parts = [];
+        if (s.name) parts.push(String(s.name));
+        if (s.space_id) parts.push(`spaceId:${String(s.space_id)}`);
+        return parts.join(" / ") || `空间#${String(spacePk || "-")}`;
+      }
+
       function updateSpaceWindowsInState(spacePk, windows) {
         const s = findSpaceByPk(spacePk);
         if (!s) return;
@@ -2564,6 +2573,7 @@
                       data-action="sort_proxies" data-sort_key="serial">序号${escapeHtml(getProxySortIndicator("serial"))}</button>
                   </th>
                   <th>地址</th>
+                  <th>来源空间</th>
                   <th>协议/IP类型</th>
                   <th>购买类型</th>
                   <th>最后IP</th>
@@ -2590,6 +2600,7 @@
                   <tr class="small2 ${Number(p.deleted || 0) === 1 ? "text-muted" : ""}">
                     <td class="mono">${escapeHtml(String(rankByProxyId.get(parseInt(String(p.proxy_id || 0), 10) || 0) || "-"))}</td>
                     <td class="mono">${escapeHtml(`${p.host || "-"}:${p.port || "-"}`)}</td>
+                    <td>${escapeHtml(getProxySourceSpaceLabel(p.space_pk))}</td>
                     <td class="mono">${escapeHtml([p.protocol, p.ip_type].filter(Boolean).join("/") || "-")}</td>
                     <td class="mono">${escapeHtml(p.purchase_type || "-")}</td>
                     <td class="mono">${escapeHtml(p.last_ip || "-")}</td>
@@ -2631,7 +2642,7 @@
                     <td>
                       <button class="btn btn-outline-primary btn-sm" type="button"
                         data-action="update_proxy_remark"
-                        data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                        data-space_pk="${escapeHtml(String(p.space_pk ?? proxiesState.spacePk ?? ""))}"
                         data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}"
                         data-proxy_host="${escapeHtml(String(p.host || ""))}"
                         data-proxy_port="${escapeHtml(String(p.port || ""))}"
@@ -2640,13 +2651,13 @@
                     <td>
                       <button class="btn btn-outline-primary btn-sm" type="button"
                         data-action="analyze_proxy_ip"
-                        data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                        data-space_pk="${escapeHtml(String(p.space_pk ?? proxiesState.spacePk ?? ""))}"
                         data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}">检测</button>
                     </td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
                         data-action="delete_proxy"
-                        data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                        data-space_pk="${escapeHtml(String(p.space_pk ?? proxiesState.spacePk ?? ""))}"
                         data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}"
                         data-binding_count="${escapeHtml(String(p.binding_count ?? 0))}"
                         ${Number(p.deleted || 0) === 1 ? "disabled" : ""}>${Number(p.deleted || 0) === 1 ? "已删除" : "删除"}</button>
