@@ -1025,6 +1025,14 @@ async def list_proxy_bindings(space_pk: int, token: str = Depends(verify_admin_t
     return {"success": True, "counts": await db.count_proxy_bindings(space_pk)}
 
 
+@router.get("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/bound-windows")
+async def list_proxy_bound_windows(space_pk: int, proxy_id: int, token: str = Depends(verify_admin_token)):
+    """返回该代理绑定的窗口详情（跨所有空间）。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    return {"success": True, "items": await db.list_proxy_bound_windows(proxy_id)}
+
+
 @router.get("/api/admin/spaces/{space_pk}/proxy-success-counts")
 async def list_proxy_success_counts(space_pk: int, token: str = Depends(verify_admin_token)):
     """返回代理成功任务数：proxy_id -> tasks 表中该 IP 的 completed 数。"""
@@ -3609,4 +3617,3 @@ async def clear_logs(token: str = Depends(verify_admin_token)):
         raise HTTPException(status_code=500, detail="db not initialized")
     rebuilt = await db.clear_request_logs()
     return {"success": True, "rebuilt": rebuilt}
-

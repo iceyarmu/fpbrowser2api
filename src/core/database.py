@@ -1884,6 +1884,76 @@ class Database:
                 out[int(pid)] = 0
         return out
 
+    async def list_proxy_bound_windows(self, proxy_id: int) -> List[Dict[str, Any]]:
+        """返回某个代理当前绑定的窗口详情（跨所有空间）。"""
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                WITH target_proxy AS (
+                  SELECT
+                    proxy_id,
+                    TRIM(COALESCE(last_ip, '')) AS key_last_ip,
+                    TRIM(COALESCE(host, '')) AS key_host,
+                    CASE
+                      WHEN TRIM(COALESCE(host, '')) <> '' AND TRIM(COALESCE(port, '')) <> ''
+                      THEN TRIM(COALESCE(host, '')) || ':' || TRIM(COALESCE(port, ''))
+                      ELSE ''
+                    END AS key_host_port
+                  FROM proxies
+                  WHERE proxy_id = ? AND deleted = 0
+                  ORDER BY updated_at DESC, id DESC
+                  LIMIT 1
+                )
+                SELECT
+                  w.id AS window_pk,
+                  w.window_key,
+                  w.window_sort_num,
+                  w.window_name,
+                  w.proxy_id,
+                  w.proxy_addr,
+                  w.proxy_country,
+                  w.window_status,
+                  s.id AS space_pk,
+                  s.name AS space_name,
+                  s.space_id AS browser_space_id,
+                  b.id AS browser_id,
+                  b.name AS browser_name,
+                  p.id AS project_id,
+                  p.name AS project_name,
+                  COUNT(DISTINCT ttw.id) AS task_type_binding_count,
+                  GROUP_CONCAT(DISTINCT tt.id) AS task_type_ids,
+                  GROUP_CONCAT(DISTINCT (tt.name || ' [' || tt.code || ']')) AS task_type_names
+                FROM target_proxy tp
+                JOIN windows w
+                  ON w.deleted = 0
+                 AND (
+                      COALESCE(w.proxy_id, 0) = tp.proxy_id
+                      OR (
+                        COALESCE(w.proxy_id, 0) = 0
+                        AND TRIM(COALESCE(w.proxy_addr, '')) <> ''
+                        AND (
+                             (tp.key_last_ip <> '' AND TRIM(COALESCE(w.proxy_addr, '')) = tp.key_last_ip)
+                          OR (tp.key_host <> '' AND TRIM(COALESCE(w.proxy_addr, '')) = tp.key_host)
+                          OR (tp.key_host_port <> '' AND TRIM(COALESCE(w.proxy_addr, '')) = tp.key_host_port)
+                        )
+                      )
+                 )
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                JOIN projects p ON p.id = b.project_id
+                LEFT JOIN task_type_windows ttw ON ttw.window_pk = w.id AND ttw.deleted = 0
+                LEFT JOIN task_types tt ON tt.id = ttw.task_type_id AND tt.deleted = 0
+                GROUP BY
+                  w.id, w.window_key, w.window_sort_num, w.window_name, w.proxy_id, w.proxy_addr, w.proxy_country, w.window_status,
+                  s.id, s.name, s.space_id, b.id, b.name, p.id, p.name
+                ORDER BY (w.window_sort_num IS NULL) ASC, w.window_sort_num ASC, w.window_name ASC, w.id ASC
+                """,
+                (int(proxy_id),),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
     async def count_proxy_task_stats(self, space_pk: int = 0) -> Dict[int, Dict[str, int]]:
         """统计全局：每个 proxy_id 的成功/失败任务数（按 tasks.window_ip 精确匹配，跨所有空间）。"""
         async with self._read_conn() as db:
@@ -5385,4 +5455,3 @@ class Database:
             row = await cur.fetchone()
             await cur.close()
             return dict(row) if row else {}
-

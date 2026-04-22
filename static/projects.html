@@ -246,6 +246,28 @@
       </div>
     </div>
 
+    <!-- Proxy Binding Windows Modal -->
+    <div class="modal fade" id="proxyBindingWindowsModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="proxyBindingWindowsModalTitle">代理绑定窗口详情</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <input class="form-control form-control-sm" id="proxyBindingWindowsFilter" placeholder="搜索：窗口号 / 名称 / 任务类型 / 项目 / 浏览器 / 空间" style="max-width: 520px;" />
+              <span class="text-muted small ms-auto" id="proxyBindingWindowsSummary"></span>
+            </div>
+            <div id="proxyBindingWindowsBody"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Accounts Modal -->
     <div class="modal fade" id="accountsModal" tabindex="-1">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -401,6 +423,7 @@
       const workspaceProjectsModal = new bootstrap.Modal("#workspaceProjectsModal");
       const proxiesModal = new bootstrap.Modal("#proxiesModal");
       const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
+      const proxyBindingWindowsModal = new bootstrap.Modal("#proxyBindingWindowsModal");
       const accountsModal = new bootstrap.Modal("#accountsModal");
       const accountRemarkModal = new bootstrap.Modal("#accountRemarkModal");
       const proxyRemarkModal = new bootstrap.Modal("#proxyRemarkModal");
@@ -408,6 +431,12 @@
       const deleteWindowModal = new bootstrap.Modal("#deleteWindowModal");
 
       let state = { projects: [], tree: [] };
+      const proxyBindingWindowsState = {
+        spacePk: 0,
+        proxyId: 0,
+        proxyIp: "",
+        items: [],
+      };
       let moveWindowState = {
         sourceSpacePk: 0,
         windowKey: "",
@@ -2105,8 +2134,12 @@
       const btnProxyTasksNext = document.getElementById("btnProxyTasksNext");
       const proxyTasksSummary = document.getElementById("proxyTasksSummary");
       const proxyTasksBody = document.getElementById("proxyTasksBody");
+      const proxyBindingWindowsModalTitle = document.getElementById("proxyBindingWindowsModalTitle");
+      const proxyBindingWindowsFilter = document.getElementById("proxyBindingWindowsFilter");
+      const proxyBindingWindowsSummary = document.getElementById("proxyBindingWindowsSummary");
+      const proxyBindingWindowsBody = document.getElementById("proxyBindingWindowsBody");
 
-      let proxiesState = { spacePk: null, proxies: [], loading: false };
+      let proxiesState = { spacePk: null, proxies: [], loading: false, sortKey: "serial", sortDir: "asc" };
       let proxyRemarkState = { spacePk: 0, proxyId: 0 };
       const proxiesCache = new Map(); // spacePk -> proxies[]
       const proxyTaskStatsCache = new Map(); // spacePk -> { proxy_id: { completed, failed } }
@@ -2239,6 +2272,23 @@
         const asnType = String(p.asn_type || "-").trim() || "-";
         const bind = Number(p.binding_count || 0) || 0;
         return `${ip}|${country}|安全:${risk}-${asnType}|绑定:${bind}`;
+      }
+
+      function getProxySortIndicator(key) {
+        if (proxiesState.sortKey !== key) return "";
+        return proxiesState.sortDir === "desc" ? " ↓" : " ↑";
+      }
+
+      function toggleProxySort(key) {
+        const k = String(key || "").trim();
+        if (!k) return;
+        if (proxiesState.sortKey === k) {
+          proxiesState.sortDir = proxiesState.sortDir === "asc" ? "desc" : "asc";
+        } else {
+          proxiesState.sortKey = k;
+          proxiesState.sortDir = k === "binding_count" ? "desc" : "asc";
+        }
+        renderProxies();
       }
 
       function getSelectedProxyDisplayIp(sel, items = null) {
@@ -2397,9 +2447,97 @@
         await loadProxyTasks();
       }
 
+      function renderProxyBindingWindows() {
+        const q = String(proxyBindingWindowsFilter?.value || "").trim().toLowerCase();
+        const items = Array.isArray(proxyBindingWindowsState.items) ? proxyBindingWindowsState.items : [];
+        const filtered = q ? items.filter(x => {
+          const hay = `${x.window_sort_num || ""} ${x.window_name || ""} ${x.task_type_names || ""} ${x.project_name || ""} ${x.browser_name || ""} ${x.space_name || ""} ${x.browser_space_id || ""}`.toLowerCase();
+          return hay.includes(q);
+        }) : items;
+        proxyBindingWindowsSummary.textContent = q ? `匹配 ${filtered.length}/${items.length}` : `共 ${items.length} 个绑定窗口`;
+        if (!filtered.length) {
+          proxyBindingWindowsBody.innerHTML = `<div class="text-muted small">暂无绑定窗口数据</div>`;
+          return;
+        }
+        proxyBindingWindowsBody.innerHTML = `
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr class="small2">
+                  <th>窗口号</th>
+                  <th>窗口名</th>
+                  <th>任务类型</th>
+                  <th>项目</th>
+                  <th>浏览器空间</th>
+                  <th>代理IP</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.map(x => `
+                  <tr class="small2">
+                    <td class="mono">#${escapeHtml(String(x.window_sort_num ?? x.window_pk ?? "-"))}</td>
+                    <td>
+                      <div class="fw-semibold">${escapeHtml(String(x.window_name || "-"))}</div>
+                      <div class="text-muted mono small">dirId: ${escapeHtml(String(x.window_key || "-"))}</div>
+                    </td>
+                    <td>${escapeHtml(String(x.task_type_names || "-"))}</td>
+                    <td>${escapeHtml(String(x.project_name || "-"))}</td>
+                    <td>
+                      <div>${escapeHtml(String(x.space_name || "-"))}</div>
+                      <div class="text-muted small">${escapeHtml(String(x.browser_name || "-"))} / spaceId: ${escapeHtml(String(x.browser_space_id || "-"))}</div>
+                    </td>
+                    <td class="mono">${escapeHtml(String(x.proxy_addr || "-"))}${x.proxy_country ? ` / ${escapeHtml(String(x.proxy_country))}` : ""}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      async function openProxyBindingWindowsModal(spacePk, proxyId) {
+        proxyBindingWindowsState.spacePk = Number(spacePk || 0);
+        proxyBindingWindowsState.proxyId = Number(proxyId || 0);
+        proxyBindingWindowsState.items = [];
+        proxyBindingWindowsFilter.value = "";
+        proxyBindingWindowsBody.innerHTML = `<div class="text-muted small">加载中...</div>`;
+        proxyBindingWindowsSummary.textContent = "加载中...";
+        const picked = normalizeProxies(proxiesCache.get(spacePk) || []).find(x => String(x.proxy_id) === String(proxyId));
+        const ip = resolveProxyTaskIp(picked) || `${picked?.host || "-"}:${picked?.port || "-"}`;
+        proxyBindingWindowsModalTitle.textContent = `代理绑定窗口详情 · proxy_id=${String(proxyId)} · IP=${ip || "-"}`;
+        proxyBindingWindowsModal.show();
+        try {
+          const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies/${proxyId}/bound-windows`);
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "读取代理绑定窗口失败");
+          proxyBindingWindowsState.items = Array.isArray(d.items) ? d.items : [];
+          renderProxyBindingWindows();
+        } catch (e) {
+          proxyBindingWindowsSummary.textContent = "读取失败";
+          proxyBindingWindowsBody.innerHTML = `<div class="text-muted small">读取失败：${escapeHtml(String(e.message || ""))}</div>`;
+        }
+      }
+
       function renderProxies() {
         const items = normalizeProxies(proxiesState.proxies || []);
-        const { ordered: sortedItems, rankByProxyId } = buildProxyDisplayOrder(items);
+        const { ordered: baseOrderedItems, rankByProxyId } = buildProxyDisplayOrder(items);
+        const sortedItems = [...baseOrderedItems];
+        const sortDirFactor = String(proxiesState.sortDir || "asc") === "desc" ? -1 : 1;
+        const serialOf = (p) => Number(rankByProxyId.get(parseInt(String(p?.proxy_id || 0), 10) || 0) || 0);
+        if (proxiesState.sortKey === "binding_count") {
+          sortedItems.sort((a, b) => {
+            const byBind = ((Number(a?.binding_count || 0) || 0) - (Number(b?.binding_count || 0) || 0)) * sortDirFactor;
+            if (byBind) return byBind;
+            return (serialOf(a) - serialOf(b)) * sortDirFactor;
+          });
+        } else if (proxiesState.sortKey === "serial") {
+          sortedItems.sort((a, b) => {
+            const bySerial = (serialOf(a) - serialOf(b)) * sortDirFactor;
+            if (bySerial) return bySerial;
+            return ((Number(a?.binding_count || 0) || 0) - (Number(b?.binding_count || 0) || 0)) * -1;
+          });
+        }
         const q = (proxiesFilter.value || "").trim().toLowerCase();
         let filtered = sortedItems;
         if (q) {
@@ -2421,7 +2559,10 @@
             <table class="table table-sm align-middle">
               <thead>
                 <tr class="small2">
-                  <th>序号</th>
+                  <th>
+                    <button class="btn btn-link btn-sm p-0 text-decoration-none align-baseline" type="button"
+                      data-action="sort_proxies" data-sort_key="serial">序号${escapeHtml(getProxySortIndicator("serial"))}</button>
+                  </th>
                   <th>地址</th>
                   <th>协议/IP类型</th>
                   <th>购买类型</th>
@@ -2429,7 +2570,10 @@
                   <th>国家</th>
                   <th>安全级别</th>
                   <th>IP类型</th>
-                  <th>绑定数</th>
+                  <th>
+                    <button class="btn btn-link btn-sm p-0 text-decoration-none align-baseline" type="button"
+                      data-action="sort_proxies" data-sort_key="binding_count">绑定数${escapeHtml(getProxySortIndicator("binding_count"))}</button>
+                  </th>
                   <th>任务统计</th>
                   <th>创建时间</th>
                   <th>过期时间</th>
@@ -2452,7 +2596,15 @@
                     <td>${escapeHtml(p.last_country || "-")}</td>
                     <td class="mono">${escapeHtml(p.risk_level || "-")}</td>
                     <td class="mono">${escapeHtml(p.asn_type || "-")}</td>
-                    <td class="mono">${escapeHtml(String(p.binding_count ?? 0))}</td>
+                    <td class="mono">
+                      <button class="btn btn-link p-0 text-decoration-none mono align-baseline"
+                        data-action="view_proxy_binding_windows"
+                        data-space_pk="${escapeHtml(String(proxiesState.spacePk ?? ""))}"
+                        data-proxy_id="${escapeHtml(String(p.proxy_id ?? ""))}"
+                        title="点击查看该代理绑定的窗口详情">
+                        ${escapeHtml(String(p.binding_count ?? 0))}
+                      </button>
+                    </td>
                     <td class="mono">
                       ${(() => {
                         const taskStat = getProxyTaskStat(proxiesState.spacePk, p.proxy_id);
@@ -2984,11 +3136,19 @@
         const btn = t && typeof t.closest === "function" ? t.closest("[data-action]") : null;
         if (!btn) return;
         const action = btn.getAttribute("data-action");
+        if (action === "sort_proxies") {
+          toggleProxySort(btn.getAttribute("data-sort_key") || "");
+          return;
+        }
         const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
         const proxyId = parseInt(btn.getAttribute("data-proxy_id") || "", 10);
         if (!spacePk || !proxyId) return;
         if (action === "view_proxy_tasks") {
           await openProxyTasksModal(spacePk, proxyId);
+          return;
+        }
+        if (action === "view_proxy_binding_windows") {
+          await openProxyBindingWindowsModal(spacePk, proxyId);
           return;
         }
         if (action === "analyze_proxy_ip") {
@@ -3017,6 +3177,7 @@
           proxyRemarkModal.hide();
         });
       }
+      proxyBindingWindowsFilter.addEventListener("input", () => renderProxyBindingWindows());
 
       // 懒加载：用户点击 select 时才填充全部选项，避免初始加载 1000×N 个 option
       treeContainer.addEventListener("mousedown", (ev) => {
