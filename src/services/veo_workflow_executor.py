@@ -4205,14 +4205,36 @@ async def veo_workflow(
     renew_margin = max(0.0, min(3600.0, renew_margin))
 
     at = str(access_token or "").strip() or None
+    exp_db = str(access_expires or "").strip() or None
+    if db is not None and task_type_window_id:
+        try:
+            mid = int(task_type_window_id)
+            if mid > 0:
+                row = await db.get_task_type_window_context(mid)
+                if row:
+                    t2 = str(row.get("sora_access_token") or "").strip() or None
+                    e2 = str(row.get("sora_access_expires") or "").strip() or None
+                    if t2:
+                        at, exp_db = t2, e2
+        except Exception as e:
+            append_log(log_file, f"[veo] reload access_token from DB failed (use call args): {e}")
 
-    try:
-        tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
-        fetched_token_in_window = True
-        at = str((tok_info or {}).get("access_token") or "").strip() or None
-    except Exception as e:
-        append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
-        at = None
+    tok_info: Optional[Dict[str, Any]] = None
+    fetched_token_in_window = False
+    if _veo_cached_access_still_valid(at, exp_db, margin_seconds=renew_margin):
+        append_log(
+            log_file,
+            f"[veo] reuse mapping access_token (expires ok, margin_s={renew_margin:.0f}, skip window fetch)",
+        )
+        tok_info = {"access_token": at, "expires": exp_db or None}
+    else:
+        try:
+            tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
+            fetched_token_in_window = True
+            at = str((tok_info or {}).get("access_token") or "").strip() or None
+        except Exception as e:
+            append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
+            at = None
     if not at:
         raise NonPenalizedTaskError(
             "缺少可用的 access_token：请在任务窗口映射中配置 Labs access_token，或确保指纹窗口已登录并可取得凭证",

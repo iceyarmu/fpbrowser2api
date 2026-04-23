@@ -199,7 +199,7 @@ class FPBrowserClient:
             args.append("--autoplay-policy=user-gesture-required")
             args.append("--blink-settings=imagesEnabled=false")
         else:
-            if not pure_mode:
+            if pure_mode:
                 pass;
             else:
                 ##args.append("--disable-software-rasterizer")
