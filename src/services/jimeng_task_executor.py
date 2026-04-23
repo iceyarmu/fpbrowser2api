@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import random
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from .playwright_broswer_context import (
     acquire_browser_open_slot,
@@ -38,8 +40,9 @@ from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 # ---- API 端点（逆向工程，如有变化请更新） ----
 _DREAMINA_BASE = "https://dreamina.capcut.com"
-_DREAMINA_SUBMIT_API = f"{_DREAMINA_BASE}/api/v1/video/generate"
+_DREAMINA_GENERATE_API = "https://dreamina-api.us.capcut.com/mweb/v1/aigc_draft/generate"
 _DREAMINA_QUERY_API_TMPL = f"{_DREAMINA_BASE}/api/v1/task/{{task_id}}"
+_DREAMINA_WEBMSSDK_URL = "https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/webmssdk_cctbc/2.0.0.4/webmssdk.js"
 
 DEFAULT_DREAMINA_TARGET = "https://dreamina.capcut.com/ai-tool/video/generate"
 
@@ -165,6 +168,284 @@ def _dreamina_headers() -> Dict[str, str]:
     }
 
 
+def _dreamina_resolve_resolution(payload: Dict[str, Any]) -> str:
+    raw = _one_str(payload.get("resolution") or payload.get("video_resolution") or payload.get("output_resolution"))
+    s = raw.lower().replace(" ", "")
+    if s in ("1080p", "fhd", "fullhd", "1920x1080"):
+        return "1080p"
+    return "720p"
+
+
+def _dreamina_build_scene_options(*, model_name: str, resolution: str, duration: int, has_image: bool) -> str:
+    return json.dumps(
+        [
+            {
+                "type": "video",
+                "scene": "BasicVideoGenerateButton",
+                "resolution": resolution,
+                "modelReqKey": model_name,
+                "videoDuration": int(duration),
+                "inputVideoDuration": 0,
+                "reportParams": {
+                    "enterSource": "generate",
+                    "vipSource": "generate",
+                    "extraVipFunctionKey": f"{model_name}-{resolution}",
+                    "useVipFunctionDetailsReporterHoc": True,
+                },
+                "materialTypes": ["image"] if has_image else [],
+            }
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _dreamina_build_video_input(*, prompt: str, duration: int, first_image_url: Optional[str]) -> Dict[str, Any]:
+    item: Dict[str, Any] = {
+        "type": "",
+        "id": str(uuid.uuid4()),
+        "min_version": "3.0.5",
+        "prompt": prompt,
+        "video_mode": 2,
+        "fps": 24,
+        "duration_ms": int(duration) * 1000,
+        "idip_meta_list": [],
+    }
+    if first_image_url:
+        item["video_mode"] = 3
+        item["idip_meta_list"] = [{"type": "image", "id": str(uuid.uuid4()), "url": first_image_url}]
+    return item
+
+
+def _dreamina_build_submit_body(
+    *,
+    prompt: str,
+    model_name: str,
+    aspect_ratio: str,
+    duration: int,
+    resolution: str,
+    first_image_url: Optional[str],
+    negative_prompt: str,
+    workspace_id: int = 0,
+) -> Dict[str, Any]:
+    submit_id = str(uuid.uuid4())
+    main_component_id = str(uuid.uuid4())
+    scene_options = _dreamina_build_scene_options(
+        model_name=model_name,
+        resolution=resolution,
+        duration=duration,
+        has_image=bool(first_image_url),
+    )
+    metrics_extra_dict = {
+        "isDefaultSeed": 1,
+        "originSubmitId": submit_id,
+        "isRegenerate": False,
+        "enterFrom": "click",
+        "position": "page_bottom_box",
+        "functionMode": "omni_reference",
+        "sceneOptions": scene_options,
+    }
+    text_to_video_params: Dict[str, Any] = {
+        "type": "",
+        "id": str(uuid.uuid4()),
+        "video_gen_inputs": [
+            _dreamina_build_video_input(prompt=prompt, duration=duration, first_image_url=first_image_url)
+        ],
+        "video_aspect_ratio": aspect_ratio,
+        "seed": random.randint(1, 2**31 - 1),
+        "model_req_key": model_name,
+        "priority": 0,
+    }
+    if negative_prompt:
+        text_to_video_params["negative_prompt"] = negative_prompt
+
+    draft_content = {
+        "type": "draft",
+        "id": str(uuid.uuid4()),
+        "min_version": "3.0.5",
+        "min_features": [],
+        "is_from_tsn": True,
+        "version": "3.3.14",
+        "main_component_id": main_component_id,
+        "component_list": [
+            {
+                "type": "video_base_component",
+                "id": main_component_id,
+                "min_version": "1.0.0",
+                "aigc_mode": "workbench",
+                "metadata": {
+                    "type": "",
+                    "id": str(uuid.uuid4()),
+                    "created_platform": 3,
+                    "created_platform_version": "",
+                    "created_time_in_ms": str(int(time.time() * 1000)),
+                    "created_did": "",
+                },
+                "generate_type": "gen_video",
+                "abilities": {
+                    "type": "",
+                    "id": str(uuid.uuid4()),
+                    "gen_video": {
+                        "type": "",
+                        "id": str(uuid.uuid4()),
+                        "text_to_video_params": text_to_video_params,
+                        "video_task_extra": json.dumps(metrics_extra_dict, ensure_ascii=False, separators=(",", ":")),
+                    },
+                },
+                "process_type": 1,
+            }
+        ],
+    }
+    benefit_type = "seedance_20_fast_720p_output" if resolution == "720p" else f"seedance_20_fast_{resolution}_output"
+    return {
+        "extend": {
+            "root_model": model_name,
+            "m_video_commerce_info": {
+                "benefit_type": benefit_type,
+                "resource_id": "generate_video",
+                "resource_id_type": "str",
+                "resource_sub_type": "aigc",
+            },
+            "workspace_id": int(workspace_id),
+            "m_video_commerce_info_list": [
+                {
+                    "benefit_type": benefit_type,
+                    "resource_id": "generate_video",
+                    "resource_id_type": "str",
+                    "resource_sub_type": "aigc",
+                }
+            ],
+        },
+        "submit_id": submit_id,
+        "metrics_extra": json.dumps(metrics_extra_dict, ensure_ascii=False, separators=(",", ":")),
+        "draft_content": json.dumps(draft_content, ensure_ascii=False, separators=(",", ":")),
+        "http_common_info": {"aid": 513641},
+    }
+
+
+async def _dreamina_get_cookie_value(page: Any, name: str) -> Optional[str]:
+    ctx = getattr(page, "context", None)
+    if ctx is None:
+        return None
+    try:
+        cookies = await ctx.cookies()
+    except Exception:
+        return None
+    for item in cookies or []:
+        if str(item.get("name") or "") == name:
+            val = _one_str(item.get("value"))
+            if val:
+                return val
+    return None
+
+
+async def _dreamina_ensure_webmssdk(page: Any) -> None:
+    await page.evaluate(
+        """async (sdkUrl) => {
+          const ready = () => !!(window.byted_acrawler && typeof window.byted_acrawler.frontierSign === 'function');
+          if (ready()) return;
+          await new Promise((resolve, reject) => {
+            const existed = Array.from(document.scripts || []).find((s) => s.src === sdkUrl);
+            if (existed) {
+              existed.addEventListener('load', () => resolve(), { once: true });
+              existed.addEventListener('error', () => reject(new Error('webmssdk load error')), { once: true });
+              return;
+            }
+            const s = document.createElement('script');
+            s.src = sdkUrl;
+            s.async = true;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error('webmssdk load error'));
+            (document.head || document.documentElement).appendChild(s);
+          });
+          if (!ready()) throw new Error('window.byted_acrawler.frontierSign unavailable');
+        }""",
+        _DREAMINA_WEBMSSDK_URL,
+    )
+
+
+async def _dreamina_frontier_sign(page: Any, url: str) -> Dict[str, str]:
+    await _dreamina_ensure_webmssdk(page)
+    res = await page.evaluate(
+        """async (u) => {
+          const fn = window.byted_acrawler && window.byted_acrawler.frontierSign;
+          if (typeof fn !== 'function') throw new Error('window.byted_acrawler.frontierSign unavailable');
+          return await fn(u);
+        }""",
+        url,
+    )
+    return dict(res or {})
+
+
+async def _dreamina_build_generate_url(page: Any, *, log_file: Path) -> str:
+    ms_token = await _dreamina_get_cookie_value(page, "msToken")
+    if not ms_token:
+        raise NonPenalizedTaskError("Dreamina 提交失败：未在浏览器 Cookie 中读取到 msToken", status_code=401)
+    query = {
+        "aid": 513641,
+        "device_platform": "web",
+        "region": "US",
+        "da_version": "3.3.14",
+        "os": "mac",
+        "web_component_open_flag": 0,
+        "commerce_with_input_video": 1,
+        "web_version": "7.5.0",
+        "aigc_features": "app_lip_sync",
+        "msToken": ms_token,
+    }
+    unsigned_url = f"{_DREAMINA_GENERATE_API}?{urlencode(query)}"
+    sign_obj = await _dreamina_frontier_sign(page, unsigned_url)
+    x_bogus = _one_str(sign_obj.get("X-Bogus") or sign_obj.get("x-bogus"))
+    if not x_bogus:
+        raise NonPenalizedTaskError("Dreamina 提交失败：frontierSign 未返回 X-Bogus", status_code=502)
+    query["X-Bogus"] = x_bogus
+    final_url = f"{_DREAMINA_GENERATE_API}?{urlencode(query)}"
+    append_log(log_file, f"[dreamina] generate_url prepared msToken(cookie)+X-Bogus(frontierSign): {safe_trim(final_url, 260)!r}")
+    return final_url
+
+
+async def _dreamina_post_generate(page: Any, *, url: str, body: Dict[str, Any], log_file: Path) -> Dict[str, Any]:
+    captured_headers: Dict[str, Any] = {}
+
+    async def _handler(route, request):
+        nonlocal captured_headers
+        try:
+            captured_headers = dict(await request.all_headers())
+        except Exception:
+            captured_headers = dict(getattr(request, "headers", {}) or {})
+        await route.continue_()
+
+    routed = False
+    try:
+        await page.route("**/mweb/v1/aigc_draft/generate?*", _handler)
+        routed = True
+    except Exception as e:
+        append_log(log_file, f"[dreamina] request header capture unavailable: {e}")
+
+    try:
+        tx = await page_fetch_json(
+            page,
+            url=url,
+            method="POST",
+            headers=_dreamina_headers(),
+            json_data=body,
+            log_file=log_file,
+        )
+    finally:
+        if routed:
+            try:
+                await page.unroute("**/mweb/v1/aigc_draft/generate?*", _handler)
+            except Exception:
+                pass
+
+    tx["_captured_request_headers"] = captured_headers
+    append_log(
+        log_file,
+        f"[dreamina] captured request header X-Gnarly={safe_trim(_one_str(captured_headers.get('x-gnarly') or captured_headers.get('X-Gnarly')), 160)!r}",
+    )
+    return tx
+
+
 async def _dreamina_submit_video(
     page: Any,
     *,
@@ -175,26 +456,23 @@ async def _dreamina_submit_video(
     first_image_url: Optional[str],
     negative_prompt: str,
     log_file: Path,
-) -> str:
-    """提交视频生成任务，返回 task_id。"""
-    body: Dict[str, Any] = {
-        "prompt": prompt,
-        "model_name": model_name,
-        "aspect_ratio": aspect_ratio,
-        "duration": duration,
-        "negative_prompt": negative_prompt,
-    }
-    if first_image_url:
-        body["first_frame_image"] = first_image_url
-
-    tx = await page_fetch_json(
-        page,
-        url=_DREAMINA_SUBMIT_API,
-        method="POST",
-        headers=_dreamina_headers(),
-        json_data=body,
-        log_file=log_file,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """提交视频生成任务，返回 submit 结果及调试信息。"""
+    p = payload or {}
+    resolution = _dreamina_resolve_resolution(p)
+    body = _dreamina_build_submit_body(
+        prompt=prompt,
+        model_name=model_name,
+        aspect_ratio=aspect_ratio,
+        duration=duration,
+        resolution=resolution,
+        first_image_url=first_image_url,
+        negative_prompt=negative_prompt,
+        workspace_id=int(p.get("workspace_id") or 0),
     )
+    url = await _dreamina_build_generate_url(page, log_file=log_file)
+    tx = await _dreamina_post_generate(page, url=url, body=body, log_file=log_file)
     obj = tx.get("_json")
     if not isinstance(obj, dict):
         raise NonPenalizedTaskError(
@@ -202,20 +480,22 @@ async def _dreamina_submit_video(
             status_code=502,
         )
     code = obj.get("code")
-    if code != 0:
+    if code not in (0, None):
         msg = _one_str(obj.get("message") or obj.get("msg") or "")
         raise NonPenalizedTaskError(
             f"Dreamina 提交失败 code={code} msg={safe_trim(msg, 200)} body={safe_trim(json.dumps(obj, ensure_ascii=False), 400)}",
             status_code=502,
         )
     data = obj.get("data") or {}
-    task_id = _one_str(data.get("task_id") or data.get("taskId") or data.get("id"))
-    if not task_id:
-        raise NonPenalizedTaskError(
-            f"Dreamina 提交失败：无 task_id body={safe_trim(json.dumps(obj, ensure_ascii=False), 400)}",
-            status_code=502,
-        )
-    return task_id
+    task_id = _one_str(data.get("task_id") or data.get("taskId") or data.get("id") or data.get("draft_id") or data.get("draftId"))
+    return {
+        "task_id": task_id,
+        "draft_id": _one_str(data.get("draft_id") or data.get("draftId") or data.get("id")),
+        "resolution": resolution,
+        "response": obj,
+        "request_url": url,
+        "x_gnarly": _one_str((tx.get("_captured_request_headers") or {}).get("x-gnarly") or (tx.get("_captured_request_headers") or {}).get("X-Gnarly")),
+    }
 
 
 async def _dreamina_query_task(
@@ -744,7 +1024,7 @@ async def dreamina_workflow(
 
             # 提交任务
             await progress_cb(10, {"stage": "submit", "model_name": model_name})
-            task_id = await _dreamina_submit_video(
+            submit_result = await _dreamina_submit_video(
                 page,
                 prompt=prompt,
                 model_name=model_name,
@@ -753,9 +1033,23 @@ async def dreamina_workflow(
                 first_image_url=first_image_url,
                 negative_prompt=negative_prompt,
                 log_file=log_file,
+                payload=p,
             )
-            append_log(log_file, f"[dreamina] submitted task_id={safe_trim(task_id, 64)!r}")
-            await progress_cb(20, {"stage": "submitted", "task_id": task_id})
+            task_id = _one_str(submit_result.get("task_id"))
+            resolution = _one_str(submit_result.get("resolution"))
+            append_log(
+                log_file,
+                f"[dreamina] submitted task_id={safe_trim(task_id, 64)!r} x_gnarly={safe_trim(_one_str(submit_result.get('x_gnarly')), 120)!r}",
+            )
+            await progress_cb(
+                20,
+                {
+                    "stage": "submitted",
+                    "task_id": task_id,
+                    "resolution": resolution,
+                    "x_gnarly": submit_result.get("x_gnarly"),
+                },
+            )
 
             # 轮询
             poll_timeout = max(30.0, timeout_seconds - (time.time() - started) - 5.0)
@@ -781,7 +1075,11 @@ async def dreamina_workflow(
                 "model_name": model_name,
                 "aspect_ratio": aspect_ratio,
                 "duration": duration,
+                "resolution": resolution,
                 "task_id": task_id,
+                "draft_id": submit_result.get("draft_id"),
+                "x_gnarly": submit_result.get("x_gnarly"),
+                "submit_response": submit_result.get("response"),
                 "elapsed_ms": elapsed_ms,
             }
         finally:
