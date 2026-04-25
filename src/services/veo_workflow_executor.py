@@ -2542,13 +2542,13 @@ async def _veo_poll_operations_until_video_url(
                 raise NonPenalizedTaskError(
                     "生成音频侵权：平台判定音频涉及版权问题已拦截，无法完成视频生成。任务已标记为违规，请修改与音乐、配音或音效相关的描述后重试。",
                     status_code=400,
-                    content_violation=True,
+                    content_violation=False,
                 )
             if _veo_video_op_error_indicates_prominent_people_filter(message=msg, code=code):
                 raise NonPenalizedTaskError(
                     "名人/肖像限制：平台判定内容涉及可识别人物或名人形象已拦截，无法完成视频生成。任务已标记为违规，请避免指定真实人物、名人或易联想到特定个人的描述与参考图后重试。",
                     status_code=400,
-                    content_violation=True,
+                    content_violation=False,
                 )
             raise NonPenalizedTaskError(f"视频生成失败: {msg}" + (f" ({code})" if code else ""), status_code=502)
 
@@ -4553,7 +4553,7 @@ async def veo_workflow(
 
             st = tx.get("status")
             if st is not None and int(st) >= 400:
-                _veo_raise_if_unsafe_generation(tx, status_code=int(st))
+                #_veo_raise_if_unsafe_generation(tx, status_code=int(st))
                 body = safe_trim(str(tx.get("response_body") or ""), 500)
                 last_submit_err = f"HTTP {st} {body}"
                 append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
