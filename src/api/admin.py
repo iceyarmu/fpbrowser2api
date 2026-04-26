@@ -338,6 +338,10 @@ class UpdateAccountRemarkRequest(BaseModel):
     platform_remarks: Optional[str] = Field(default="", description="本地备注")
 
 
+class UpdateAccountPasswordRequest(BaseModel):
+    platform_password: Optional[str] = Field(default="", description="????")
+
+
 class SyncAccountsRequest(BaseModel):
     keep_local_deleted: bool = Field(default=True, description="同步时保留本地已删除账号状态")
 
@@ -1459,6 +1463,38 @@ async def update_space_account_remark(
     if affected <= 0:
         raise HTTPException(status_code=404, detail="account not found")
     return {"success": True, "message": "本地备注已更新", "affected": int(affected)}
+
+
+@router.post("/api/admin/spaces/{space_pk}/accounts/{account_id}/password")
+async def update_space_account_password(
+    space_pk: int,
+    account_id: int,
+    req: UpdateAccountPasswordRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """????????????????????"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    if int(account_id) <= 0:
+        raise HTTPException(status_code=400, detail="invalid account_id")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+
+    row = await db.get_platform_account(space_pk=space_pk, account_id=int(account_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="account not found")
+
+    password = str(req.platform_password or "").strip()
+    affected = await db.update_platform_account_password(
+        space_pk=space_pk,
+        account_id=int(account_id),
+        password=password,
+    )
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="account not found")
+    return {"success": True, "message": "???????", "affected": int(affected)}
 
 
 @router.post("/api/admin/spaces/{space_pk}/windows/{window_key}/set-account")

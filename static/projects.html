@@ -322,6 +322,28 @@
       </div>
     </div>
 
+    <!-- Account Password Modal -->
+    <div class="modal fade" id="accountPasswordModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="accountPasswordModalTitle">修改账号密码</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="text-muted small mb-2" id="accountPasswordMeta">-</div>
+            <label class="form-label">新密码</label>
+            <input class="form-control form-control-sm mono" id="accountPasswordInput" type="text" placeholder="请输入新密码" autocomplete="off" />
+            <div class="form-text">仅更新本地数据库密码，不会同步到指纹浏览器。</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button class="btn btn-primary" id="btnSaveAccountPassword">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Proxy Remark Modal -->
     <div class="modal fade" id="proxyRemarkModal" tabindex="-1">
       <div class="modal-dialog">
@@ -426,6 +448,7 @@
       const proxyBindingWindowsModal = new bootstrap.Modal("#proxyBindingWindowsModal");
       const accountsModal = new bootstrap.Modal("#accountsModal");
       const accountRemarkModal = new bootstrap.Modal("#accountRemarkModal");
+      const accountPasswordModal = new bootstrap.Modal("#accountPasswordModal");
       const proxyRemarkModal = new bootstrap.Modal("#proxyRemarkModal");
       const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
       const deleteWindowModal = new bootstrap.Modal("#deleteWindowModal");
@@ -1683,9 +1706,14 @@
       const accountRemarkMeta = document.getElementById("accountRemarkMeta");
       const accountRemarkInput = document.getElementById("accountRemarkInput");
       const btnSaveAccountRemark = document.getElementById("btnSaveAccountRemark");
+      const accountPasswordModalTitle = document.getElementById("accountPasswordModalTitle");
+      const accountPasswordMeta = document.getElementById("accountPasswordMeta");
+      const accountPasswordInput = document.getElementById("accountPasswordInput");
+      const btnSaveAccountPassword = document.getElementById("btnSaveAccountPassword");
 
       let accountsState = { spacePk: null, accounts: [], loading: false };
       let accountRemarkState = { spacePk: 0, accountId: 0 };
+      let accountPasswordState = { spacePk: 0, accountId: 0 };
       const accountsCache = new Map(); // spacePk -> accounts[]
 
       function setAccountsLoading(loading) {
@@ -1784,13 +1812,22 @@
                     </td>
                     <td class="mono">${escapeHtml(a.binding_windows || "-")}</td>
                     <td>
-                      <button class="btn btn-outline-primary btn-sm" type="button"
-                        data-action="update_account_remark"
-                        data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
-                        data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
-                        data-platform_username="${escapeHtml(a.platform_username || "")}"
-                        data-platform_url="${escapeHtml(a.platform_url || "")}"
-                        data-platform_remarks="${escapeHtml(a.platform_remarks || "")}">修改</button>
+                      <div class="btn-group btn-group-sm" role="group">
+                        <button class="btn btn-outline-primary" type="button"
+                          data-action="update_account_password"
+                          data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
+                          data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
+                          data-platform_username="${escapeHtml(a.platform_username || "")}"
+                          data-platform_url="${escapeHtml(a.platform_url || "")}"
+                          data-platform_password="${escapeHtml(a.platform_password || "")}">密码</button>
+                        <button class="btn btn-outline-secondary" type="button"
+                          data-action="update_account_remark"
+                          data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
+                          data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
+                          data-platform_username="${escapeHtml(a.platform_username || "")}"
+                          data-platform_url="${escapeHtml(a.platform_url || "")}"
+                          data-platform_remarks="${escapeHtml(a.platform_remarks || "")}">备注</button>
+                      </div>
                     </td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
@@ -2071,6 +2108,49 @@
         accountRemarkModal.show();
       }
 
+      async function updateAccountPassword(spacePk, accountId, password, fromEl) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const aid = parseInt(String(accountId || "0"), 10) || 0;
+        if (!spk || !aid) return;
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "修改中" });
+          const r = await adminFetch(`/api/admin/spaces/${spk}/accounts/${aid}/password`, {
+            method: "POST",
+            body: JSON.stringify({ platform_password: String(password || "").trim() }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "修改密码失败");
+          toast(d.message || "密码已更新", "success");
+          await refreshAccounts(accountsState.spacePk);
+          fillAccountSelects(spk);
+        } catch (e) {
+          toast(e.message || "修改密码失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
+      function openAccountPasswordModal({ spacePk, accountId, username, url, password }) {
+        accountPasswordState.spacePk = parseInt(String(spacePk || "0"), 10) || 0;
+        accountPasswordState.accountId = parseInt(String(accountId || "0"), 10) || 0;
+        if (!accountPasswordState.spacePk || !accountPasswordState.accountId) return;
+        if (accountPasswordModalTitle) {
+          accountPasswordModalTitle.textContent = `修改账号密码 · #${accountPasswordState.accountId}`;
+        }
+        if (accountPasswordMeta) {
+          accountPasswordMeta.textContent = `账号：${String(username || "-").trim() || "-"} | URL：${String(url || "-").trim() || "-"}`;
+        }
+        if (accountPasswordInput) {
+          accountPasswordInput.value = String(password || "");
+          setTimeout(() => {
+            try { accountPasswordInput.focus(); accountPasswordInput.select(); } catch (_e) {}
+          }, 0);
+        }
+        accountPasswordModal.show();
+      }
+
       if (btnRefreshAccounts) {
         btnRefreshAccounts.addEventListener("click", async () => {
           if (!accountsState.spacePk) return;
@@ -2103,6 +2183,15 @@
             await deleteAccount(spacePk, accountId, bindingCount, btn);
             return;
           }
+          if (action === "update_account_password") {
+            const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
+            const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
+            const username = btn.getAttribute("data-platform_username") || "";
+            const url = btn.getAttribute("data-platform_url") || "";
+            const password = btn.getAttribute("data-platform_password") || "";
+            openAccountPasswordModal({ spacePk, accountId, username, url, password });
+            return;
+          }
           if (action === "update_account_remark") {
             const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
             const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
@@ -2121,6 +2210,16 @@
           if (!spacePk || !accountId) return;
           await updateAccountRemark(spacePk, accountId, remark, btnSaveAccountRemark);
           accountRemarkModal.hide();
+        });
+      }
+      if (btnSaveAccountPassword) {
+        btnSaveAccountPassword.addEventListener("click", async () => {
+          const spacePk = parseInt(String(accountPasswordState.spacePk || "0"), 10) || 0;
+          const accountId = parseInt(String(accountPasswordState.accountId || "0"), 10) || 0;
+          const password = accountPasswordInput ? String(accountPasswordInput.value || "").trim() : "";
+          if (!spacePk || !accountId) return;
+          await updateAccountPassword(spacePk, accountId, password, btnSaveAccountPassword);
+          accountPasswordModal.hide();
         });
       }
 

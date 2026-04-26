@@ -2636,6 +2636,22 @@ class Database:
             except Exception:
                 return 0
 
+    async def update_platform_account_password(self, *, space_pk: int, account_id: int, password: str) -> int:
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                """
+                UPDATE platform_accounts
+                SET platform_password = ?, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND account_id = ? AND deleted = 0
+                """,
+                (str(password or "").strip(), int(space_pk), int(account_id)),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
     async def list_account_bindings(self, space_pk: int = 0) -> Dict[int, Dict[str, Any]]:
         """返回全局账号绑定信息：account_id -> {count, windows}（跨所有空间）。"""
         async with self._read_conn() as db:
