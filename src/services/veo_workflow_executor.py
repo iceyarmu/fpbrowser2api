@@ -103,9 +103,9 @@ def _veo_raise_if_unsafe_generation(tx: Optional[Dict[str, Any]], *, status_code
     body = safe_trim(str((tx or {}).get("response_body") or ""), 500)
     code = int(status_code or (tx or {}).get("status") or 400)
     raise NonPenalizedTaskError(
-        f"VEO 生成失败，内容包含违规信息（PUBLIC_ERROR_UNSAFE_GENERATION）：{body}",
+        f"VEO生成失败，内容包含（PUBLIC_ERROR_UNSAFE_GENERATION）：{body}",
         status_code=code,
-        content_violation=True,
+        content_violation=False,
     )
 
 
