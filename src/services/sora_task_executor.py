@@ -474,7 +474,9 @@ def _prepare_first_frame_image_for_upload(
     limit_bytes = min(int(max_bytes), int(target_bytes) if int(target_bytes) > 0 else int(max_bytes))
 
     _NATIVE_FORMATS = {"JPEG", "JPG", "PNG"}
-    _CONVERTIBLE_FORMATS = {"WEBP", "BMP", "TIFF", "GIF"}
+    # MPO（Multi-Picture Object）本质上是带 MPF 扩展的 JPEG，很多手机/相机会把它保存成 .jpg。
+    # Pillow 会按文件内容识别为 "MPO"；上传前重编码为普通 JPEG，剥离多帧/MPF 数据。
+    _CONVERTIBLE_FORMATS = {"WEBP", "BMP", "TIFF", "GIF", "MPO"}
     _ALL_SUPPORTED = _NATIVE_FORMATS | _CONVERTIBLE_FORMATS
 
     try:
@@ -502,6 +504,11 @@ def _prepare_first_frame_image_for_upload(
                 )
                 # 对超大 JPEG 先在解码阶段降采样，避免占用过高内存。
                 src.draft("RGB", draft_size)
+            if source_format == "MPO":
+                try:
+                    src.seek(0)
+                except Exception:
+                    pass
             src.load()
             base_img = ImageOps.exif_transpose(src)
             if (base_img.size[0] * base_img.size[1]) > soft_max_pixels:
@@ -568,8 +575,9 @@ def _prepare_first_frame_image_for_upload(
             current = current.resize((new_w, new_h), Image.Resampling.LANCZOS)
         return None
 
-    # 原始字节已经小于阈值时，直接透传原图，避免不必要损失。
-    if len(image_bytes) <= limit_bytes:
+    # 原始字节已经小于阈值且本身就是可直接上传的原生 JPEG/PNG 时，直接透传原图，避免不必要损失。
+    # WEBP/BMP/TIFF/GIF/MPO 等可转换格式必须重编码；否则会出现“扩展名/mime 是 jpg，但内容仍是原格式”的问题。
+    if len(image_bytes) <= limit_bytes and source_format in _NATIVE_FORMATS:
         if preferred_format == "JPEG":
             return image_bytes, "image.jpg", "image/jpeg"
         return image_bytes, "image.png", "image/png"
