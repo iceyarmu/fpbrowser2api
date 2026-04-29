@@ -2374,22 +2374,39 @@ async def _veo_download_image_bytes_for_i2v(
     return prepared
 
 
-def _veo_upload_response_indicates_minor_upload(*, response_body: str) -> bool:
-    """上游 flow/uploadImage 对未成年人相关参考图返回 ErrorInfo.reason=PUBLIC_ERROR_MINOR_UPLOAD。"""
+def _veo_upload_response_has_error_reason(*, response_body: str, reason: str) -> bool:
+    """判断上游 flow/uploadImage 响应中是否包含指定 ErrorInfo.reason。"""
     raw = str(response_body or "")
-    if "PUBLIC_ERROR_MINOR_UPLOAD" not in raw:
+    reason_s = str(reason or "").strip()
+    if not reason_s or reason_s not in raw:
         return False
     try:
         obj = json.loads(raw)
     except Exception:
         return True
-    details = (obj.get("error") or {}).get("details")
+    details = (obj.get("error") or {}).get("details") if isinstance(obj, dict) else None
     if not isinstance(details, list):
         return True
     for item in details:
-        if isinstance(item, dict) and "PUBLIC_ERROR_MINOR_UPLOAD" in str(item.get("reason") or ""):
+        if isinstance(item, dict) and reason_s in str(item.get("reason") or ""):
             return True
-    return "PUBLIC_ERROR_MINOR_UPLOAD" in raw
+    return reason_s in raw
+
+
+def _veo_upload_response_indicates_minor_upload(*, response_body: str) -> bool:
+    """上游 flow/uploadImage 对未成年人相关参考图返回 ErrorInfo.reason=PUBLIC_ERROR_MINOR_UPLOAD。"""
+    return _veo_upload_response_has_error_reason(
+        response_body=response_body,
+        reason="PUBLIC_ERROR_MINOR_UPLOAD",
+    )
+
+
+def _veo_upload_response_indicates_prominent_people_upload(*, response_body: str) -> bool:
+    """上游 flow/uploadImage 对名人/可识别人物参考图返回 ErrorInfo.reason=PUBLIC_ERROR_PROMINENT_PEOPLE_UPLOAD。"""
+    return _veo_upload_response_has_error_reason(
+        response_body=response_body,
+        reason="PUBLIC_ERROR_PROMINENT_PEOPLE_UPLOAD",
+    )
 
 
 def _veo_video_op_error_indicates_audio_filtered(*, message: str, code: str) -> bool:
@@ -2446,6 +2463,12 @@ async def _veo_flow_upload_image_in_window(
         if _veo_upload_response_indicates_minor_upload(response_body=raw_body):
             raise NonPenalizedTaskError(
                 "参考图中包含未成年，无法作为参考图上传",
+                status_code=400,
+                content_violation=True,
+            )
+        if _veo_upload_response_indicates_prominent_people_upload(response_body=raw_body):
+            raise NonPenalizedTaskError(
+                "名人/肖像限制：参考图涉及可识别人物或名人形象，无法作为参考图上传。任务已标记为违规，请更换参考图后重试。",
                 status_code=400,
                 content_violation=True,
             )
