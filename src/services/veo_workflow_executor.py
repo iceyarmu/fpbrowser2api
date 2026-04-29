@@ -1426,7 +1426,7 @@ class VeoSession:
                 except Exception:
                     pass
 
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(5.0)
 
             try:
                 await drafts_page.mouse.click(5, 400)
@@ -2860,6 +2860,209 @@ async def _veo_fetch_recaptcha_token_new_page(
                 pass
 
 
+async def _veo_fetch_recaptcha_token_enhanced(
+    browser_context: Any,
+    *,
+    project_id: str,
+    action: str,
+    log_file: Path,
+) -> Optional[str]:
+    """增强版 reCAPTCHA token 获取：强化指纹伪装与人类行为模拟，降低 403 风险。"""
+    page = None
+    page_owned = False
+    page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
+    keys_seen: List[str] = []
+
+    def on_request(req: Any) -> None:
+        try:
+            sk = _veo_parse_recaptcha_site_key_from_url(req.url)
+            if sk and sk not in keys_seen:
+                keys_seen.append(sk)
+        except Exception:
+            pass
+
+    try:
+        reused: Any = None
+        try:
+            for p in list(getattr(browser_context, "pages", []) or []):
+                try:
+                    if bool(getattr(p, "is_closed", lambda: False)()):
+                        continue
+                except Exception:
+                    continue
+                try:
+                    u = str(getattr(p, "url", "") or "")
+                except Exception:
+                    u = ""
+                if _veo_page_is_target_flow_project_url(u, project_id):
+                    reused = p
+                    break
+        except Exception:
+            reused = None
+
+        if reused is not None:
+            page = reused
+            append_log(log_file, "[veo][recaptcha] reuse existing page")
+        else:
+            page = await browser_context.new_page()
+            page_owned = True
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_SymbolIterator;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+                window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+                const _origQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        _origQuery(parameters)
+                );
+            """)
+            append_log(log_file, "[veo][recaptcha] new page with enhanced fingerprint")
+            try:
+                await page.goto(page_url, wait_until="networkidle", timeout=60000)
+            except Exception as e:
+                append_log(log_file, f"[veo][recaptcha] goto failed: {str(e)[:200]}")
+                return None
+
+        page.on("request", on_request)
+
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+
+        resolve_deadline = time.monotonic() + 20.0
+        website_key = await _veo_resolve_recaptcha_site_key_on_page(
+            page, keys_seen, deadline_monotonic=resolve_deadline
+        )
+        if website_key:
+            append_log(log_file, f"[veo][recaptcha] site key from page len={len(website_key)}")
+        else:
+            website_key = VEO_RECAPTCHA_SITE_KEY
+            append_log(log_file, "[veo][recaptcha] using fallback site key")
+
+        try:
+            viewport = page.viewport_size
+            if viewport:
+                for _ in range(random.randint(2, 4)):
+                    x = random.randint(100, viewport.get("width", 1200) - 100)
+                    y = random.randint(100, viewport.get("height", 800) - 100)
+                    await page.mouse.move(x, y)
+                    await asyncio.sleep(random.uniform(0.1, 0.3))
+        except Exception:
+            pass
+
+        try:
+            await page.evaluate("window.scrollTo(0, Math.random() * 200)")
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass
+
+        reload_ok_event = asyncio.Event()
+        clr_ok_event = asyncio.Event()
+
+        def handle_response(response: Any) -> None:
+            try:
+                if response.status != 200:
+                    return
+                parsed = urlparse(response.url)
+                path = parsed.path or ""
+                if "recaptcha/enterprise/reload" not in path and "recaptcha/enterprise/clr" not in path:
+                    return
+                query = parse_qs(parsed.query or "")
+                key = (query.get("k") or [None])[0]
+                if key != website_key:
+                    return
+                if "recaptcha/enterprise/reload" in path:
+                    reload_ok_event.set()
+                elif "recaptcha/enterprise/clr" in path:
+                    clr_ok_event.set()
+            except Exception:
+                pass
+
+        page.on("response", handle_response)
+
+        try:
+            await page.wait_for_function("typeof grecaptcha !== 'undefined'", timeout=25000)
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+        except Exception as e:
+            append_log(log_file, f"[veo][recaptcha] grecaptcha not ready: {str(e)[:200]}")
+            return None
+
+        try:
+            await page.wait_for_selector('iframe[src*="recaptcha"]', timeout=10000)
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+        except Exception:
+            append_log(log_file, "[veo][recaptcha] recaptcha iframe not found, continuing anyway")
+
+        try:
+            token = await asyncio.wait_for(
+                page.evaluate(
+                    """
+                    ([actionName, siteKey]) => {
+                        return new Promise((resolve, reject) => {
+                            const timeout = setTimeout(() => reject(new Error('timeout')), 30000);
+                            grecaptcha.enterprise.execute(siteKey, { action: actionName })
+                                .then((t) => { clearTimeout(timeout); resolve(t); })
+                                .catch((e) => { clearTimeout(timeout); reject(e); });
+                        });
+                    }
+                    """,
+                    [action, website_key],
+                ),
+                timeout=35,
+            )
+        except Exception as e:
+            append_log(log_file, f"[veo][recaptcha] execute failed: {str(e)[:200]}")
+            return None
+
+        try:
+            await asyncio.wait_for(reload_ok_event.wait(), timeout=15)
+        except asyncio.TimeoutError:
+            append_log(log_file, "[veo][recaptcha] reload timeout (may be ok)")
+
+        try:
+            await asyncio.wait_for(clr_ok_event.wait(), timeout=15)
+        except asyncio.TimeoutError:
+            append_log(log_file, "[veo][recaptcha] clr timeout (may be ok)")
+
+        raw_cfg = app_config.get_raw_config()
+        veo_cfg = raw_cfg.get("veo") if isinstance(raw_cfg, dict) else None
+        settle = 5.0
+        if isinstance(veo_cfg, dict):
+            try:
+                settle = float(veo_cfg.get("recaptcha_settle_seconds", settle) or settle)
+            except (TypeError, ValueError):
+                settle = 5.0
+        settle_with_jitter = settle + random.uniform(-1.0, 2.0)
+        if settle_with_jitter > 0:
+            append_log(log_file, f"[veo][recaptcha] settle {settle_with_jitter:.1f}s")
+            await asyncio.sleep(settle_with_jitter)
+
+        s = str(token or "").strip()
+        if len(s) < 500:
+            append_log(log_file, f"[veo][recaptcha] token too short: {len(s)} chars")
+            return None
+        return s or None
+
+    except Exception as e:
+        append_log(log_file, f"[veo][recaptcha] fatal: {str(e)[:200]}")
+        return None
+    finally:
+        if page_owned and page:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+
 def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
     """将 userPaygateTier 转为可读套餐名（与 flow2api manage.html formatAccountType 一致）。"""
     t = str(tier or "").strip()
@@ -3518,7 +3721,7 @@ async def _veo_flow_upsample_image_in_window(
     last_err: Optional[str] = None
     n = max(1, min(5, int(max_retries)))
     for attempt in range(n):
-        recaptcha_token = await _veo_fetch_recaptcha_token_new_page(
+        recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
             page.context,
             project_id=project_id,
             action="IMAGE_GENERATION",
@@ -3794,7 +3997,7 @@ async def _veo_execute_image_mode(
             recaptcha_token = recaptcha_override
             if not recaptcha_token:
                 print(f"project_id: {project_id}")
-                recaptcha_token = await _veo_fetch_recaptcha_token_new_page(
+                recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
                     page.context,
                     project_id=project_id,
                     action="IMAGE_GENERATION",
@@ -4416,7 +4619,7 @@ async def veo_workflow(
         for attempt in range(max_submit_retries):
             recaptcha_token = recaptcha_override
             if not recaptcha_token:
-                recaptcha_token = await _veo_fetch_recaptcha_token_new_page(
+                recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
                     page.context,
                     project_id=project_id,
                     action="VIDEO_GENERATION",
