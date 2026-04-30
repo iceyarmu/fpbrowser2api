@@ -44,9 +44,6 @@ source venv/bin/activate
 # 安装依赖
 pip install -r requirements.txt
 
-# 首次使用 Playwright 时安装 Chromium 驱动
-python -m playwright install chromium
-
 # 启动服务
 python main.py
 ```
