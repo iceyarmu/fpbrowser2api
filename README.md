@@ -1,4 +1,4 @@
-<img width="1913" height="908" alt="ScreenShot_2026-04-30_185648_880" src="https://github.com/user-attachments/assets/b4e99b19-de83-40a9-8e97-f2d974556c76" /># FPBrowser2API：指纹浏览器驱动的半自动化 AI 生成框架
+# FPBrowser2API：指纹浏览器驱动的半自动化 AI 生成框架
 
 > 项目主题：利用指纹浏览器半自动化模拟真人环境 + 逆向注入/页面上下文代码执行，实现高并发自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口逆向研究，并内置 Cloudflare/claudeflare 验证页检测、等待、自愈重启与自动点击等处理策略，目标是在授权研究环境中自动过 claudeflare/Cloudflare（实际通过率取决于账号、代理、环境与站点策略）。
 
