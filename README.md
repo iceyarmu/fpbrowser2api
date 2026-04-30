@@ -1,4 +1,4 @@
-# FPBrowser2API：指纹浏览器驱动的半自动化 AI 生成框架
+<img width="1913" height="908" alt="ScreenShot_2026-04-30_185648_880" src="https://github.com/user-attachments/assets/b4e99b19-de83-40a9-8e97-f2d974556c76" /># FPBrowser2API：指纹浏览器驱动的半自动化 AI 生成框架
 
 > 项目主题：利用指纹浏览器半自动化模拟真人环境 + 逆向注入/页面上下文代码执行，实现高并发自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口逆向研究，并内置 Cloudflare/claudeflare 验证页检测、等待、自愈重启与自动点击等处理策略，目标是在授权研究环境中自动过 claudeflare/Cloudflare（实际通过率取决于账号、代理、环境与站点策略）。
 
@@ -19,6 +19,13 @@
 4. 当遇到 Cloudflare/Turnstile 等挑战页时，执行器会检测页面、等待自动放行、尝试点击验证控件，必要时关闭并重开指纹窗口进行自愈。
 
 推荐使用 RoxyBrowser：请到 <https://roxybrowser.com?code=0416Z62A> 下载客户端，注册并登录后创建空间、项目和浏览器窗口。
+
+
+<img width="1920" height="857" alt="ScreenShot_2026-04-30_185608_912" src="https://github.com/user-attachments/assets/c619aab0-1198-40e3-a490-69a378842086" />
+<img width="1910" height="883" alt="ScreenShot_2026-04-30_185628_966" src="https://github.com/user-attachments/assets/467b9021-ad71-400c-94fe-b24ceed925bc" />
+<img width="1919" height="914" alt="ScreenShot_2026-04-30_185638_945" src="https://github.com/user-attachments/assets/34238cc6-66c0-41eb-97b0-405014ea467c" />
+<img width="1913" height="908" alt="ScreenShot_2026-04-30_185648_880" src="https://github.com/user-attachments/assets/1684701a-12dd-4dfd-a89f-90c8169e0ea7" />
+
 
 ## 快速启动
 
