@@ -1,0 +1,24 @@
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[global]
+admin_username = "admin"
+admin_password = "admin"
+api_key = "mirrmart_sora2_880315"
+
+[system]
+proxy_enabled = false
+proxy_url = ""
+debug_enabled = false
+log_to_file = false
+
+# VEO 2K：enabled=true 时上传 JPEG 到 OSS，upsample_url 为 URL；false 时仍为 data:image/jpeg;base64,...（占库容大）
+[oss]
+enabled = false
+endpoint = ""
+region = ""
+bucket = ""
+public_base_url = ""
+OSS_ACCESS_KEY_ID= ""
+OSS_ACCESS_KEY_SECRET= ""
