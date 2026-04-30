@@ -108,11 +108,11 @@
             </div>
             <div class="mb-3">
               <label class="form-label">Vendor</label>
-              <input class="form-control mono" id="browserVendor" placeholder="roxy / generic" />
-              <div class="form-text">用于选择同步协议（可先填 generic）。</div>
+              <input class="form-control mono" id="browserVendor" placeholder="roxy" />
+              <div class="form-text">用于选择同步协议（roxy）。</div>
             </div>
             <div class="mb-3">
-              <label class="form-label">Access Key（可选）</label>
+              <label class="form-label">Access Key（必填）</label>
               <input class="form-control mono" id="browserKey" placeholder="指纹浏览器侧 API key" />
             </div>
             <div class="mb-3">
@@ -142,11 +142,11 @@
             <input type="hidden" id="spaceBrowserId" />
             <div class="mb-3">
               <label class="form-label">空间名称</label>
-              <input class="form-control" id="spaceName" />
+              <input class="form-control" id="spaceName" placeholder="随便写"/>
             </div>
             <div class="mb-3">
               <label class="form-label">空间ID</label>
-              <input class="form-control mono" id="spaceId" />
+              <input class="form-control mono" id="spaceId" placeholder="指纹浏览器中查询空间ID[例如NKE0072043,只获取后面的数字]"/>
             </div>
             <div class="mb-3">
               <label class="form-label">项目ID（可选）</label>
@@ -729,7 +729,7 @@
                   <div class="browser-meta w-100">
                     <div class="fw-semibold text-nowrap">${escapeHtml(b.name)}</div>
                     <span class="badge text-bg-light mono border text-nowrap">#${b.id}</span>
-                    <span class="badge text-bg-secondary text-nowrap">${escapeHtml(b.vendor || "generic")}</span>
+                    <span class="badge text-bg-secondary text-nowrap">${escapeHtml(b.vendor || "roxy")}</span>
                     <span class="text-muted small mono browser-lan">${escapeHtml(b.lan_addr || "")}</span>
                     ${(b.browser_pool_limit > 0) ? `<span class="badge text-bg-info text-nowrap">池:${b.browser_pool_limit}</span>` : ''}
                   </div>
@@ -737,7 +737,7 @@
                 <div class="browser-actions">
                   <button class="btn btn-outline-secondary btn-sm" type="button" data-action="edit_browser" data-browser='${encodeURIComponent(JSON.stringify(b))}'>修改</button>
                   <button class="btn btn-outline-danger btn-sm" type="button" data-action="delete_browser" data-browser_id="${b.id}">删除</button>
-                  <button class="btn btn-outline-primary btn-sm" type="button" data-action="new_space" data-browser_id="${b.id}">新增空间</button>
+                  <button class="btn btn-outline-primary btn-sm" type="button" data-action="new_space" data-browser_id="${b.id}">新增指纹浏览器空间</button>
                   <button class="btn btn-outline-info btn-sm" type="button" data-action="workspace_projects" data-browser_id="${b.id}">空间项目列表查询</button>
                 </div>
               </div>
@@ -3526,7 +3526,7 @@
         document.getElementById("browserId").value = mode === "new" ? "" : String(b.id);
         document.getElementById("browserName").value = b?.name || "";
         document.getElementById("browserLan").value = b?.lan_addr || "";
-        document.getElementById("browserVendor").value = b?.vendor || "generic";
+        document.getElementById("browserVendor").value = b?.vendor || "roxy";
         document.getElementById("browserKey").value = b?.access_key || "";
         document.getElementById("browserPoolLimit").value = b?.browser_pool_limit || 0;
         browserModal.show();
@@ -3538,7 +3538,7 @@
         const bid = document.getElementById("browserId").value;
         const name = document.getElementById("browserName").value.trim();
         const lan_addr = document.getElementById("browserLan").value.trim();
-        const vendor = document.getElementById("browserVendor").value.trim() || "generic";
+        const vendor = document.getElementById("browserVendor").value.trim() || "roxy";
         const access_key = document.getElementById("browserKey").value.trim() || null;
         const browser_pool_limit = parseInt(document.getElementById("browserPoolLimit").value, 10) || 0;
         if (!name || !lan_addr) return toast("请填写名称与局域网地址", "error");
@@ -3567,7 +3567,7 @@
       }
 
       function openSpaceModal(mode, s) {
-        document.getElementById("spaceModalTitle").textContent = mode === "new" ? "新增空间" : "修改空间";
+        document.getElementById("spaceModalTitle").textContent = mode === "new" ? "新增指纹浏览器空间" : "修改指纹浏览器空间";
         document.getElementById("spacePk").value = mode === "new" ? "" : String(s.id);
         document.getElementById("spaceBrowserId").value = String(s.browser_id || "");
         if (mode === "new") {
