@@ -1933,7 +1933,7 @@ VEO_IMAGE_MODEL_NARWHAL = "NARWHAL"
 # 与 flow2api generation_handler gemini-3.0-pro-image-*（GEM_PIX_2）一致
 VEO_IMAGE_MODEL_GEM_PIX_2 = "GEM_PIX_2"
 VEO_IMAGE_GENERATION_MAX_REFERENCE_IMAGES = 10
-VEO_IMAGE_REFERENCE_MAX_PIXELS_4K = 3840 * 2160
+VEO_IMAGE_REFERENCE_MAX_PIXELS_4K = 4096 * 4096
 UPSAMPLE_IMAGE_RESOLUTION_2K = "UPSAMPLE_IMAGE_RESOLUTION_2K"
 
 PAYGATE_TIER_NOT_PAID = "PAYGATE_TIER_NOT_PAID"
@@ -2308,7 +2308,7 @@ def _veo_detect_image_mime_type(image_bytes: bytes) -> str:
 
 
 def _veo_raise_if_image_exceeds_4k_limit(image_bytes: bytes, *, label: str) -> None:
-    """限制参考图分辨率不超过 4K（按 3840x2160 等效像素总量校验）。"""
+    """限制参考图分辨率不超过 4K（按 4096x4096 等效像素总量校验）。"""
     try:
         from PIL import Image  # type: ignore[import-not-found]
     except Exception as e:
