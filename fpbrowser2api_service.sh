@@ -29,6 +29,35 @@ if [[ -z "$PYTHON_BIN" ]]; then
   fi
 fi
 
+resolve_app_launch() {
+  # 打包发布模式：优先运行 APP_BIN 或同目录下的 fpbrowser2api 可执行文件
+  if [[ -n "${APP_BIN:-}" ]]; then
+    if [[ ! -x "$APP_BIN" ]]; then
+      echo "APP_BIN 不存在或不可执行: $APP_BIN" >&2
+      return 1
+    fi
+    APP_CMD=("$APP_BIN")
+    APP_CMD_DISPLAY="$APP_BIN"
+    return 0
+  fi
+
+  if [[ -x "$APP_DIR/fpbrowser2api" ]]; then
+    APP_CMD=("$APP_DIR/fpbrowser2api")
+    APP_CMD_DISPLAY="$APP_DIR/fpbrowser2api"
+    return 0
+  fi
+
+  # 源码开发模式：回退到 python main.py
+  if [[ -f "$APP_DIR/main.py" ]]; then
+    APP_CMD=("$PYTHON_BIN" "$APP_DIR/main.py")
+    APP_CMD_DISPLAY="$PYTHON_BIN $APP_DIR/main.py"
+    return 0
+  fi
+
+  echo "未找到可运行入口：$APP_DIR/fpbrowser2api 或 $APP_DIR/main.py；打包发布目录应包含 fpbrowser2api" >&2
+  return 1
+}
+
 is_running() {
   [[ -f "$PID_FILE" ]] || return 1
   local pid
@@ -76,13 +105,17 @@ start() {
   # 启动前：清空服务输出日志（fpbrowser2api.out）
   : > "$LOG_FILE"
 
-  # 后台运行 + 输出到日志文件（启动方式：python main.py）
-  nohup "$PYTHON_BIN" "$APP_DIR/main.py" >>"$LOG_FILE" 2>&1 &
+  resolve_app_launch
+
+  # 后台运行 + 输出到日志文件：
+  # - 打包发布目录：./fpbrowser2api
+  # - 源码开发目录：python main.py
+  nohup "${APP_CMD[@]}" >>"$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
 
   sleep 1
   if is_running; then
-    echo "fpbrowser2api 启动成功 (pid=$(cat "$PID_FILE")), log=$LOG_FILE"
+    echo "fpbrowser2api 启动成功 (pid=$(cat "$PID_FILE")), cmd=$APP_CMD_DISPLAY, log=$LOG_FILE"
     return 0
   fi
 
@@ -150,6 +183,7 @@ usage() {
   ./fpbrowser2api_service.sh start|stop|restart|status
 
 可选环境变量:
+  APP_BIN=/path/to/fpbrowser2api
   PYTHON_BIN=/path/to/python
   PID_FILE=/path/to/fpbrowser2api.pid
   LOG_FILE=/path/to/fpbrowser2api.out

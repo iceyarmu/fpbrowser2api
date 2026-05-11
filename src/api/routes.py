@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
@@ -66,6 +68,251 @@ class CreateTaskRequest(BaseModel):
     # 可选：指定执行窗口（仅用于调试/测试；不指定则走默认调度）
     mapping_id: Optional[int] = Field(default=None, ge=1)
     window_pk: Optional[int] = Field(default=None, ge=1)
+
+
+class CreateVideoRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=128)
+    prompt: str
+    aspect_ratio: Optional[str] = None
+    duration: Optional[int] = None
+    image: Optional[str] = None
+    negative_prompt: Optional[str] = None
+    seed: Optional[int] = None
+    # 允许透传未来新增的视频参数。
+    model_config = {"extra": "allow"}
+
+
+OPENAI_COMPAT_VIDEO_MODELS = (
+    "seedance-2",
+    "seedance-2-fast",
+    "nana-banana-2",
+    "nana-banana-pro",
+    "veo-3-1",
+)
+OPENAI_COMPAT_VIDEO_MODEL_SET = set(OPENAI_COMPAT_VIDEO_MODELS)
+
+
+def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """Map OpenAI-compatible public video model names to internal task types."""
+
+    payload = dict(payload or {})
+    model = str(payload.get("model") or "").strip()
+    if model in {"seedance-2", "seedance-2-fast"}:
+        task_type_code = "dreamina_workflow"
+    elif model in {"nana-banana-2"}:
+        task_type_code = "veo_workflow"
+        payload["n_frames"] = 1
+        payload["image_model_name"] = "NARWHAL"
+    elif model in {"nana-banana-pro"}:
+        task_type_code = "veo_workflow"
+        payload["n_frames"] = 1
+        payload["image_model_name"] = "GEM_PIX_2"
+    elif model in {"veo-3-1"}:
+        task_type_code = "veo_workflow"
+        duration = payload.get("duration")
+        if duration != 8:
+            raise HTTPException(status_code=400, detail="veo-3-1 only supports duration=8")
+        payload["n_frames"] = 240
+    else:
+        task_type_code = model
+    return task_type_code, payload
+
+
+def _build_openai_chat_completion(model: str, content: str) -> Dict[str, Any]:
+    now = int(time.time())
+    return {
+        "id": f"chatcmpl-fpbrowser2api-{now}",
+        "object": "chat.completion",
+        "created": now,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        },
+    }
+
+
+def _timestamp_ms(value: Any = None) -> int:
+    """Return a NewAPI/OpenAI-compatible millisecond timestamp."""
+
+    if value is None:
+        return int(time.time() * 1000)
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return int(dt.timestamp() * 1000)
+    if isinstance(value, (int, float)):
+        # 13-digit values are already milliseconds; 10-digit values are seconds.
+        fv = float(value)
+        return int(fv if fv > 10_000_000_000 else fv * 1000)
+    raw = str(value or "").strip()
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00").replace(" ", "T", 1))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            pass
+    return int(time.time() * 1000)
+
+
+def _normalize_newapi_task_status(status: Any) -> str:
+    s = str(status or "").strip().lower()
+    if s == "running":
+        return "in_progress"
+    if s in {"queued", "in_progress", "completed", "failed"}:
+        return s
+    return s or "queued"
+
+
+def _parse_task_prompt_payload(prompt_text: Any) -> Dict[str, Any]:
+    raw = str(prompt_text or "").strip()
+    if not raw or not raw.startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _maybe_number(v: Any) -> Any:
+    if v is None:
+        return None
+    try:
+        fv = float(v)
+        iv = int(fv)
+        return iv if fv == iv else fv
+    except Exception:
+        return v
+
+
+def _public_aspect_ratio(payload: Dict[str, Any]) -> Optional[str]:
+    for key in ("aspect_ratio", "ratio", "size_ratio", "image_aspect_ratio"):
+        val = payload.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return None
+
+
+def _public_duration(payload: Dict[str, Any]) -> Any:
+    for key in ("duration", "seconds"):
+        val = payload.get(key)
+        if val is not None and str(val).strip():
+            return _maybe_number(val)
+    return None
+
+
+def _build_newapi_video_create_response(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Build NewAPI-compatible response for POST /v1/videos."""
+
+    p = dict(payload or {})
+    model = str(p.get("model") or "").strip()
+    duration = _public_duration(p)
+    aspect_ratio = _public_aspect_ratio(p)
+    resp: Dict[str, Any] = {
+        "id": task_id,
+        "task_id": task_id,
+        "object": "video",
+        "created_at": _timestamp_ms(),
+        "status": "queued",
+        "progress": 0,
+        "model": model,
+        "video_url": None,
+        "metadata": {"result_urls": []},
+    }
+    if duration is not None:
+        resp["seconds"] = str(duration)
+        resp["duration"] = duration
+    if aspect_ratio:
+        resp["aspect_ratio"] = aspect_ratio
+    prompt = str(p.get("prompt") or "").strip()
+    if prompt:
+        resp["prompt"] = prompt
+    return resp
+
+
+def _extract_public_result_urls(result: Any) -> tuple[Optional[str], Optional[str], list[str]]:
+    if not isinstance(result, dict):
+        return None, None, []
+    share_url = str(
+        result.get("share_url")
+        or result.get("video_url")
+        or result.get("image_url")
+        or result.get("url")
+        or ""
+    ).strip()
+    if not share_url:
+        return None, None, []
+    kind = str(result.get("workflow_kind") or result.get("type") or "").strip().lower()
+    is_image = "image" in kind and "video" not in kind
+    if is_image:
+        return None, share_url, [share_url]
+    return share_url, None, [share_url]
+
+
+async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
+    """NewAPI-compatible status response for GET /v1/videos/{task_id}."""
+
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    tid = (task_id or "").strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="task_id 不能为空")
+
+    task = await db.get_task(tid)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    payload = _parse_task_prompt_payload(getattr(task, "prompt", None))
+    result = task.result if isinstance(task.result, dict) else None
+    status = _normalize_newapi_task_status(task.status)
+    video_url, image_url, result_urls = _extract_public_result_urls(result)
+    model = str(payload.get("model") or (result or {}).get("model") or "").strip()
+    duration = _public_duration(payload)
+    aspect_ratio = _public_aspect_ratio(payload)
+
+    resp: Dict[str, Any] = {
+        "id": task.task_id,
+        "task_id": task.task_id,
+        "object": "video",
+        "created_at": _timestamp_ms(task.created_at),
+        "status": status,
+        "progress": int(task.progress or 0),
+        "model": model,
+        "video_url": video_url,
+        "metadata": {"result_urls": result_urls},
+    }
+    if image_url:
+        resp["image_url"] = image_url
+    if video_url or image_url:
+        resp["url"] = video_url or image_url
+    if duration is not None:
+        resp["seconds"] = str(duration)
+        resp["duration"] = duration
+    if aspect_ratio:
+        resp["aspect_ratio"] = aspect_ratio
+    if task.completed_at:
+        resp["completed_at"] = _timestamp_ms(task.completed_at)
+    if status == "failed":
+        resp["error"] = {
+            "message": task.error_message or "task failed",
+            "code": (result or {}).get("status_code") or (result or {}).get("error_type") or "task_failed",
+        }
+    return JSONResponse(content=resp)
 
 
 async def _get_public_runtime_limits_cached() -> tuple[bool, int, int]:
@@ -136,30 +383,18 @@ async def _set_task_status_cache(task_id: str, payload: Dict[str, Any]) -> None:
         _status_cache[task_id] = (time.monotonic() + ttl, payload)
 
 
-@router.get("/v1/task-types")
-async def list_task_types(api_key: str = Depends(verify_api_key_header)):
-    if not db:
-        raise HTTPException(status_code=500, detail="db not initialized")
-    items = await db.list_task_types()
-    return {"success": True, "task_types": [t.model_dump() for t in items]}
+async def _create_task_from_request(body: CreateTaskRequest) -> Dict[str, Any]:
+    """Shared task creation implementation for /v1/tasks and compatible APIs.
 
-@router.get("/v1/task-types-public")
-async def list_task_types(api_key: str = Depends(verify_api_key_header)):
-    if not db:
-        raise HTTPException(status_code=500, detail="db not initialized")
-    items = await db.list_task_types_public()
-    return {"success": True, "task_types": [t.model_dump() for t in items]}
-
-
-@router.post("/v1/tasks")
-async def create_task(
-    api_key: str = Depends(verify_api_key_header),
-    body: CreateTaskRequest = Body(...),
-):
+    Authentication is intentionally kept on the route handlers to avoid
+    duplicate Depends execution when one public endpoint adapts into this
+    helper.
+    """
     if not db or not task_service:
         raise HTTPException(status_code=500, detail="service not initialized")
 
     acquired = False
+    gate: asyncio.Semaphore | None = None
     try:
         try:
             gate, stop_accepting = await _ensure_create_task_gate_by_db_config()
@@ -217,12 +452,11 @@ async def create_task(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if acquired:
+        if acquired and gate is not None:
             gate.release()
 
 
-@router.get("/v1/tasks/{task_id}")
-async def get_task_status(task_id: str, api_key: str = Depends(verify_api_key_header)):
+async def _get_task_status_response(task_id: str) -> JSONResponse:
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     tid = (task_id or "").strip()
@@ -274,3 +508,112 @@ async def get_task_status(task_id: str, api_key: str = Depends(verify_api_key_he
         raise HTTPException(status_code=404, detail="task not found")
     return JSONResponse(content=payload)
 
+
+@router.get("/v1/task-types")
+async def list_task_types(api_key: str = Depends(verify_api_key_header)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    items = await db.list_task_types()
+    return {"success": True, "task_types": [t.model_dump() for t in items]}
+
+@router.get("/v1/task-types-public")
+async def list_task_types(api_key: str = Depends(verify_api_key_header)):
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    items = await db.list_task_types_public()
+    return {"success": True, "task_types": [t.model_dump() for t in items]}
+
+
+@router.post("/v1/tasks")
+async def create_task(
+    api_key: str = Depends(verify_api_key_header),
+    body: CreateTaskRequest = Body(...),
+):
+    return await _create_task_from_request(body)
+
+
+@router.get("/v1/models")
+async def list_openai_compatible_models(api_key: str = Depends(verify_api_key_header)):
+    """OpenAI-compatible model list, mainly for NewAPI channel discovery/test."""
+
+    now = int(time.time())
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": model,
+                "object": "model",
+                "created": now,
+                "owned_by": "fpbrowser2api",
+            }
+            for model in OPENAI_COMPAT_VIDEO_MODELS
+        ],
+    }
+
+
+@router.get("/v1/models/{model_id}")
+async def get_openai_compatible_model(model_id: str, api_key: str = Depends(verify_api_key_header)):
+    """OpenAI-compatible single model lookup."""
+
+    model = (model_id or "").strip()
+    if model not in OPENAI_COMPAT_VIDEO_MODEL_SET:
+        raise HTTPException(status_code=404, detail="model not found")
+    return {
+        "id": model,
+        "object": "model",
+        "created": int(time.time()),
+        "owned_by": "fpbrowser2api",
+    }
+
+
+@router.post("/v1/chat/completions")
+async def create_chat_completion_for_newapi_test(
+    api_key: str = Depends(verify_api_key_header),
+    body: Dict[str, Any] = Body(...),
+):
+    """Minimal OpenAI chat-compatible endpoint for NewAPI channel tests.
+
+    NewAPI's OpenAI-channel "test" button probes `/v1/chat/completions`.
+    The real video creation endpoint is `/v1/videos`; this endpoint only
+    returns a lightweight success response for the public video model names so
+    channel health checks do not create real video tasks.
+    """
+
+    model = str((body or {}).get("model") or "").strip()
+    if model not in OPENAI_COMPAT_VIDEO_MODEL_SET:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model {model or '<empty>'} is not supported by chat test endpoint",
+        )
+    return _build_openai_chat_completion(
+        model,
+        f"fpbrowser2api channel test ok for {model}; use POST /v1/videos to create video tasks.",
+    )
+
+
+@router.post("/v1/videos")
+async def create_video(
+    api_key: str = Depends(verify_api_key_header),
+    body: CreateVideoRequest = Body(...),
+):
+    task_type_code, payload = _normalize_video_task_payload(body.model_dump(exclude_none=True))
+    created = await _create_task_from_request(
+        CreateTaskRequest(
+            task_type_code=task_type_code,
+            json=payload,
+        )
+    )
+    task_id = str(created.get("task_id") or "").strip()
+    if not task_id:
+        return created
+    return _build_newapi_video_create_response(task_id, payload)
+
+
+@router.get("/v1/tasks/{task_id}")
+async def get_task_status(task_id: str, api_key: str = Depends(verify_api_key_header)):
+    return await _get_task_status_response(task_id)
+
+
+@router.get("/v1/videos/{task_id}")
+async def get_video_status(task_id: str, api_key: str = Depends(verify_api_key_header)):
+    return await _get_newapi_video_status_response(task_id)

@@ -22,10 +22,16 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
+          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
+          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
           <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
+        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.me/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -47,6 +53,7 @@
           <div class="d-flex align-items-center mb-3">
             <h5 class="card-title mb-0">卡密列表</h5>
             <a class="btn btn-link btn-sm ms-3 p-0" href="https://ferri.chat/" target="_blank" rel="noopener noreferrer">充值入口</a>
+            <a class="btn btn-outline-primary btn-sm ms-3" href="/admin/totp" title="打开 2FA Code 生成工具">2FA生成Code</a>
             <div class="ms-auto d-flex gap-2">
               <button class="btn btn-outline-info btn-sm" id="btnCopyAll" title="复制所有卡密到剪贴板">一键复制所有卡密</button>
               <button class="btn btn-outline-success btn-sm" id="btnCopySelected" title="复制勾选的卡密到剪贴板" disabled>复制勾选卡密</button>

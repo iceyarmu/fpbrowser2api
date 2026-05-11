@@ -23,6 +23,29 @@
       .win-table-wrap .table > thead > tr { border-bottom: 2px solid #555; }
       .win-table-wrap .btn.btn-sm { padding-top: .10rem; padding-bottom: .10rem; padding-left: .35rem; padding-right: .35rem; }
       .win-table-wrap .form-select.form-select-sm { padding-top: .15rem; padding-bottom: .15rem; padding-left: .5rem; }
+      .mapping-table th.col-drafts,
+      .mapping-table td.col-drafts {
+        width: 48px;
+        min-width: 48px;
+        max-width: 48px;
+        padding-left: .08rem;
+        padding-right: .08rem;
+        text-align: center;
+        white-space: nowrap;
+      }
+      .mapping-table th.col-proxy,
+      .mapping-table td.col-proxy {
+        width: 420px;
+        min-width: 420px;
+      }
+      .mapping-table [data-role="proxySelect"] {
+        min-width: 400px !important;
+      }
+      .mapping-table [data-role="proxyDisplay"] {
+        display: block;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
 
       /* 更紧凑的配置区，让窗口绑定成为主视觉 */
       .card-body-compact { padding: 0.65rem .85rem; }
@@ -73,6 +96,19 @@
       .token-click { cursor: pointer; user-select: none; }
       .token-click:hover { text-decoration: underline; }
       .modal-dialog.modal-xl { max-width: min(1600px, 96vw); }
+      .ai-progress-log {
+        min-height: 180px;
+        max-height: 42vh;
+        overflow: auto;
+        background: #f8f9fa;
+      }
+      .ai-progress-log .log-line {
+        padding: .42rem .55rem;
+        border-bottom: 1px dashed #dee2e6;
+      }
+      .ai-progress-log .log-line:last-child { border-bottom: 0; }
+      .ai-progress-log .log-time { color: #6c757d; margin-right: .35rem; }
+      .ai-op-hint { font-size: .8rem; color: #6c757d; }
     </style>
   </head>
   <body class="bg-light">
@@ -87,10 +123,16 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
+          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
+          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
           <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
+        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.me/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -278,7 +320,7 @@
               </div>
 
               <div class="win-table-wrap table-responsive">
-                <table class="table table-sm align-middle mb-0">
+                <table class="table table-sm align-middle mb-0 mapping-table">
                   <thead>
                     <tr class="small2">
                       <th style="width: 36px;"></th>
@@ -287,10 +329,10 @@
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
                       <th>AccessToken / 过期</th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
-                      <th class="sort-head" id="thDrafts" title="点击按草稿数排序">草稿数 <span class="text-muted" id="draftsSortHint">↕</span></th>
+                      <th class="sort-head col-drafts" id="thDrafts" title="点击按草稿数排序">草稿数 <span class="text-muted" id="draftsSortHint">↕</span></th>
                       <th class="sort-head" id="thSpaceName" title="点击按空间名称排序">空间名称 <span class="text-muted" id="spaceNameSortHint">↕</span></th>
                       <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
-                      <th class="sort-head" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
+                      <th class="sort-head col-proxy" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>测IP</th>
                       <th title="指纹浏览器窗口内核版本（Roxy /browser/mdf 的 coreVersion，参见官方文档）">内核</th>
                       <th class="sort-head" id="thStatus" title="点击按连续失败排序">任务统计 <span class="text-muted small ms-1" id="statusSummaryAll">24h成功/总成功/连续失败/24h失败/总失败: 0/0/0/0/0</span> <span class="text-muted" id="statusSortHint">↕</span></th>
@@ -527,6 +569,56 @@
       </div>
     </div>
 
+    <!-- AI Operation Modal -->
+    <div class="modal fade" id="aiOperationModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h5 class="modal-title" id="aiOperationTitle">AI操作</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2 mb-3 align-items-end">
+              <div class="col-12 col-md-3">
+                <label class="form-label small mb-1">大模型</label>
+                <select class="form-select form-select-sm mono" id="aiOpModel"></select>
+              </div>
+              <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">最大步数</label>
+                <input class="form-control form-control-sm mono" type="number" id="aiOpMaxSteps" min="1" max="30" value="20" />
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label small mb-1">执行资料</label>
+                <div class="form-control form-control-sm bg-light text-truncate" id="aiOpAccountHint" title="-">-</div>
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label small mb-1">目标网址</label>
+                <div class="form-control form-control-sm bg-light mono text-truncate" id="aiOpTargetHint" title="-">-</div>
+              </div>
+              <div class="col-12">
+                <label class="form-label small mb-1">请描述要让 AI 在该指纹浏览器窗口中完成的操作</label>
+                <textarea class="form-control" id="aiOpPrompt" rows="3" placeholder="例如：使用携带的账号、密码和 2FA 信息登录平台；遇到验证码、短信或风控时停止并提示我人工接管。"></textarea>
+                <div class="ai-op-hint mt-1">
+                  智能体会自动打开/连接目标窗口，通过 Playwright 扫描页面、点击、填写、等待，也可使用 page_fetch_json/page_fetch_tx 发起 GET/POST，并可分析 Network/Console/PageError 诊断信息。
+                </div>
+              </div>
+            </div>
+            <div class="d-flex align-items-center gap-2 mb-3" id="aiOperationStatus">
+              <span class="text-secondary fs-5">•</span>
+              <span>请输入操作内容后点击开始。</span>
+            </div>
+            <div class="ai-progress-log border rounded small" id="aiOperationLog"></div>
+            <pre class="bg-light border rounded p-2 small mono mt-3 mb-0 d-none" id="aiOperationRaw" style="white-space: pre-wrap; max-height: 220px; overflow:auto;"></pre>
+          </div>
+          <div class="modal-footer py-2">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="btnCopyAiOperation">复制结果</button>
+            <button type="button" class="btn btn-primary btn-sm" id="btnStartAiOperation">开始AI操作</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Veo Flow projects (per task_type_window mapping) -->
     <div class="modal fade" id="veoProjectsModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -691,7 +783,16 @@
         transferTargetTypeId: `${LS_PREFIX}task_types.transfer_target_type_id`,
         transferTargetSpacePk: `${LS_PREFIX}task_types.transfer_target_space_pk`,
         rollbackTargetTypeId: `${LS_PREFIX}task_types.rollback_target_type_id`,
+        aiOpModel: `${LS_PREFIX}task_types.ai_op_model`,
+        aiOpMaxSteps: `${LS_PREFIX}task_types.ai_op_max_steps`,
+        aiOpPrompt: `${LS_PREFIX}task_types.ai_op_prompt`,
       };
+      const FALLBACK_AI_MODELS = [
+        { id: "gpt-5.5", endpoint_path: "/v1/responses", api_type: "responses" },
+        { id: "claude-opus-4-6", endpoint_path: "/v1/chat/completions", api_type: "chat_completions" },
+        { id: "claude-sonnet-4-6", endpoint_path: "/v1/chat/completions", api_type: "chat_completions" },
+        { id: "claude-opus-4-7", endpoint_path: "/v1/chat/completions", api_type: "chat_completions" },
+      ];
       function lsGet(key) {
         try { return localStorage.getItem(key); } catch { return null; }
       }
@@ -706,6 +807,7 @@
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
       const mappingTransferModal = new bootstrap.Modal("#mappingTransferModal");
       const mappingRollbackModal = new bootstrap.Modal("#mappingRollbackModal");
+      const aiOperationModal = new bootstrap.Modal("#aiOperationModal");
       const errorModal = new bootstrap.Modal("#errorModal");
       const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
@@ -713,6 +815,14 @@
       const remarkBsModal = new bootstrap.Modal("#remarkModal");
       const veoProjectsBsModal = new bootstrap.Modal("#veoProjectsModal");
       let veoProjectsModalMappingId = 0;
+      let aiModels = FALLBACK_AI_MODELS;
+      let aiDefaultModel = "gpt-5.5";
+      let aiHasServerDefaultKey = false;
+      let aiOperationTimer = null;
+      let aiOperationBusy = false;
+      let currentAiMappingId = 0;
+      let currentAiActiveBtn = null;
+      let lastAiOperationPayload = null;
 
       let state = {
         types: [],
@@ -734,6 +844,10 @@
 
       function canEditTaskTypeConfig() {
         return !currentUserProfile || !!currentUserProfile.is_admin;
+      }
+
+      function canSwitchProxy() {
+        return !!(currentUserProfile && (currentUserProfile.is_admin || currentUserProfile.can_switch_proxy));
       }
 
       function setTaskTypeConfigReadonly(readonly) {
@@ -1210,6 +1324,12 @@
         });
       }
 
+      function fillProxyControlsCached(spacePk) {
+        fillProxySelectsCached(spacePk);
+        fillProxyDisplaysCached(spacePk);
+        syncAnalyzeProxyButtons();
+      }
+
       const LS_KEYS_UI = {
         focusWinOnly: `${LS_PREFIX}task_types.focus_win_only`,
         mappingSortKey: `${LS_PREFIX}task_types.mapping_sort_key`,
@@ -1627,6 +1747,328 @@
       function getMappingPureMode(mappingId) {
         const m = (state.mappings || []).find(x => String(x?.id || "") === String(mappingId));
         return !!(m && m.pure_mode);
+      }
+
+      function getMappingById(mappingId) {
+        return (state.mappings || []).find(x => String(x?.id || "") === String(mappingId)) || null;
+      }
+
+      function nowTime() {
+        const d = new Date();
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+      }
+
+      function mappingWindowTitle(mappingId) {
+        const m = getMappingById(mappingId);
+        if (!m) return "当前窗口";
+        const sort = m.window_sort_num != null ? `#${m.window_sort_num}` : (m.window_pk != null ? `#${m.window_pk}` : "");
+        const name = m.window_name || m.window_key || "";
+        return [sort, name].filter(Boolean).join(" ") || "当前窗口";
+      }
+
+      function aiTargetUrlForMapping(m) {
+        return String(
+          m?.platform_account_url
+          || m?.platform_url
+          || state.current?.default_target_url
+          || ""
+        ).trim();
+      }
+
+      function buildAiOperationData(m) {
+        const username = String(m?.platform_username || m?.platform_account || "").trim();
+        const password = String(m?.platform_password || "").trim();
+        const efa = String(m?.platform_efa || "").trim();
+        const platformUrl = aiTargetUrlForMapping(m);
+        return {
+          task_type_id: state.current?.id ?? null,
+          task_type_name: state.current?.name || "",
+          task_type_code: state.current?.code || "",
+          default_target_url: state.current?.default_target_url || "",
+          mapping_id: m?.id ?? null,
+          window_pk: m?.window_pk ?? null,
+          window_key: m?.window_key || "",
+          window_sort_num: m?.window_sort_num ?? m?.window_pk ?? "",
+          window_name: m?.window_name || "",
+          browser_name: m?.browser_name || "",
+          space_pk: m?.space_pk ?? null,
+          space_id: m?.space_id || "",
+          space_name: m?.space_name || "",
+          platform_account: m?.platform_account || "",
+          platform_username: username,
+          platform_password: password,
+          platform_efa: efa,
+          platform_url: m?.platform_url || "",
+          platform_account_url: m?.platform_account_url || "",
+          target_url: platformUrl,
+          // 常见站点/模型更容易识别的别名；敏感值仍由后端执行器通过 value_key 在本地取值。
+          account: username,
+          username,
+          email: username,
+          login: username,
+          password,
+          twofa: efa,
+          twofa_code: efa,
+          twofa_secret: efa,
+          otp: efa,
+          otp_code: efa,
+          otp_secret: efa,
+        };
+      }
+
+      function aiAccountHintForMapping(m) {
+        const data = buildAiOperationData(m);
+        const win = mappingWindowTitle(m?.id);
+        const account = data.platform_username || data.platform_account || "-";
+        const parts = [
+          win,
+          `账号：${account || "-"}`,
+          data.platform_password ? "密码已携带" : "无密码",
+          data.platform_efa ? "2FA已携带" : "无2FA",
+        ];
+        return parts.join(" · ");
+      }
+
+      function setAiOperationStatus(status, text) {
+        const box = document.getElementById("aiOperationStatus");
+        if (!box) return;
+        const icon = status === "running"
+          ? `<span class="spinner-border spinner-border-sm text-primary" aria-hidden="true"></span>`
+          : status === "success"
+            ? `<span class="text-success fs-5">✓</span>`
+            : status === "error"
+              ? `<span class="text-danger fs-5">!</span>`
+              : `<span class="text-secondary fs-5">•</span>`;
+        box.innerHTML = `${icon}<span>${escapeHtml(text || "")}</span>`;
+      }
+
+      function stopAiOperationTimer() {
+        if (aiOperationTimer) {
+          window.clearInterval(aiOperationTimer);
+          aiOperationTimer = null;
+        }
+      }
+
+      function appendAiOperationLog(message, meta = "") {
+        const log = document.getElementById("aiOperationLog");
+        if (!log) return;
+        const line = document.createElement("div");
+        line.className = "log-line";
+        line.innerHTML = `
+          <div><span class="log-time mono">${escapeHtml(nowTime())}</span>${escapeHtml(message || "")}</div>
+          ${meta ? `<div class="text-muted mono mt-1">${escapeHtml(meta)}</div>` : ""}
+        `;
+        log.appendChild(line);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function resetAiOperationProgress(mappingId) {
+        lastAiOperationPayload = null;
+        stopAiOperationTimer();
+        const title = document.getElementById("aiOperationTitle");
+        if (title) title.textContent = `AI操作 - ${mappingWindowTitle(mappingId)}`;
+        const log = document.getElementById("aiOperationLog");
+        if (log) log.innerHTML = "";
+        const raw = document.getElementById("aiOperationRaw");
+        if (raw) {
+          raw.textContent = "";
+          raw.classList.add("d-none");
+        }
+        setAiOperationStatus("idle", "请输入操作内容后点击开始。");
+      }
+
+      function beginAiOperationPolling() {
+        stopAiOperationTimer();
+        let seconds = 0;
+        aiOperationTimer = window.setInterval(() => {
+          seconds += 5;
+          appendAiOperationLog(`Playwright 正在等待页面响应 / AI 正在分析下一步... 已等待约 ${seconds} 秒`);
+        }, 5000);
+      }
+
+      function syncAiOperationModelOptions() {
+        const sel = document.getElementById("aiOpModel");
+        if (!sel) return;
+        sel.innerHTML = aiModels.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.id)}</option>`).join("");
+        const saved = lsGet(LS_KEYS.aiOpModel) || aiDefaultModel || "gpt-5.5";
+        if (Array.from(sel.options).some(o => o.value === saved)) sel.value = saved;
+      }
+
+      async function loadAiConfig() {
+        try {
+          const r = await adminFetch("/api/admin/ai-agent/config");
+          if (!r) return;
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || "加载AI配置失败");
+          aiModels = Array.isArray(d.models) && d.models.length ? d.models : FALLBACK_AI_MODELS;
+          aiHasServerDefaultKey = !!d.has_default_api_key;
+          aiDefaultModel = d.default_model || "gpt-5.5";
+        } catch (e) {
+          aiModels = FALLBACK_AI_MODELS;
+          aiHasServerDefaultKey = false;
+        } finally {
+          syncAiOperationModelOptions();
+        }
+      }
+
+      function openAiOperationModal(mappingId, activeBtn = null) {
+        const m = getMappingById(mappingId);
+        if (!m) return toast("未找到窗口绑定数据，请刷新列表后重试", "warning");
+        currentAiMappingId = mappingId;
+        currentAiActiveBtn = activeBtn;
+        syncAiOperationModelOptions();
+
+        const stepsEl = document.getElementById("aiOpMaxSteps");
+        if (stepsEl) stepsEl.value = lsGet(LS_KEYS.aiOpMaxSteps) || stepsEl.value || "20";
+        const promptEl = document.getElementById("aiOpPrompt");
+        const savedPrompt = lsGet(LS_KEYS.aiOpPrompt);
+        if (promptEl && savedPrompt && !promptEl.value.trim()) promptEl.value = savedPrompt;
+
+        const accountHint = aiAccountHintForMapping(m);
+        const targetUrl = aiTargetUrlForMapping(m) || "未配置平台网址/任务默认网址";
+        const accountEl = document.getElementById("aiOpAccountHint");
+        if (accountEl) {
+          accountEl.textContent = accountHint;
+          accountEl.setAttribute("title", accountHint);
+        }
+        const targetEl = document.getElementById("aiOpTargetHint");
+        if (targetEl) {
+          targetEl.textContent = targetUrl;
+          targetEl.setAttribute("title", targetUrl);
+        }
+        resetAiOperationProgress(mappingId);
+        aiOperationModal.show();
+        setTimeout(() => document.getElementById("aiOpPrompt")?.focus(), 250);
+      }
+
+      function renderAiOperationResult(d) {
+        stopAiOperationTimer();
+        lastAiOperationPayload = d;
+        const result = d?.result || {};
+        const actionResult = result?.action_result || result || {};
+        const aiSteps = Array.isArray(actionResult.steps) ? actionResult.steps : [];
+        const stepLog = Array.isArray(d?.steps) ? d.steps : (Array.isArray(result.steps) && typeof result.steps[0] === "string" ? result.steps : []);
+        const ok = !!d?.success && actionResult.success !== false;
+        setAiOperationStatus(ok ? "success" : "error", ok ? "操作完成" : "操作结束但可能未成功，请查看详情");
+
+        appendAiOperationLog(`后端返回：${d?.action || "AI操作"} / ${result?.title || "-"}`, result?.final_url || result?.opened_url || "");
+        for (const s of stepLog) appendAiOperationLog(String(s || ""));
+        for (const s of aiSteps) {
+          const act = s?.action ? JSON.stringify(s.action) : "";
+          const res = s?.result ? JSON.stringify(s.result) : "";
+          appendAiOperationLog(`AI Step ${s?.index ?? ""}`, `${act}${res ? " => " + res : ""}`);
+        }
+        if (actionResult.summary) appendAiOperationLog(`AI 总结：${actionResult.summary}`);
+        if (actionResult.status) appendAiOperationLog(`AI状态：${actionResult.status}`);
+        const raw = document.getElementById("aiOperationRaw");
+        if (raw) {
+          raw.textContent = JSON.stringify(d, null, 2);
+          raw.classList.remove("d-none");
+        }
+      }
+
+      function renderAiOperationError(message) {
+        stopAiOperationTimer();
+        lastAiOperationPayload = { error: message };
+        setAiOperationStatus("error", "执行失败");
+        appendAiOperationLog(message || "未知错误");
+        const raw = document.getElementById("aiOperationRaw");
+        if (raw) {
+          raw.textContent = String(message || "");
+          raw.classList.remove("d-none");
+        }
+      }
+
+      async function startAiOperation() {
+        const mappingId = currentAiMappingId;
+        if (!mappingId || aiOperationBusy) return;
+        const m = getMappingById(mappingId);
+        if (!m) return toast("未找到窗口绑定数据，请刷新列表后重试", "warning");
+        const promptEl = document.getElementById("aiOpPrompt");
+        const promptText = String(promptEl?.value || "").trim();
+        if (!promptText) {
+          toast("请先输入要让AI执行的操作内容", "warning");
+          promptEl?.focus();
+          return;
+        }
+        if (!aiHasServerDefaultKey) {
+          appendAiOperationLog("尚未配置 AI 参数，请先到智能体页面配置模型和 API Key");
+          toast("请先到智能体页面配置AI参数", "warning");
+          if (confirm("当前未配置 AI API Key。是否现在前往智能体页面配置？")) {
+            window.location.href = "/admin/agent";
+          }
+          return;
+        }
+
+        const model = document.getElementById("aiOpModel")?.value || aiDefaultModel || "gpt-5.5";
+        const maxStepsEl = document.getElementById("aiOpMaxSteps");
+        const maxSteps = Math.max(5, Math.min(30, Number(maxStepsEl?.value || 20)));
+        if (maxStepsEl) maxStepsEl.value = String(maxSteps);
+        lsSet(LS_KEYS.aiOpPrompt, promptText);
+        lsSet(LS_KEYS.aiOpModel, model);
+        lsSet(LS_KEYS.aiOpMaxSteps, String(maxSteps));
+
+        const data = buildAiOperationData(m);
+        const targetUrl = data.target_url || null;
+        const targetEl = document.getElementById("aiOpTargetHint");
+        if (targetEl) {
+          targetEl.textContent = targetUrl || "未配置平台网址/任务默认网址";
+          targetEl.setAttribute("title", targetUrl || "");
+        }
+        const fullPrompt = [
+          "请使用中文与用户交互和总结，不要返回英文提示。",
+          "你正在操作任务类型窗口中的平台账号页面；请多使用 Playwright 页面扫描、查找、点击、填写、等待等动作推进任务。",
+          "可用执行资料包括 platform_username/platform_password/platform_efa/platform_url/platform_account_url/target_url，以及 username/password/twofa/otp 等别名；填写敏感信息时优先使用 value_key，不要把敏感值写到 value。",
+          "如果需要接口辅助，可以通过页面上下文使用 page_fetch_json/page_fetch_tx 执行 GET/POST；如果需要分析页面问题，可查看 diagnostics 中的 network/console/page error。",
+          "可以根据用户明确目标点击登录、继续、提交等按钮；但遇到验证码、短信、安全挑战、风控拦截或无法判断时必须停止并提示人工接管。",
+          "不要过早结束；只有明确完成用户目标，或需要人工接管时才停止。",
+          `用户要求：${promptText}`,
+        ].join("\n");
+
+        resetAiOperationProgress(mappingId);
+        setAiOperationStatus("running", "AI 正在连接指纹浏览器并准备 Playwright 操作...");
+        appendAiOperationLog("已读取用户操作要求", promptText);
+        appendAiOperationLog("已携带执行资料", aiAccountHintForMapping(m));
+        appendAiOperationLog("准备通过 Playwright 打开/连接目标窗口", targetUrl || "沿用当前窗口页面");
+        beginAiOperationPolling();
+        aiOperationBusy = true;
+        setBtnBusy(currentAiActiveBtn, true, { loadingText: "AI操作" });
+        const startBtn = document.getElementById("btnStartAiOperation");
+        if (startBtn) startBtn.disabled = true;
+        try {
+          const r = await adminFetch(`/api/admin/ai-agent/windows/${encodeURIComponent(mappingId)}/run`, {
+            method: "POST",
+            body: JSON.stringify({
+              prompt: fullPrompt,
+              target_url: targetUrl,
+              model,
+              api_key: null,
+              data,
+              headless: getMappingHeadless(mappingId),
+              pure_mode: getMappingPureMode(mappingId),
+              auto_submit: true,
+              max_steps: maxSteps,
+            }),
+          });
+          if (!r) {
+            renderAiOperationError("请求中断：未收到后端响应，可能登录已过期。");
+            return;
+          }
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || "AI操作失败");
+          renderAiOperationResult(d);
+          updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl: currentAiActiveBtn });
+          toast("AI操作已完成，请查看弹窗结果", "success");
+          await loadMappings({ preserveSelection: true });
+        } catch (e) {
+          toast(e.message || "AI操作失败", "error");
+          renderAiOperationError(e.message || "AI操作失败");
+        } finally {
+          stopAiOperationTimer();
+          aiOperationBusy = false;
+          if (startBtn) startBtn.disabled = false;
+          setBtnBusy(currentAiActiveBtn, false);
+        }
       }
 
       function patchMappingInState(mappingId, patch) {
@@ -2158,9 +2600,12 @@
           const getDisplayedProxyRank = (m) => {
             const mid = parseInt(String(m?.id ?? 0), 10) || 0;
             if (mid <= 0) return null;
-            const span = document.querySelector(`#mappingBody span[data-role="proxyDisplay"][data-mid="${mid}"]`);
-            if (!span) return null;
-            const text = String(span.textContent || "").trim();
+            const el = document.querySelector(`#mappingBody select[data-role="proxySelect"][data-mid="${mid}"]`)
+              || document.querySelector(`#mappingBody span[data-role="proxyDisplay"][data-mid="${mid}"]`);
+            if (!el) return null;
+            const text = el instanceof HTMLSelectElement
+              ? String(el.selectedOptions?.[0]?.textContent || el.options?.[el.selectedIndex]?.textContent || "").trim()
+              : String(el.textContent || "").trim();
             const mm = text.match(/^(\d+)\s*\./);
             if (mm) return parseInt(mm[1], 10) || null;
             if (text.includes("(不使用代理)") || text.includes("(自定义代理)")) return 0;
@@ -2413,6 +2858,7 @@
       function renderMappings() {
         const body = document.getElementById("mappingBody");
         const canEditMapping = canEditTaskTypeConfig();
+        const canSwitchMappingProxy = canSwitchProxy();
         updateMappingsHeaderSummaryUI();
         updateQuotaSortHint();
         if (!state.mappings.length) {
@@ -2452,15 +2898,19 @@
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
           const _isGrok = _handler === "grok_workflow";
-          const _targetPageHandler = _isVeo || _isGrok;
-          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow";
+          const _isDreamina = _handler === "dreamina_workflow";
+          const _targetPageHandler = _isVeo || _isGrok || _isDreamina;
+          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow" || _handler === "dreamina_workflow";
           const _openTitle = "会先清空该窗口本地缓存，再仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
           const _startTitle = _targetPageHandler ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           const _openAccountTitle = _isVeo
             ? "开号/连接：连接后自动判断是否为 Google 登录页；若页面可见 @gmail.com（选账号列表）则走「连接置前」自动点选；否则走完整 Google 登录并打开 Flow（完成后断开 CDP）"
-            : _isGrok
-              ? "连接：打开 Grok 默认页并断开 CDP；默认用窗口 Cookie，可选在「access_token」列保存 Grok SSO（与 grok2api 同源）"
-              : "开号：Sora 走 Plus 注册自动化；Veo 为 Google 登录并打开 Flow（完成后断开 CDP）";
+            : _isDreamina
+              ? "开号/连接：打开 Dreamina 目标页并断开 CDP；默认使用窗口 Cookie，可用「access_token」列获取/保存 sessionid"
+              : _isGrok
+                ? "连接：打开 Grok 默认页并断开 CDP；默认用窗口 Cookie，可选在「access_token」列保存 Grok SSO（与 grok2api 同源）"
+                : "开号：Sora 走 Plus 注册自动化；Veo/Dreamina 为打开目标页并断开 CDP";
+          const _openAccountLabel = (_isVeo || _isDreamina) ? "开号/连接" : (_isGrok ? "连接" : "开号");
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -2471,13 +2921,13 @@
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
+                  <button class="btn btn-primary btn-sm btn-icon" title="AI操作：携带该窗口的平台账号、密码、2FA 和网址，让智能体通过 Playwright 自动操作" aria-label="AI操作" data-act="aiOperation" data-mid="${m.id}"><i class="bi bi-robot" aria-hidden="true"></i><span class="visually-hidden">AI操作</span></button>
 
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
-                  <button class="btn btn-outline-dark btn-sm btn-icon" title="回退到其他任务类型" aria-label="回退" data-act="rollback" data-mid="${m.id}"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">回退</span></button>
                   <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地与服务器缓存，并清空本行已保存的 access_token、额度与会员信息（Roxy：clear_local_cache + clear_server_cache）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
-                  ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="${escapeHtml(_openAccountTitle)}" aria-label="开号" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">开号</span></button>` : ""}
+                  ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="${escapeHtml(_openAccountTitle)}" aria-label="${escapeHtml(_openAccountLabel)}" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">${escapeHtml(_openAccountLabel)}</span></button>` : ""}
                 </div>
               </div>
             </td>
@@ -2501,12 +2951,12 @@
                 <div
                   class="token-click truncate-1"
                   style="max-width: 360px;"
-                  title="${_isGrok ? "点击复制 Grok SSO（可选）；若为空则打开编辑框" : "点击复制 access_token"}"
+                  title="${_isGrok ? "点击复制 Grok SSO（可选）；若为空则打开编辑框" : (_isDreamina ? "点击复制 Dreamina sessionid" : "点击复制 access_token")}"
                   data-role="accessToken"
                   data-mid="${m.id}"
                   data-token="${escapeHtml(m.sora_access_token || "")}"
                 ><span class="fw-semibold" data-role="accessTokenMasked" data-mid="${m.id}">${escapeHtml(maskToken(m.sora_access_token) || "-")}</span></div>
-                <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="${_isGrok ? "编辑 Grok SSO（可选）；不支持自动获取" : "获取/更新 access_token"}" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="${_isGrok ? "编辑 Grok SSO（可选）；不支持自动获取" : (_isDreamina ? "获取/更新 Dreamina sessionid（打开目标页后读取 Cookies）" : "获取/更新 access_token")}" data-act="convertAccessToken" data-mid="${m.id}">🔑</button>
               </div>
               <div><span class="fw-semibold" data-role="accessTokenExpires" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_access_expires))}</span></div>
             </td>
@@ -2521,7 +2971,7 @@
               </div>
               <div class="text-muted">重置:<span class="fw-semibold" data-role="cooldownUntil" data-mid="${m.id}">${escapeHtml(m.cooldown_until || "-")}</span></div>
             </td>
-            <td class="text-center">
+            <td class="col-drafts">
               <span class="fw-semibold mono" style="cursor:pointer;" title="点击清除草稿箱（数量>1时可用）" data-role="draftsCount" data-mid="${m.id}">${m.sora_drafts_count ?? 0}</span>
             </td>
             <td>
@@ -2534,18 +2984,34 @@
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="刷新会员信息" data-act="refreshSubscription" data-mid="${m.id}">⟳</button>
               </div>
             </td>
-            <td style="width: 260px; min-width: 260px;">
-              <span
-                class="mono"
-                style="font-size: 10px;"
-                data-role="proxyDisplay"
-                data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
-                data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
-                data-mid="${escapeHtml(String(m.id ?? ""))}"
-                data-current_proxy_id="${escapeHtml(String(m.proxy_id ?? 0))}"
-                data-proxy_addr="${escapeHtml(String(m.proxy_addr || ""))}"
-                data-proxy_country="${escapeHtml(String(m.proxy_country || ""))}"
-              >(加载代理中...)</span>
+            <td class="col-proxy">
+              ${canSwitchMappingProxy ? `
+                <select
+                  class="form-select form-select-sm mono"
+                  style="font-size: 10px; min-width: 400px;"
+                  title="选择后立即同步到指纹浏览器窗口"
+                  data-role="proxySelect"
+                  data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
+                  data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
+                  data-mid="${escapeHtml(String(m.id ?? ""))}"
+                  data-current_proxy_id="${escapeHtml(String(m.proxy_id ?? 0))}"
+                  data-proxy_addr="${escapeHtml(String(m.proxy_addr || ""))}"
+                  data-proxy_country="${escapeHtml(String(m.proxy_country || ""))}"
+                ><option value="">(加载代理中...)</option></select>
+              ` : `
+                <span
+                  class="mono"
+                  style="font-size: 10px;"
+                  title="当前用户未开启切换代理权限"
+                  data-role="proxyDisplay"
+                  data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
+                  data-window_key="${escapeHtml(String(m.window_key ?? ""))}"
+                  data-mid="${escapeHtml(String(m.id ?? ""))}"
+                  data-current_proxy_id="${escapeHtml(String(m.proxy_id ?? 0))}"
+                  data-proxy_addr="${escapeHtml(String(m.proxy_addr || ""))}"
+                  data-proxy_country="${escapeHtml(String(m.proxy_country || ""))}"
+                >(加载代理中...)</span>
+              `}
             </td>
             <td>
               <button
@@ -2616,7 +3082,7 @@
             </td>
             <td class="text-center">
               <div class="form-check form-switch d-inline-block mb-0">
-                <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
+                <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
               </div>
             </td>
             <td class="text-center">
@@ -2641,8 +3107,8 @@
             .filter(x => Number.isFinite(x) && x > 0)));
           spacePks.forEach(spk => {
             ensureProxiesLoaded(spk)
-              .then(() => fillProxyDisplaysCached(spk))
-              .catch(() => fillProxyDisplaysCached(spk));
+              .then(() => fillProxyControlsCached(spk))
+              .catch(() => fillProxyControlsCached(spk));
           });
         } catch {}
 
@@ -2669,7 +3135,7 @@
         body.addEventListener("click", (e) => {
           const target = e.target;
 
-          // data-act 按钮（打开/关闭/转移/回退/编辑/刷新等）
+          // data-act 按钮（打开/AI操作/关闭/转移/编辑/刷新等）
           const actBtn = target.closest?.("[data-act]");
           if (actBtn) {
             const act = actBtn.dataset.act;
@@ -2733,13 +3199,15 @@
       })();
 
       function getSelectedProxyContextByMappingId(mappingId) {
-        const span = document.querySelector(`span[data-role="proxyDisplay"][data-mid="${mappingId}"]`);
-        if (!span) return { ok: false, reason: "代理信息未找到，请先刷新列表" };
-        const proxyId = parseInt(String(span.dataset.current_proxy_id || "0"), 10) || 0;
-        const spacePk = parseInt(String(span.dataset.space_pk || ""), 10) || 0;
+        const el = document.querySelector(`select[data-role="proxySelect"][data-mid="${mappingId}"]`)
+          || document.querySelector(`span[data-role="proxyDisplay"][data-mid="${mappingId}"]`);
+        if (!el) return { ok: false, reason: "代理信息未找到，请先刷新列表" };
+        const selectedVal = el instanceof HTMLSelectElement ? String(el.value || "") : "";
+        const proxyId = parseInt(String(selectedVal || el.dataset.current_proxy_id || "0"), 10) || 0;
+        const spacePk = parseInt(String(el.dataset.space_pk || ""), 10) || 0;
         if (!spacePk) return { ok: false, reason: "缺少 space_pk，无法检测代理" };
         if (proxyId <= 0) return { ok: false, reason: "当前未选择可检测的代理" };
-        return { ok: true, span, spacePk, proxyId };
+        return { ok: true, el, spacePk, proxyId };
       }
 
       function syncAnalyzeProxyButtons() {
@@ -2829,7 +3297,7 @@
             <div class="table-responsive">
               <table class="table table-sm align-middle mb-0">
                 <thead><tr class="small text-muted">
-                  <th>名称</th><th class="mono">project_id</th><th>tool</th><th>创建时间</th>
+                  <th>名称</th><th class="mono">project_id</th><th>tool</th><th>创建时间</th><th class="text-end">操作</th>
                 </tr></thead>
                 <tbody>
                   ${items.map((p) => `
@@ -2838,6 +3306,15 @@
                       <td class="mono small">${escapeHtml(p.project_id || "-")}</td>
                       <td>${escapeHtml(p.tool_name || "PINHOLE")}</td>
                       <td class="small text-muted">${escapeHtml(p.created_at || "-")}</td>
+                      <td class="text-end">
+                        <button
+                          type="button"
+                          class="btn btn-outline-danger btn-sm"
+                          data-act="veoProjectDelete"
+                          data-project_id="${escapeHtml(p.project_id || "")}"
+                          ${canEditTaskTypeConfig() ? "" : "disabled"}
+                        >删除</button>
+                      </td>
                     </tr>
                   `).join("")}
                 </tbody>
@@ -2881,6 +3358,32 @@
         }
       }
 
+      async function deleteVeoProject(projectId, btn) {
+        if (!canEditTaskTypeConfig()) return toast("当前账号无权操作", "warning");
+        const mid = veoProjectsModalMappingId;
+        const pid = String(projectId || "").trim();
+        if (!mid || !pid) return toast("缺少 project_id，无法删除", "warning");
+        const hl = getMappingHeadless(mid);
+        const qs = new URLSearchParams();
+        if (hl) qs.set("headless", "true");
+        const qstr = qs.toString();
+        const url = `/api/admin/task-type-windows/${mid}/veo-flow-projects/${encodeURIComponent(pid)}${qstr ? `?${qstr}` : ""}`;
+        try {
+          setBtnBusy(btn, true, { loadingText: "删除中", keepWidth: false });
+          const d = await postJson(url, { method: "DELETE" });
+          toast(`已删除：${d?.project_name || pid}`, "success");
+          patchMappingInState(mid, { veo_flow_project_count: d?.veo_flow_project_count });
+          const cntBtn = document.querySelector(`button[data-act="veoProjects"][data-mid="${mid}"]`);
+          if (cntBtn) cntBtn.textContent = `管理（${d?.veo_flow_project_count ?? 0}）`;
+          await loadVeoProjectsModalList();
+          await loadMappings({ preserveSelection: true });
+        } catch (e) {
+          toast(e.message || "删除失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+        }
+      }
+
       async function openMappingEditor(mappingId, act, el) {
         if (!canEditTaskTypeConfig() && (act === "edit" || act === "del")) {
           toast("当前账号无权编辑绑定", "warning");
@@ -2891,6 +3394,9 @@
         }
         if (act === "manualOpen") {
           return manualOpenWindow(mappingId, el);
+        }
+        if (act === "aiOperation") {
+          return openAiOperationModal(mappingId, el);
         }
 
 
@@ -2905,9 +3411,6 @@
         }
         if (act === "transfer") {
           return openMappingTransferModal(mappingId);
-        }
-        if (act === "rollback") {
-          return openMappingRollbackModal(mappingId);
         }
         if (act === "clearBrowserCache") {
           return clearBrowserCache(mappingId, el);
@@ -2990,7 +3493,7 @@
       async function refreshInvite(mappingId) {
         try {
           const { refreshInviteBtn } = getRowActionButtons(mappingId);
-          setBtnBusy(refreshInviteBtn, true, { loadingText: "刷新中", keepWidth: false });
+          setBtnBusy(refreshInviteBtn, true, { loadingText: "", keepWidth: false });
           const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}/refresh-invite-code`, { method: "POST" });
           if (!r) return;
           const d = await r.json();
@@ -3012,7 +3515,7 @@
       async function refreshSubscription(mappingId) {
         try {
           const { refreshSubBtn } = getRowActionButtons(mappingId);
-          setBtnBusy(refreshSubBtn, true, { loadingText: "刷新中", keepWidth: false });
+          setBtnBusy(refreshSubBtn, true, { loadingText: "", keepWidth: false });
           const hl = getMappingHeadless(mappingId);
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-subscription-info?headless=${hl}`, { method: "POST" });
           const patch = {
@@ -3083,8 +3586,7 @@
             }
           }
           proxiesCache.set(spacePk, arr);
-          fillProxyDisplaysCached(spacePk);
-          syncAnalyzeProxyButtons();
+          fillProxyControlsCached(spacePk);
           toast(`检测完成：安全级别=${riskLevel || "-"}，IP类型=${asnType || "-"}`, "success");
         } catch (e) {
           toast(e.message || "检测失败", "error");
@@ -3155,6 +3657,13 @@
 
       document.getElementById("btnVeoProjectCreate").addEventListener("click", () => {
         submitVeoProjectCreate();
+      });
+
+      document.getElementById("veoProjectsModalBody")?.addEventListener("click", (ev) => {
+        const btn = ev.target?.closest?.('button[data-act="veoProjectDelete"]');
+        if (!btn) return;
+        const projectId = String(btn.dataset.project_id || "").trim();
+        deleteVeoProject(projectId, btn);
       });
 
       function collectAllSpacesFromTree(tree) {
@@ -3672,7 +4181,7 @@
           const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
           if (m) { m.sora_access_token = tok || null; m.sora_access_expires = exp || null; }
           updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
-          toast("已自动获取并保存", "success");
+          toast(d?.cookie_name === "sessionid" ? "已读取 Cookies 中的 sessionid 并保存" : "已自动获取并保存", "success");
         } catch (e) {
           toast(e.message || "获取 access_token 失败", "error");
         } finally {
@@ -3687,6 +4196,8 @@
         let hint = `窗口：${m?.window_name || "-"} · 账号：${m?.platform_account || "-"} · mapping_id=${String(mappingId)}`;
         if (gh === "grok_workflow") {
           hint += " · Grok：此处保存 xAI SSO（可选，与 grok2api 池化 token 同源）；留空则任务仅用指纹窗口已登录 Cookie。任务 payload 也可用 grok_access_token / access_token 覆盖。";
+        } else if (gh === "dreamina_workflow") {
+          hint += " · Dreamina：此处保存 Cookies 中的 sessionid；点击「更新」会打开目标页后自动读取。";
         }
         const hintEl = document.getElementById("tokenEditHint");
         if (hintEl) hintEl.textContent = hint;
@@ -3695,6 +4206,9 @@
           if (gh === "grok_workflow") {
             helpEl.innerHTML =
               "Grok 任务类型：<strong>不支持</strong>「更新」自动拉取。请「保存」手工粘贴 SSO，或保持为空仅用窗口 Cookie。过期时间字段可为空。";
+          } else if (gh === "dreamina_workflow") {
+            helpEl.innerHTML =
+              "Dreamina 任务类型：点击「更新」会连接指纹浏览器窗口打开目标页面，然后读取 Cookies 中 <span class=\"mono\">sessionid</span> 的值并保存到此列。";
           } else {
             helpEl.innerHTML =
               "点击「更新」将在对应指纹浏览器窗口内自动请求 <span class=\"mono\">/api/auth/session</span> 获取并保存（走该窗口代理）。「保存」仅用于手工填写 <span class=\"mono\">access_token</span> 的场景。";
@@ -3707,7 +4221,7 @@
         }
         const _tokLabels = document.querySelectorAll("#tokenModal .modal-body .form-label.mono");
         if (_tokLabels.length > 0) {
-          _tokLabels[0].textContent = gh === "grok_workflow" ? "access_token（Grok SSO，可选）" : "access_token";
+          _tokLabels[0].textContent = gh === "grok_workflow" ? "access_token（Grok SSO，可选）" : (gh === "dreamina_workflow" ? "access_token（Dreamina sessionid）" : "access_token");
         }
         document.getElementById("tokenAccessToken").value = String(m?.sora_access_token || "");
         document.getElementById("tokenExpires").value = String(m?.sora_access_expires || "");
@@ -3784,7 +4298,7 @@
             m.sora_access_expires = exp || null;
           }
           updateMappingRowUI(mappingId, { sora_access_token: tok || null, sora_access_expires: exp || null });
-          toast("已自动获取并保存", "success");
+          toast(d?.cookie_name === "sessionid" ? "已读取 Cookies 中的 sessionid 并保存" : "已自动获取并保存", "success");
           tokenModal.hide();
         } catch (e) {
           toast(e.message || "更新失败", "error");
@@ -3863,7 +4377,7 @@
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
           const _h2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(_h2 === "veo_workflow" || _h2 === "grok_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
+          toast(_h2 === "veo_workflow" || _h2 === "grok_workflow" || _h2 === "dreamina_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
           flashBtnText(startBtn, "已重启");
         } catch (e) {
           toast(e.message, "error");
@@ -3895,23 +4409,29 @@
         const btn = fromEl?.closest?.("button") || fromEl;
         try {
           cancelCloseHintCountdown({ hideModal: true });
-          setBtnBusy(btn, true, { loadingText: "开号中" });
+          const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          const loadingText = (_h === "veo_workflow" || _h === "dreamina_workflow" || _h === "grok_workflow") ? "连接中" : "开号中";
+          setBtnBusy(btn, true, { loadingText });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
           const r = await postJson(`/api/admin/task-type-windows/${mappingId}/open-account?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
-          const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          // 开号/连接流程会打开或唤起指纹窗口；成功后立即同步本行“状态”列，
+          // 避免必须整页刷新后才能看到“打开”。
+          updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl: btn });
           const resMsg = r?.result && typeof r.result.message === "string" ? String(r.result.message).trim() : "";
           const line =
             resMsg ||
             (_h === "veo_workflow"
               ? "已完成：Google 登录并打开 Flow，已断开自动化连接"
-              : _h === "grok_workflow"
-                ? "已打开 Grok 页面，已断开自动化连接（请在本窗口完成登录）"
-                : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
+              : _h === "dreamina_workflow"
+                ? "已打开 Dreamina 页面，已断开自动化连接（请在本窗口完成登录/确认 Cookie）"
+                : _h === "grok_workflow"
+                  ? "已打开 Grok 页面，已断开自动化连接（请在本窗口完成登录）"
+                  : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
           toast(line, "success");
           flashBtnText(btn, "完成");
         } catch (e) {
-          toast(e.message || "开号失败", "error");
+          toast(e.message || "开号/连接失败", "error");
         } finally {
           setBtnBusy(btn, false);
         }
@@ -4349,6 +4869,7 @@
         const proxyId = parseInt(String(el.value || "0"), 10) || 0;
         const oldProxyId = parseInt(String(el.dataset.current_proxy_id || "0"), 10) || 0;
         if (!spacePk || !wk) return toast("缺少 space_pk/window_key，无法切换代理（请刷新列表）", "error");
+        if (!canSwitchProxy()) return toast("当前账号无权切换代理", "warning");
         if (el.value === "__custom__") return; // 禁止选择“自定义代理”占位项
 
         try {
@@ -4392,7 +4913,7 @@
               bump(oldProxyId, -1);
               bump(proxyId, +1);
               proxiesCache.set(spacePk, arr);
-              fillProxyDisplaysCached(spacePk);
+              fillProxyControlsCached(spacePk);
             }
           } catch {}
 
@@ -4414,8 +4935,7 @@
           // 重新拉取该 space_pk 的“真实绑定数”，再刷新下拉（保证数字实时）
           try {
             await refreshProxyBindingCounts(spacePk);
-            fillProxyDisplaysCached(spacePk);
-            syncAnalyzeProxyButtons();
+            fillProxyControlsCached(spacePk);
           } catch {}
         } catch (e) {
           toast(e.message || "修改代理失败", "error");
@@ -4447,6 +4967,12 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "切换失败");
             updateMappingRowUI(mid, { enabled: newEnabled });
+            await applyMappingPureModeBrowserSettings({
+              mappingId: mid,
+              spacePk: parseInt(el.dataset.space_pk || "", 10),
+              windowKey: String(el.dataset.window_key || "").trim(),
+              pureMode: !!newEnabled,
+            });
             toast(newEnabled ? "已启用" : "已禁用", "success");
           } catch (e) {
             el.checked = !newEnabled;
@@ -4490,9 +5016,9 @@
           const newPureMode = el.checked;
           el.disabled = true;
           try {
-            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
-              method: "POST",
-              body: JSON.stringify({ pure_mode: newPureMode, mapping_id: mid }),
+            const r = await adminFetch(`/api/admin/task-type-windows/${mid}`, {
+              method: "PATCH",
+              body: JSON.stringify({ pure_mode: newPureMode }),
             });
             if (!r) { el.checked = !newPureMode; return; }
             const d = await r.json();
@@ -4532,7 +5058,7 @@
       async function refreshQuota(mappingId) {
         try {
           const { refreshQuotaBtn } = getRowActionButtons(mappingId);
-          setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
+          setBtnBusy(refreshQuotaBtn, true, { loadingText: "", keepWidth: false });
           const hl = getMappingHeadless(mappingId);
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/refresh-remaining-quota?headless=${hl}`, { method: "POST" });
           const v = (d?.remaining_quota ?? 0);
@@ -4691,8 +5217,29 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "启用失败");
             updateMappingRowUI(mappingId, { enabled: true });
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            await applyMappingPureModeBrowserSettings({
+              mappingId,
+              spacePk: parseInt(String(m.space_pk || ""), 10),
+              windowKey: String(m.window_key || "").trim(),
+              pureMode: true,
+            });
           },
         });
+      }
+
+      async function applyMappingPureModeBrowserSettings({ mappingId, spacePk, windowKey, pureMode }) {
+        const spk = parseInt(String(spacePk || ""), 10) || 0;
+        const wk = String(windowKey || "").trim();
+        if (!spk || !wk) throw new Error("缺少 space_pk 或 window_key");
+        const r = await adminFetch(`/api/admin/spaces/${spk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
+          method: "POST",
+          body: JSON.stringify({ pure_mode: !!pureMode, mapping_id: mappingId }),
+        });
+        if (!r) throw new Error("请求失败");
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "应用指纹浏览器设置失败");
       }
 
       async function bulkEnableOffSelected() {
@@ -4709,6 +5256,14 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "禁用失败");
             updateMappingRowUI(mappingId, { enabled: false });
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            await applyMappingPureModeBrowserSettings({
+              mappingId,
+              spacePk: parseInt(String(m.space_pk || ""), 10),
+              windowKey: String(m.window_key || "").trim(),
+              pureMode: false,
+            });
           },
         });
       }
@@ -4754,14 +5309,9 @@
           label: "批量开启纯净模式",
           ids,
           runner: async (mappingId) => {
-            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-            if (!m) throw new Error("找不到绑定记录");
-            const spacePk = parseInt(String(m.space_pk || ""), 10) || 0;
-            const wk = String(m.window_key || "").trim();
-            if (!spacePk || !wk) throw new Error("缺少 space_pk 或 window_key");
-            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
-              method: "POST",
-              body: JSON.stringify({ pure_mode: true, mapping_id: mappingId }),
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ pure_mode: true }),
             });
             if (!r) throw new Error("请求失败");
             const d = await r.json();
@@ -4777,14 +5327,9 @@
           label: "批量关闭纯净模式",
           ids,
           runner: async (mappingId) => {
-            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-            if (!m) throw new Error("找不到绑定记录");
-            const spacePk = parseInt(String(m.space_pk || ""), 10) || 0;
-            const wk = String(m.window_key || "").trim();
-            if (!spacePk || !wk) throw new Error("缺少 space_pk 或 window_key");
-            const r = await adminFetch(`/api/admin/spaces/${spacePk}/windows/${encodeURIComponent(wk)}/set-pure-mode`, {
-              method: "POST",
-              body: JSON.stringify({ pure_mode: false, mapping_id: mappingId }),
+            const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ pure_mode: false }),
             });
             if (!r) throw new Error("请求失败");
             const d = await r.json();
@@ -4832,7 +5377,7 @@
         let ok = 0, fail = 0;
         for (let i = 0; i < ids.length; i += 1) {
           const { refreshQuotaBtn } = getRowActionButtons(ids[i]);
-          setBtnBusy(refreshQuotaBtn, true, { loadingText: "刷新中", keepWidth: false });
+          setBtnBusy(refreshQuotaBtn, true, { loadingText: "", keepWidth: false });
           try {
             const hl = getMappingHeadless(ids[i]);
             const params = new URLSearchParams();
@@ -4867,7 +5412,7 @@
         const id = document.getElementById("typeId")?.value;
         if (!id) return toast("请先选择任务类型", "warning");
         try {
-          setBtnBusy(btn, true, { loadingText: "刷新中", keepWidth: false });
+          setBtnBusy(btn, true, { loadingText: "", keepWidth: false });
           const r = await adminFetch(`/api/admin/task-types/${id}/windows`);
           if (!r) return;
           const d = await r.json();
@@ -5032,7 +5577,7 @@
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         try {
-          setBtnBusy(btn, true, { loadingText: "刷新中" });
+          setBtnBusy(btn, true, { loadingText: "" });
           await loadMappings({ preserveSelection: true });
           toast("列表已刷新", "success");
         } catch (err) {
@@ -5136,9 +5681,38 @@
       document.getElementById("thInflight")?.addEventListener("click", () => toggleSort("inflight_slots", "desc"));
       document.getElementById("thPureMode")?.addEventListener("click", () => toggleSort("pure_mode", "desc"));
 
+      document.getElementById("aiOperationModal")?.addEventListener("hidden.bs.modal", stopAiOperationTimer);
+      document.getElementById("btnStartAiOperation")?.addEventListener("click", () => startAiOperation().catch(e => {
+        toast(e.message || "AI操作失败", "error");
+        renderAiOperationError(e.message || "AI操作失败");
+      }));
+      document.getElementById("aiOpModel")?.addEventListener("change", e => {
+        lsSet(LS_KEYS.aiOpModel, e.target.value || "gpt-5.5");
+      });
+      document.getElementById("aiOpMaxSteps")?.addEventListener("change", e => {
+        const n = Math.max(1, Math.min(30, Number(e.target.value || 20)));
+        e.target.value = String(n);
+        lsSet(LS_KEYS.aiOpMaxSteps, String(n));
+      });
+      document.getElementById("aiOpPrompt")?.addEventListener("input", e => {
+        const v = String(e.target.value || "").trim();
+        if (v) lsSet(LS_KEYS.aiOpPrompt, v);
+        else lsDel(LS_KEYS.aiOpPrompt);
+      });
+      document.getElementById("btnCopyAiOperation")?.addEventListener("click", async () => {
+        const text = JSON.stringify(lastAiOperationPayload || {}, null, 2);
+        try {
+          await navigator.clipboard.writeText(text);
+          toast("AI操作结果已复制", "success");
+        } catch (_e) {
+          toast("复制失败，请手动选择详情文本", "error");
+        }
+      });
+
       Promise.resolve()
         .then(() => getAdminProfile())
         .then((u) => { currentUserProfile = u; applyReadonlyByRole(); })
+        .then(loadAiConfig)
         .then(applyUiDefaultsFromLS)
         .then(loadUiDefaults)
         .then(loadProjects)

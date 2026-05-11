@@ -22,10 +22,16 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
+          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
+          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
           <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
+        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.me/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -66,6 +72,11 @@
                 <label class="form-label">首帧图片链接 first_image_url（可选）</label>
                 <input class="form-control mono" id="firstImageUrl" placeholder="https://..." />
                 <div class="text-muted small">后端不再接收图片二进制，只接收网络链接（由 handler 自行处理）。</div>
+              </div>
+              <div class="mb-3 form-check">
+                <input class="form-check-input" type="checkbox" id="dreaminaImageUploadWorkflow" />
+                <label class="form-check-label" for="dreaminaImageUploadWorkflow">Dreamina 单图上传保存（workflow_kind=image_upload）</label>
+                <div class="text-muted small">勾选后会把上面的图片链接作为 <span class="mono">image_url</span>，并在 payload 中加入 <span class="mono">workflow_kind: "image_upload"</span>。</div>
               </div>
               <div class="mb-3">
                 <label class="form-label">时长 duration（可选）</label>
@@ -137,6 +148,7 @@
         testPrompt: `${LS_PREFIX}test.prompt`,
         testVideoUrl: `${LS_PREFIX}test.video_url`,
         testFirstImageUrl: `${LS_PREFIX}test.first_image_url`,
+        testDreaminaImageUploadWorkflow: `${LS_PREFIX}test.dreamina_image_upload_workflow`,
         testDuration: `${LS_PREFIX}test.duration`,
         testImageResolution: `${LS_PREFIX}test.image_resolution`,
         testLastTaskId: `${LS_PREFIX}test.last_task_id`,
@@ -298,15 +310,22 @@
           const prompt = document.getElementById("prompt").value.trim();
           const videoUrl = document.getElementById("videoUrl").value.trim();
           const firstImageUrl = document.getElementById("firstImageUrl").value.trim();
+          const dreaminaImageUploadWorkflow = document.getElementById("dreaminaImageUploadWorkflow")?.checked === true;
           const cardKeyIdRaw = (document.getElementById("cardKeySelect")?.value || "").trim();
           const durationRaw = document.getElementById("duration").value.trim();
           const duration = durationRaw ? Number(durationRaw) : undefined;
           if (!type) throw new Error("请选择任务类型");
-          if (!prompt && !videoUrl) throw new Error("请输入文本内容，或填写 video_url 以测试创建角色");
+          if (!prompt && !videoUrl && !(dreaminaImageUploadWorkflow && firstImageUrl)) throw new Error("请输入文本内容、填写 video_url，或勾选单图上传并填写图片链接");
           // 注意：不同 task handler 可能需要不同字段，这里仅示例常用字段
           const payload = { prompt };
           if (videoUrl) payload.video_url = videoUrl;
-          if (firstImageUrl) payload.first_image_url = firstImageUrl;
+          if (dreaminaImageUploadWorkflow) {
+            if (!firstImageUrl) throw new Error("Dreamina 单图上传保存需要填写图片链接");
+            payload.workflow_kind = "image_upload";
+            payload.image_url = firstImageUrl;
+          } else if (firstImageUrl) {
+            payload.first_image_url = firstImageUrl;
+          }
           if (cardKeyIdRaw) {
             const selected = cardKeys.find(x => String(x.id) === String(cardKeyIdRaw));
             if (!selected || !selected.card_key) throw new Error("所选卡密不存在，请刷新后重试");
@@ -409,6 +428,16 @@
         const savedFirstImageUrl = lsGet(LS_KEYS.testFirstImageUrl);
         if (savedFirstImageUrl !== null && firstImageUrlEl) firstImageUrlEl.value = savedFirstImageUrl;
         if (firstImageUrlEl) firstImageUrlEl.addEventListener("input", (e) => lsSet(LS_KEYS.testFirstImageUrl, e.target.value));
+
+        // Dreamina 单图上传保存 workflow_kind=image_upload 回填
+        const dreaminaImageUploadWorkflowEl = document.getElementById("dreaminaImageUploadWorkflow");
+        if (dreaminaImageUploadWorkflowEl) {
+          dreaminaImageUploadWorkflowEl.checked = (lsGet(LS_KEYS.testDreaminaImageUploadWorkflow) || "") === "1";
+          dreaminaImageUploadWorkflowEl.addEventListener("change", (e) => {
+            if (e.target.checked) lsSet(LS_KEYS.testDreaminaImageUploadWorkflow, "1");
+            else lsDel(LS_KEYS.testDreaminaImageUploadWorkflow);
+          });
+        }
 
         // duration 回填与缓存
         const durationEl = document.getElementById("duration");

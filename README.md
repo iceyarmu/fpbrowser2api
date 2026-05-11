@@ -1,4 +1,4 @@
-# FPBrowser2API：指纹浏览器驱动的半自动化 AI 生成框架
+# FPBrowser2API：逆向+AI自动化结合的方案
 
 > 项目主题：利用指纹浏览器半自动化模拟真人环境 + 逆向注入/页面上下文代码执行，实现高并发自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口逆向研究，并内置 Cloudflare/claudeflare 验证页检测、等待、自愈重启与自动点击等处理策略，目标是在授权研究环境中自动过 claudeflare/Cloudflare（实际通过率取决于账号、代理、环境与站点策略）。
 
@@ -6,13 +6,9 @@
 
 - 本项目**只供技术研究、学习验证、私有测试环境使用**，请勿用于商业化运营、批量滥用、违反目标站点条款或任何违法违规用途。
 - 使用者应自行承担账号、额度、风控、合规和数据安全风险。
-- 即梦国际站 / Dreamina / Seedance2.0 国际站相关能力也在研究中，代码中已有 `jimeng_task_executor.py` 等探索实现，后续会继续完善。
-- 联系方式：微信 `aimh8com`。
 
 ## 为什么需要指纹浏览器
-
 本框架不是传统的裸 HTTP 调用脚本，而是通过指纹浏览器维持一个更接近真人使用的浏览器环境：
-
 1. 每个任务绑定一个独立的浏览器窗口、Cookie、LocalStorage、UA、代理和浏览器指纹。
 2. 用户可以先在指纹浏览器中手动登录目标站点、完成必要验证或订阅准备。
 3. 后端再通过指纹浏览器暴露的 CDP 地址连接到该窗口，在页面上下文中执行 `fetch`、上传文件、轮询状态、读取结果。
@@ -20,19 +16,26 @@
 
 推荐使用 RoxyBrowser：请到 <https://roxybrowser.com?code=0416Z62A> 下载客户端，注册并登录后创建空间、项目和浏览器窗口。
 
-
 <img width="1920" height="857" alt="ScreenShot_2026-04-30_185608_912" src="https://github.com/user-attachments/assets/c619aab0-1198-40e3-a490-69a378842086" />
 <img width="1910" height="883" alt="ScreenShot_2026-04-30_185628_966" src="https://github.com/user-attachments/assets/467b9021-ad71-400c-94fe-b24ceed925bc" />
 <img width="1919" height="914" alt="ScreenShot_2026-04-30_185638_945" src="https://github.com/user-attachments/assets/34238cc6-66c0-41eb-97b0-405014ea467c" />
 <img width="1913" height="908" alt="ScreenShot_2026-04-30_185648_880" src="https://github.com/user-attachments/assets/1684701a-12dd-4dfd-a89f-90c8169e0ea7" />
 
+## 最新更新-2026-5-11
+1.google Flow纯净模式，生成的视频和图片都会归档，保证页面干净，减少资源消耗，支持香蕉2/Pro和Veo3.1
+2.国际站seedance2.0上线
+
 
 ## 快速启动
+
 
 ```bash
 cd fpbrowser2api
 
 # 创建虚拟环境
+# 注意，只支持python 3.10.x版本！！！
+# 注意，只支持python 3.10.x版本！！！
+# 注意，只支持python 3.10.x版本！！！
 python -m venv venv
 
 # 激活虚拟环境
@@ -227,142 +230,371 @@ powershell -ExecutionPolicy Bypass -File .\fpbrowser2api_service.ps1 start|stop|
 - **额度刷新**：支持读取 aisandbox credits，并解析 Google AI 活动页中的下一次额度更新时间。
 - **Cloudflare 自愈**：与 Sora 类似，具备挑战页检测、等待、点击、重启窗口和恢复目标页能力。
 
-### 常见 VEO payload
+## 接口说明
 
-文生视频：
+# Seedance 2 / Nana Banana / VEO 3.1 · NewAPI 视频接口说明
 
-```json
-{
-  "prompt": "a futuristic city at sunset, cinematic camera movement",
-  "veo_project_id": "project_xxx",
-  "n_frames": 300,
-  "aspect_ratio": "16:9",
-  "veo_url": "https://labs.google/fx"
-}
-```
+> 对外统一使用 NewAPI 风格异步接口：  
+> **提交任务：`POST /v1/videos`**  
+> **查询任务：`GET /v1/videos/{task_id}`**
 
-图生视频：
+## 1. 调用流程
 
-```json
-{
-  "prompt": "make the character walk forward naturally",
-  "project_id": "project_xxx",
-  "first_image_url": "https://example.com/start.png",
-  "last_image_url": "https://example.com/end.png",
-  "n_frames": 300,
-  "aspect_ratio": "9:16"
-}
-```
-
-多图 Ingredients / R2V：
-
-```json
-{
-  "prompt": "combine these product references into a cinematic product video",
-  "project_id": "project_xxx",
-  "Ingredients_images": [
-    "https://example.com/ref1.png",
-    "https://example.com/ref2.png",
-    "https://example.com/ref3.png"
-  ],
-  "n_frames": 300
-}
-```
-
-图片 / Banana 类工作流：
-
-```json
-{
-  "prompt": "turn this sketch into a polished commercial poster",
-  "project_id": "project_xxx",
-  "n_frames": 1,
-  "image_url": "https://example.com/input.png",
-  "image_model_name": "GEM_PIX_2",
-  "veo_image_resolution": "2k"
-}
-```
-
-## 对外 API
-
-对外接口使用 `Authorization: Bearer <api_key>` 鉴权，默认 API Key 可在 `config/setting.toml` 或管理后台系统配置中修改。
-
-### 获取任务类型
+### Step 1 · 提交任务
 
 ```bash
-curl -H "Authorization: Bearer fpb123456" \
-  http://127.0.0.1:8002/v1/task-types-public
-```
-
-### 创建任务
-
-```bash
-curl -X POST http://127.0.0.1:8002/v1/tasks \
-  -H "Authorization: Bearer fpb123456" \
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "task_type_code": "veo_workflow",
-    "payload": {
-      "prompt": "a cinematic flying dragon",
-      "project_id": "project_xxx",
-      "n_frames": 300
-    }
+    "model": "veo-3-1",
+    "prompt": "an astronaut surfing on a glowing ocean at night, cinematic camera movement",
+    "duration": 8,
+    "aspect_ratio": "16:9"
   }'
 ```
 
-也可以传入 `mapping_id` 指定某个窗口绑定：
+提交成功后立即返回任务信息：
 
 ```json
 {
-  "task_type_code": "sora_gen_video",
-  "mapping_id": 1,
-  "payload": {
-    "prompt": "a cute cat playing piano",
-    "size_ratio": "16:9",
-    "duration": 300
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "queued",
+  "progress": 0,
+  "model": "veo-3-1",
+  "video_url": null,
+  "metadata": {
+    "result_urls": []
+  },
+  "seconds": "8",
+  "duration": 8,
+  "aspect_ratio": "16:9",
+  "prompt": "an astronaut surfing on a glowing ocean at night, cinematic camera movement"
+}
+```
+
+### Step 2 · 查询任务
+
+```bash
+curl https://xxx.xxx.xxx/v1/videos/8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234 \
+  -H "Authorization: Bearer api-key"
+```
+
+处理中：
+
+```json
+{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "in_progress",
+  "progress": 45,
+  "model": "veo-3-1",
+  "video_url": null,
+  "metadata": {
+    "result_urls": []
   }
 }
 ```
 
-### 查询任务
+视频完成：
+
+```json
+{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "completed",
+  "progress": 100,
+  "model": "veo-3-1",
+  "video_url": "https://xxx.xxx.xxx/generated/video.mp4",
+  "url": "https://xxx.xxx.xxx/generated/video.mp4",
+  "metadata": {
+    "result_urls": ["https://xxx.xxx.xxx/generated/video.mp4"]
+  },
+  "completed_at": 1714200180000
+}
+```
+
+图片完成（`nana-banana-2` / `nana-banana-pro`）：
+
+```json
+{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "completed",
+  "progress": 100,
+  "model": "nana-banana-2",
+  "video_url": null,
+  "image_url": "https://xxx.xxx.xxx/generated/image.jpg",
+  "url": "https://xxx.xxx.xxx/generated/image.jpg",
+  "metadata": {
+    "result_urls": ["https://xxx.xxx.xxx/generated/image.jpg"]
+  },
+  "completed_at": 1714200180000
+}
+```
+
+失败：
+
+```json
+{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "failed",
+  "progress": 0,
+  "model": "veo-3-1",
+  "video_url": null,
+  "metadata": {
+    "result_urls": []
+  },
+  "error": {
+    "message": "任务失败原因",
+    "code": "task_failed"
+  }
+}
+```
+
+| `status` | 含义 |
+|---|---|
+| `queued` | 排队中 |
+| `in_progress` | 生成中，继续轮询 |
+| `completed` | 已完成，取 `video_url` / `image_url` / `url` |
+| `failed` | 失败，查看 `error.message` |
+
+## 2. 支持模型
+
+| 模型 | 输出 | 说明 |
+|---|---|---|
+| `seedance-2` | 视频 | 支持文生视频、首尾帧视频、多参考图视频 |
+| `veo-3-1` | 视频 | 支持文生视频、首尾帧视频、多参考图视频 |
+| `nana-banana-2` | 图片 | 支持文生图片、多参考图生成图片 |
+| `nana-banana-pro` | 图片 | 支持文生图片、多参考图生成图片 |
+
+## 3. 视频模型示例
+
+### 3.1 Seedance 2 · 文生视频
 
 ```bash
-curl -H "Authorization: Bearer fpb123456" \
-  http://127.0.0.1:8002/v1/tasks/<task_id>
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2",
+    "prompt": "a golden retriever puppy running through sunflowers, cinematic, slow motion",
+    "duration": 10,
+    "aspect_ratio": "16:9",
+    "resolution": "720p"
+  }'
 ```
 
-## 任务类型与窗口池
+### 3.2 Seedance 2 · 首尾帧生成视频
 
-- 任务类型配置决定一个任务由哪个执行器处理，例如 `sora_gen_video`、`veo_workflow`、`grok_workflow`、`dreamina_workflow`。
-- 一个任务类型可以绑定多个指纹浏览器窗口，实现多账号、多代理、多窗口并发。
-- `TaskService` 会根据窗口启用状态、剩余额度、冷却时间、错误次数和并发槽位选择合适窗口。
-- 窗口池可以预先打开并维护目标页面，减少任务启动耗时；巡检逻辑会周期性检测 Cloudflare/登录态等异常。
-- 管理端支持手动打开、保持打开、重启窗口、刷新 access token、刷新额度、清缓存、创建 VEO Flow 项目等操作。
-
-## 目录结构简述
-
-```text
-fpbrowser2api/
-├─ config/setting_example.toml          # 配置示例
-├─ main.py                              # 服务入口
-├─ src/api/routes.py                    # 对外任务 API
-├─ src/api/admin.py                     # 管理后台 API
-├─ src/services/fp_browser_client.py    # RoxyBrowser API 适配
-├─ src/services/playwright_broswer_context.py # Playwright/CDP 通用上下文
-├─ src/services/task_service.py         # 队列、窗口池、任务调度
-├─ src/services/sora_task_executor.py   # Sora 生成/角色/额度执行器
-├─ src/services/veo_workflow_executor.py# VEO/Flow 视频图片执行器
-├─ src/services/grok_workflow_executor.py
-└─ src/services/jimeng_task_executor.py # 即梦/Dreamina/Seedance 方向研究
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2",
+    "prompt": "animate naturally from the first frame to the final frame",
+    "duration": 10,
+    "aspect_ratio": "9:16",
+    "function_mode": "first_last_frames",
+    "images": [
+      "https://your-cdn.com/first.jpg",
+      "https://your-cdn.com/last.jpg"
+    ]
+  }'
 ```
 
-## 研究路线
+也可以使用：
 
-- VEO 3.1 / Google Flow：文生视频、图生视频、Ingredients 多图参考、图片生成、2K 放大。
-- Sora：视频生成、首帧图、草稿发布、角色创建、额度/订阅/邀请码管理。
-- Grok Imagine：指纹窗口登录态 + 自动化提交与轮询。
-- Banana2 / Pro / GEM_PIX_2：图片生成、多图参考、放大与结果存储。
-- 即梦国际站 / Dreamina / Seedance2.0：正在研究国际站登录态、额度、生成接口和任务轮询链路。
-- 通用逆向自动化框架：将“指纹浏览器真人环境 + 页面上下文 fetch + 管理端窗口池 + 执行器插件化”复用到更多站点。
+```json
+{
+  "first_image_url": "https://your-cdn.com/first.jpg",
+  "last_image_url": "https://your-cdn.com/last.jpg"
+}
+```
+
+### 3.3 Seedance 2 · 多参考图生成视频
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2",
+    "prompt": "use the character, outfit and product references to make a fashion commercial",
+    "duration": 15,
+    "aspect_ratio": "16:9",
+    "function_mode": "omni_reference",
+    "images": [
+      "https://your-cdn.com/character.jpg",
+      "https://your-cdn.com/outfit.jpg",
+      "https://your-cdn.com/product.jpg"
+    ]
+  }'
+```
+
+### 3.4 VEO 3.1 · 文生视频
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-3-1",
+    "prompt": "a cinematic drone shot over a futuristic city at sunrise",
+    "duration": 8,
+    "aspect_ratio": "16:9"
+  }'
+```
+
+### 3.5 VEO 3.1 · 首尾帧生成视频
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-3-1",
+    "prompt": "animate smoothly from the first frame to the last frame",
+    "duration": 8,
+    "aspect_ratio": "9:16",
+    "images": [
+      "https://your-cdn.com/first.jpg",
+      "https://your-cdn.com/last.jpg"
+    ]
+  }'
+```
+
+### 3.6 VEO 3.1 · 多参考图生成视频
+
+> VEO 多参考图视频请使用 `Ingredients_images`，最多 3 张。
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-3-1",
+    "prompt": "combine these references into a cinematic product launch video",
+    "duration": 8,
+    "aspect_ratio": "16:9",
+    "Ingredients_images": [
+      "https://your-cdn.com/ref-1.jpg",
+      "https://your-cdn.com/ref-2.jpg",
+      "https://your-cdn.com/ref-3.jpg"
+    ]
+  }'
+```
+
+## 4. 图片模型示例
+
+### 4.1 Nana Banana 2 · 文生图片
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nana-banana-2",
+    "prompt": "a cute banana mascot wearing sunglasses, studio lighting, high detail",
+    "aspect_ratio": "1:1",
+    "resolution": "1k"
+  }'
+```
+
+### 4.2 Nana Banana 2 · 多参考图生成图片
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nana-banana-2",
+    "prompt": "make a poster using the character style and product reference",
+    "aspect_ratio": "4:3",
+    "resolution": "1k",
+    "images": [
+      "https://your-cdn.com/character.jpg",
+      "https://your-cdn.com/product.jpg"
+    ]
+  }'
+```
+
+### 4.3 Nana Banana Pro · 文生图片
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nana-banana-pro",
+    "prompt": "premium editorial product photo, luxury magazine style",
+    "aspect_ratio": "16:9",
+    "resolution": "2k"
+  }'
+```
+
+### 4.4 Nana Banana Pro · 多参考图生成图片
+
+```bash
+curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nana-banana-pro",
+    "prompt": "create a premium product campaign image using all references",
+    "aspect_ratio": "16:9",
+    "resolution": "2k",
+    "images": [
+      "https://your-cdn.com/product.jpg",
+      "https://your-cdn.com/background-style.jpg"
+    ]
+  }'
+```
+
+## 5. 请求字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `model` | string | ✅ | `seedance-2` / `veo-3-1` / `nana-banana-2` / `nana-banana-pro` |
+| `prompt` | string | ✅ | 生成提示词 |
+| `duration` | int | 视频必填 | `seedance-2` 支持 `10` / `15`；`veo-3-1` 固定传 `8` |
+| `aspect_ratio` | string | ❌ | 视频常用 `16:9` / `9:16`；图片支持 `1:1` / `4:3` / `3:4` / `16:9` / `9:16` |
+| `resolution` | string | ❌ | `seedance-2` 支持 `480p` / `720p` / `1080p`；图片支持 `1k` / `2k` |
+| `images` | array | ❌ | 参考图 URL 数组。Seedance 多参考图最多 9 张；VEO 首尾帧最多 2 张；Nana Banana 图片最多 10 张 |
+| `first_image_url` | string | ❌ | 首帧或单参考图 URL |
+| `last_image_url` | string | ❌ | 尾帧 URL |
+| `function_mode` | string | ❌ | `seedance-2` 可用：`first_last_frames` / `omni_reference` |
+| `Ingredients_images` | array | ❌ | `veo-3-1` 多参考图视频使用，最多 3 张 |
+
+## 6. 响应字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` / `task_id` | string | 任务 ID |
+| `object` | string | 固定为 `video` |
+| `created_at` | int | 创建时间戳，毫秒 |
+| `status` | string | `queued` / `in_progress` / `completed` / `failed` |
+| `progress` | int | 0–100 |
+| `model` | string | 请求模型 |
+| `video_url` | string\|null | 视频完成后返回视频地址 |
+| `image_url` | string\|null | 图片模型完成后返回图片地址 |
+| `url` | string\|null | 最终结果地址，视频/图片通用 |
+| `metadata.result_urls` | array | 最终结果地址数组 |
+| `error.message` | string | 失败时的错误信息 |
+
 
 ## 再次声明
 

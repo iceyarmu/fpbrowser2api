@@ -22,10 +22,16 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
+          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
+          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
           <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
+        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.me/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -48,6 +54,7 @@
                       <th>用户名</th>
                       <th>密码</th>
                       <th>角色</th>
+                      <th>功能权限</th>
                       <th>页面权限</th>
                     </tr>
                   </thead>
@@ -74,6 +81,10 @@
                 <input class="form-check-input" type="checkbox" id="newIsAdmin" />
                 <label class="form-check-label" for="newIsAdmin">管理员（拥有全部权限）</label>
               </div>
+              <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" id="newCanSwitchProxy" />
+                <label class="form-check-label" for="newCanSwitchProxy">允许切换代理</label>
+              </div>
               <button class="btn btn-primary" id="btnCreateUser">创建用户</button>
             </div>
           </div>
@@ -87,6 +98,10 @@
               <div class="form-check form-switch mb-2">
                 <input class="form-check-input" type="checkbox" id="editIsAdmin" />
                 <label class="form-check-label" for="editIsAdmin">管理员（管理员默认拥有全部页面和数据权限）</label>
+              </div>
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="editCanSwitchProxy" />
+                <label class="form-check-label" for="editCanSwitchProxy">允许切换代理（任务类型页面代理列可打开列表切换）</label>
               </div>
 
               <div class="mb-2">
@@ -161,7 +176,7 @@
       function renderUserTable() {
         const body = document.getElementById("userBody");
         if (!state.users.length) {
-          body.innerHTML = `<tr><td colspan="5" class="text-muted">暂无用户</td></tr>`;
+          body.innerHTML = `<tr><td colspan="6" class="text-muted">暂无用户</td></tr>`;
           return;
         }
         body.innerHTML = state.users.map((u) => `
@@ -170,6 +185,7 @@
             <td>${escapeHtml(u.username || "-")}</td>
             <td class="mono">${escapeHtml(u.password_display || "******")}</td>
             <td>${u.is_admin ? `<span class="badge text-bg-danger">管理员</span>` : `<span class="badge text-bg-secondary">普通用户</span>`}</td>
+            <td>${(u.is_admin || u.can_switch_proxy) ? `<span class="badge text-bg-success">可切换代理</span>` : `<span class="badge text-bg-secondary">不可切换代理</span>`}</td>
             <td class="small">${u.is_admin ? "全部" : (u.page_permissions?.length ? escapeHtml(u.page_permissions.join(", ")) : "默认全部")}</td>
           </tr>
         `).join("");
@@ -204,6 +220,7 @@
         document.getElementById("editUserId").value = String(user.id || "");
         document.getElementById("currentUserHint").textContent = `当前用户：${user.username || "-"}（ID=${user.id}）`;
         document.getElementById("editIsAdmin").checked = !!user.is_admin;
+        document.getElementById("editCanSwitchProxy").checked = !!user.can_switch_proxy || !!user.is_admin;
         setCheckedValues("edit-project-id", user.project_ids || []);
         setCheckedValues("edit-task-type-id", user.task_type_ids || []);
         renderPagePerms(user.page_permissions || []);
@@ -253,10 +270,11 @@
         const username = document.getElementById("newUsername").value.trim();
         const password = document.getElementById("newPassword").value;
         const isAdmin = document.getElementById("newIsAdmin").checked;
+        const canSwitchProxy = document.getElementById("newCanSwitchProxy").checked;
         if (!username || !password) throw new Error("请填写用户名和密码");
         const r = await adminFetch("/api/admin/users", {
           method: "POST",
-          body: JSON.stringify({ username, password, is_admin: isAdmin, page_permissions: [], project_ids: [], task_type_ids: [] }),
+          body: JSON.stringify({ username, password, is_admin: isAdmin, can_switch_proxy: canSwitchProxy, page_permissions: [], project_ids: [], task_type_ids: [] }),
         });
         if (!r) return;
         const d = await r.json();
@@ -265,6 +283,7 @@
         document.getElementById("newUsername").value = "";
         document.getElementById("newPassword").value = "";
         document.getElementById("newIsAdmin").checked = false;
+        document.getElementById("newCanSwitchProxy").checked = false;
         await loadUsers();
       }
 
@@ -272,6 +291,7 @@
         const uid = parseInt(document.getElementById("editUserId").value, 10);
         if (!uid) throw new Error("请先选择用户");
         const isAdmin = document.getElementById("editIsAdmin").checked;
+        const canSwitchProxy = document.getElementById("editCanSwitchProxy").checked;
         const pagePermissions = Array.from(document.querySelectorAll(".page-perm:checked")).map((el) => String(el.value || "").trim()).filter(Boolean);
         const projectIds = selectedValuesByClass("edit-project-id");
         const taskTypeIds = selectedValuesByClass("edit-task-type-id");
@@ -279,6 +299,7 @@
           method: "PUT",
           body: JSON.stringify({
             is_admin: isAdmin,
+            can_switch_proxy: canSwitchProxy,
             page_permissions: pagePermissions,
             project_ids: projectIds,
             task_type_ids: taskTypeIds,

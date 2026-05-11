@@ -5,6 +5,7 @@ Usage:
   powershell -ExecutionPolicy Bypass -File .\fpbrowser2api_service.ps1 start|stop|restart|status
 
 Optional environment variables:
+  APP_BIN
   PYTHON_BIN
   PID_FILE
   LOG_FILE
@@ -63,6 +64,42 @@ function Resolve-PythonBin {
 }
 
 $PYTHON_BIN = Resolve-PythonBin
+
+function Resolve-AppLaunch {
+  $appBin = [Environment]::GetEnvironmentVariable('APP_BIN')
+  if (-not [string]::IsNullOrWhiteSpace($appBin)) {
+    if (-not (Test-Path $appBin)) {
+      throw ('APP_BIN not found: {0}' -f $appBin)
+    }
+    return @{
+      FilePath = $appBin
+      ArgumentList = @()
+      Display = $appBin
+    }
+  }
+
+  # 打包发布模式：优先运行同目录下的 fpbrowser2api.exe
+  $exe = Join-Path $APP_DIR 'fpbrowser2api.exe'
+  if (Test-Path $exe) {
+    return @{
+      FilePath = $exe
+      ArgumentList = @()
+      Display = $exe
+    }
+  }
+
+  # 源码开发模式：回退到 python main.py
+  $mainPy = Join-Path $APP_DIR 'main.py'
+  if (Test-Path $mainPy) {
+    return @{
+      FilePath = $PYTHON_BIN
+      ArgumentList = @($mainPy)
+      Display = ('{0} {1}' -f $PYTHON_BIN, $mainPy)
+    }
+  }
+
+  throw ('未找到可运行入口：{0} 或 {1}；打包发布目录应包含 fpbrowser2api.exe' -f $exe, $mainPy)
+}
 
 function Get-PidFromFile {
   if (-not (Test-Path $PID_FILE)) { return $null }
@@ -136,15 +173,14 @@ function Start-ServiceProcess {
   Truncate-File $LOG_FILE
   Truncate-File $LOG_ERR_FILE
 
-  $mainPy = Join-Path $APP_DIR 'main.py'
-  if (-not (Test-Path $mainPy)) {
-    throw ('main.py not found: {0}' -f $mainPy)
-  }
+  $launch = Resolve-AppLaunch
 
-  # 后台运行（启动方式：python main.py）
+  # 后台运行：
+  # - 打包发布目录：fpbrowser2api.exe
+  # - 源码开发目录：python main.py
   $startParams = @{
-    FilePath               = $PYTHON_BIN
-    ArgumentList           = @($mainPy)
+    FilePath               = $launch.FilePath
+    ArgumentList           = $launch.ArgumentList
     WorkingDirectory       = $APP_DIR
     WindowStyle            = 'Hidden'
     RedirectStandardOutput = $LOG_FILE
@@ -157,7 +193,7 @@ function Start-ServiceProcess {
 
   Start-Sleep -Seconds 1
   if (Test-IsRunning) {
-    Write-Host ('fpbrowser2api started (pid={0}), log={1}, err={2}' -f (Get-PidFromFile), $LOG_FILE, $LOG_ERR_FILE)
+    Write-Host ('fpbrowser2api started (pid={0}), cmd={1}, log={2}, err={3}' -f (Get-PidFromFile), $launch.Display, $LOG_FILE, $LOG_ERR_FILE)
     return
   }
 
@@ -223,6 +259,7 @@ function Show-Usage {
   Write-Host '  powershell -ExecutionPolicy Bypass -File .\fpbrowser2api_service.ps1 start|stop|restart|status'
   Write-Host ''
   Write-Host 'Optional environment variables:'
+  Write-Host '  APP_BIN=...\fpbrowser2api.exe'
   Write-Host '  PYTHON_BIN=...\python.exe'
   Write-Host '  PID_FILE=...\fpbrowser2api.pid'
   Write-Host '  LOG_FILE=...\fpbrowser2api.out'

@@ -18,6 +18,12 @@ debug_enabled = false
 # 是否把日志写入本地文件（fpbrowser2api/app.log）
 log_to_file = false
 
+[ai_agent]
+# 大模型中转站地址在代码中固定为 https://www.newtoken.me/，这里仅配置默认模型和默认 API Key。
+# 也可用环境变量 AI_AGENT_API_KEY / NEWTOKEN_API_KEY / OPENAI_API_KEY 注入，优先级高于本配置。
+default_model = "gpt-5.5"
+api_key = ""
+
 # VEO 2K 放大图为 JPEG 字节；启用后上传到 OSS，任务结果里 upsample_url 存公网 URL，避免大 base64 撑爆数据库
 [oss]
 enabled = false

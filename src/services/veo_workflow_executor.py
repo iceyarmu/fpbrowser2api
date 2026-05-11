@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from ..core.config import config as app_config
 from ..core.database import Database
+from ..core.paths import MONITOR_LOG_FILE
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
     acquire_browser_open_slot,
@@ -311,7 +312,7 @@ class VeoSession:
     def _log_file(self) -> Path:
         if self.monitor_log_path:
             return Path(self.monitor_log_path)
-        return Path(__file__).resolve().parents[2] / "logs.txt"
+        return MONITOR_LOG_FILE
 
     async def ensure_open(
         self,
@@ -508,7 +509,7 @@ class VeoSession:
         log_file = (
             Path(self.monitor_log_path)
             if self.monitor_log_path
-            else (Path(__file__).resolve().parents[2] / "logs.txt")
+            else (MONITOR_LOG_FILE)
         )
 
         def _log(msg: str) -> None:
@@ -687,7 +688,7 @@ class VeoSession:
         log_file = (
             Path(self.monitor_log_path)
             if self.monitor_log_path
-            else (Path(__file__).resolve().parents[2] / "logs.txt")
+            else (MONITOR_LOG_FILE)
         )
         try:
             append_log(log_file, "[veo][drafts] detected cloudflare interstitial, restarting fp window once")
@@ -1920,6 +1921,7 @@ FLOW_VIDEO_SUBMIT_I2V_START_END_URL = "https://aisandbox-pa.googleapis.com/v1/vi
 FLOW_VIDEO_SUBMIT_R2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoReferenceImages"
 FLOW_VIDEO_POLL_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
 FLOW_FLOW_UPSAMPLE_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage"
+FLOW_FLOW_WORKFLOWS_BASE_URL = "https://aisandbox-pa.googleapis.com/v1/flowWorkflows"
 # Flow / Labs 当前常用 enterprise site key；动态解析失败时兜底（与 flow2api 一致）
 VEO_RECAPTCHA_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 
@@ -2423,6 +2425,50 @@ def _veo_video_op_error_indicates_prominent_people_filter(*, message: str, code:
     return "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in m or "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in c
 
 
+def _veo_parse_upload_image_workflow_info(
+    resp: Any,
+    *,
+    fallback_project_id: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """从 flow/uploadImage 响应中提取 mediaId、media.projectId、media.workflowId。"""
+    out: Dict[str, Optional[str]] = {
+        "media_id": None,
+        "workflow_id": None,
+        "project_id": None,
+    }
+    if not isinstance(resp, dict):
+        return out
+
+    media = resp.get("media")
+    if isinstance(media, dict):
+        out["media_id"] = str(media.get("name") or "").strip() or None
+        workflow_id = str(media.get("workflowId") or "").strip() or None
+        project_id = str(media.get("projectId") or "").strip() or None
+        if workflow_id:
+            out["workflow_id"] = workflow_id
+        if project_id:
+            out["project_id"] = project_id
+
+    # 兼容旧/其他响应结构，同时仍以 media.workflowId/media.projectId 为优先。
+    if not out.get("media_id"):
+        media_generation_id = resp.get("mediaGenerationId")
+        if isinstance(media_generation_id, dict):
+            out["media_id"] = str(media_generation_id.get("mediaGenerationId") or "").strip() or None
+        elif media_generation_id is not None:
+            out["media_id"] = str(media_generation_id).strip() or None
+
+    workflow = resp.get("workflow")
+    if isinstance(workflow, dict):
+        if not out.get("workflow_id"):
+            out["workflow_id"] = str(workflow.get("name") or "").strip() or None
+        workflow_project_id = str(workflow.get("projectId") or "").strip() or None
+        if workflow_project_id and not out.get("project_id"):
+            out["project_id"] = workflow_project_id
+
+    out["project_id"] = out.get("project_id") or (str(fallback_project_id or "").strip() or None)
+    return out
+
+
 async def _veo_flow_upload_image_in_window(
     *,
     page: Any,
@@ -2430,6 +2476,7 @@ async def _veo_flow_upload_image_in_window(
     project_id: str,
     image_bytes: bytes,
     log_file: Path,
+    uploaded_workflows: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """在指纹浏览器页面内调用 aisandbox `flow/uploadImage`（与 flow2api flow_client.upload_image 新版接口一致）。"""
     mime_type = _veo_detect_image_mime_type(image_bytes)
@@ -2476,15 +2523,124 @@ async def _veo_flow_upload_image_in_window(
     resp = tx.get("_json")
     if not isinstance(resp, dict):
         raise NonPenalizedTaskError("上传参考图返回格式异常", status_code=502)
-    media_id = (resp.get("media") or {}).get("name") or (resp.get("mediaGenerationId") or {}).get(
-        "mediaGenerationId"
-    )
+    upload_info = _veo_parse_upload_image_workflow_info(resp, fallback_project_id=str(project_id))
+    media_id = upload_info.get("media_id")
     if not media_id:
         raise NonPenalizedTaskError(
             f"上传参考图未返回 mediaId：{safe_trim(str(resp), 300)}",
             status_code=502,
         )
+    workflow_id = str(upload_info.get("workflow_id") or "").strip()
+    workflow_project_id = str(upload_info.get("project_id") or "").strip()
+    if uploaded_workflows is not None and workflow_id:
+        item = {
+            "media_id": str(media_id),
+            "workflow_id": workflow_id,
+            "project_id": workflow_project_id or str(project_id),
+        }
+        uploaded_workflows.append(item)
+        append_log(
+            log_file,
+            f"[veo][upload_image] saved workflow for later archive "
+            f"mediaId={safe_trim(str(media_id), 80)!r} "
+            f"workflowId={safe_trim(workflow_id, 80)!r} "
+            f"projectId={safe_trim(item['project_id'], 80)!r}",
+        )
+    elif not workflow_id:
+        append_log(
+            log_file,
+            f"[veo][upload_image] upload ok but response has no workflowId "
+            f"mediaId={safe_trim(str(media_id), 80)!r}",
+        )
     return str(media_id)
+
+
+def _veo_find_first_string_by_key(obj: Any, key: str) -> Optional[str]:
+    """递归查找第一个非空字符串字段。用于兼容上游 response 结构轻微变化。"""
+    if isinstance(obj, dict):
+        v = obj.get(key)
+        if v is not None:
+            s = str(v).strip()
+            if s:
+                return s
+        for vv in obj.values():
+            found = _veo_find_first_string_by_key(vv, key)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _veo_find_first_string_by_key(item, key)
+            if found:
+                return found
+    return None
+
+
+def _veo_parse_video_poll_media_info(
+    resp: Any,
+    *,
+    fallback_project_id: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """从 batchCheckAsyncVideoGenerationStatus response.media 中提取视频状态、workflowId、projectId 与 fifeUrl。"""
+    out: Dict[str, Optional[str]] = {
+        "status": None,
+        "workflow_id": None,
+        "project_id": str(fallback_project_id or "").strip() or None,
+        "video_url": None,
+    }
+    if not isinstance(resp, dict):
+        return out
+
+    media = resp.get("media")
+    if not isinstance(media, list):
+        return out
+
+    for item in media:
+        if not isinstance(item, dict):
+            continue
+        if not out.get("workflow_id"):
+            out["workflow_id"] = str(item.get("workflowId") or "").strip() or None
+        media_project_id = str(item.get("projectId") or "").strip() or None
+        if media_project_id:
+            out["project_id"] = media_project_id
+
+        meta = item.get("mediaMetadata")
+        if isinstance(meta, dict):
+            media_status = meta.get("mediaStatus")
+            if isinstance(media_status, dict) and not out.get("status"):
+                out["status"] = str(media_status.get("mediaGenerationStatus") or "").strip() or None
+
+        video_block = item.get("video")
+        if isinstance(video_block, dict) and not out.get("video_url"):
+            # 兼容可能出现的 video.fifeUrl / video.generatedVideo.fifeUrl 等结构。
+            out["video_url"] = _veo_find_first_string_by_key(video_block, "fifeUrl")
+        if not out.get("video_url"):
+            out["video_url"] = _veo_find_first_string_by_key(item, "fifeUrl")
+
+        if out.get("workflow_id") and out.get("project_id") and out.get("status") and out.get("video_url"):
+            break
+
+    return out
+
+
+def _veo_parse_video_url_from_successful_poll(resp: Any, op0: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """从轮询成功响应中提取视频 fifeUrl，优先使用旧 operations.metadata.video.fifeUrl，回退到 media 递归查找。"""
+    if isinstance(op0, dict):
+        meta = (op0.get("operation") or {}).get("metadata") or {}
+        if isinstance(meta, dict):
+            vinfo = meta.get("video") or {}
+            if isinstance(vinfo, dict):
+                video_url = str(vinfo.get("fifeUrl") or "").strip() or None
+                if video_url:
+                    return video_url
+            video_url = _veo_find_first_string_by_key(meta, "fifeUrl")
+            if video_url:
+                return video_url
+    if isinstance(resp, dict):
+        media_info = _veo_parse_video_poll_media_info(resp)
+        if media_info.get("video_url"):
+            return media_info.get("video_url")
+        return _veo_find_first_string_by_key(resp, "fifeUrl")
+    return None
 
 
 async def _veo_poll_operations_until_video_url(
@@ -2496,13 +2652,16 @@ async def _veo_poll_operations_until_video_url(
     operations: List[Dict[str, Any]],
     max_wait_seconds: float,
     poll_interval_seconds: float,
+    project_id: Optional[str] = None,
     poll_progress_base: int = 25,
     sess: Optional[Any] = None,
-) -> str:
-    """轮询 batchCheckAsyncVideoGenerationStatus，成功则返回 fifeUrl。"""
+) -> tuple[str, Optional[str], Optional[str]]:
+    """轮询 batchCheckAsyncVideoGenerationStatus，成功则返回 (fifeUrl, workflowId, projectId)。"""
     max_attempts = max(3, int(max_wait_seconds / max(0.5, poll_interval_seconds)) + 3)
     consecutive_poll_errors = 0
     video_url: Optional[str] = None
+    video_workflow_id: Optional[str] = None
+    video_project_id: Optional[str] = str(project_id or "").strip() or None
 
     for attempt in range(max_attempts):
         sess._cancel_idle_close()
@@ -2540,19 +2699,47 @@ async def _veo_poll_operations_until_video_url(
             continue
 
         checked = ptx.get("_json")
+        media_info = _veo_parse_video_poll_media_info(checked, fallback_project_id=video_project_id)
+        if media_info.get("workflow_id"):
+            video_workflow_id = media_info.get("workflow_id")
+        if media_info.get("project_id"):
+            video_project_id = media_info.get("project_id")
+
         checked_ops = checked.get("operations") if isinstance(checked, dict) else None
         if not isinstance(checked_ops, list) or len(checked_ops) == 0:
-            await progress_cb(pct, {"stage": "polling", "upstream_status": None})
+            media_status = media_info.get("status")
+            await progress_cb(
+                pct,
+                {
+                    "stage": "polling",
+                    "upstream_status": media_status,
+                    "workflow_id": video_workflow_id,
+                },
+            )
+            if media_status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
+                video_url = _veo_parse_video_url_from_successful_poll(checked)
+                if not video_url:
+                    raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
+                break
+            if media_status == "MEDIA_GENERATION_STATUS_FAILED":
+                raise NonPenalizedTaskError("视频生成失败: 上游 media 状态失败", status_code=502)
+            if isinstance(media_status, str) and media_status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
+                raise NonPenalizedTaskError(f"视频生成错误状态: {media_status}", status_code=502)
             continue
 
         op0 = checked_ops[0]
         status = op0.get("status")
-        await progress_cb(pct, {"stage": "polling", "upstream_status": status})
+        await progress_cb(
+            pct,
+            {
+                "stage": "polling",
+                "upstream_status": status,
+                "workflow_id": video_workflow_id,
+            },
+        )
 
         if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
-            meta = (op0.get("operation") or {}).get("metadata") or {}
-            vinfo = meta.get("video") or {}
-            video_url = str(vinfo.get("fifeUrl") or "").strip() or None
+            video_url = _veo_parse_video_url_from_successful_poll(checked, op0=op0)
             if not video_url:
                 raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
             break
@@ -2584,7 +2771,7 @@ async def _veo_poll_operations_until_video_url(
             status_code=504,
         )
 
-    return str(video_url)
+    return str(video_url), video_workflow_id, video_project_id
 
 
 def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
@@ -3242,7 +3429,7 @@ async def veo_fetch_next_update_cooldown_from_one_google_activity(
     """
     try:
         sess._cancel_idle_close()
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
         async with sess._bring_drafts_lock:
             await sess.ensure_open(
                 args=sess.browser_open_args,
@@ -3259,7 +3446,7 @@ async def veo_fetch_next_update_cooldown_from_one_google_activity(
             return cu
     except Exception as e:
         try:
-            lf = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+            lf = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
             append_log(lf, f"[veo][activity] veo_fetch_next_update_cooldown_from_one_google_activity 失败: {e}")
         except Exception:
             pass
@@ -3289,7 +3476,7 @@ async def veo_fetch_credits_in_window(
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
 
         tx = await page_fetch_json(
             sess.pw_ctx.page,
@@ -3337,7 +3524,7 @@ async def veo_fetch_access_token_in_window(
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
 
         # ── Step 1：从浏览器 cookie 中读取 __Secure-next-auth.session-token ──
         session_token = None
@@ -3455,6 +3642,11 @@ def _veo_trpc_create_project_url(target_url: str) -> str:
     return "https://labs.google/fx/api/trpc/project.createProject"
 
 
+def _veo_trpc_delete_project_url(target_url: str) -> str:
+    # 删除项目按 Flow Web 当前接口固定走 labs.google。
+    return "https://labs.google/fx/api/trpc/project.deleteProject"
+
+
 def _parse_trpc_create_project_response(obj: Any) -> Optional[str]:
     if obj is None:
         return None
@@ -3512,7 +3704,7 @@ async def veo_create_flow_project_in_window(
         if sess.pw_ctx.page is None:
             raise RuntimeError("page 未初始化")
 
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (Path(__file__).resolve().parents[2] / "logs.txt")
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
         url = _veo_trpc_create_project_url(target_url)
         json_data = {"json": {"projectTitle": title, "toolName": tn}}
 
@@ -3537,7 +3729,66 @@ async def veo_create_flow_project_in_window(
             raise RuntimeError(f"createProject 响应无效：{safe_trim(str(tx.get('response_body') or ''), 400)}")
 
         append_log(log_file, f"[veo][project] created title={title!r} project_id={pid}")
+        project_url = f"https://labs.google/fx/tools/flow/project/{pid}"
+        try:
+            await sess.pw_ctx.page.goto(project_url, wait_until="domcontentloaded", timeout=60_000)
+            append_log(log_file, f"[veo][project] navigated to created project url={project_url!r}")
+        except Exception as e:
+            # 项目已创建成功，导航失败不影响入库；仅记录日志，避免重复创建项目。
+            append_log(log_file, f"[veo][project] goto created project failed url={project_url!r}: {e}")
         return pid
+
+
+async def veo_delete_flow_project_in_window(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+    project_id: str,
+) -> Dict[str, Any]:
+    """在指纹浏览器页面内调用 Flow `project.deleteProject`，删除指定 Flow 项目。"""
+    pid = str(project_id or "").strip()
+    if not pid:
+        raise RuntimeError("project_id 不能为空")
+    sess._cancel_idle_close()
+    async with sess._bring_drafts_lock:
+        await sess.ensure_open(
+            args=sess.browser_open_args,
+            force_open=sess.browser_force_open,
+            headless=sess.browser_headless,
+            acquire_bring_lock=False,
+        )
+        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
+        if sess.pw_ctx.page is None:
+            raise RuntimeError("page 未初始化")
+
+        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
+        url = _veo_trpc_delete_project_url(target_url)
+        json_data = {"json": {"projectToDeleteId": pid}}
+
+        tx = await page_fetch_json(
+            sess.pw_ctx.page,
+            url=url,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json_data=json_data,
+            log_file=log_file,
+        )
+        st = tx.get("status")
+        if st is not None and int(st) >= 400:
+            body = safe_trim(str(tx.get("response_body") or ""), 500)
+            raise RuntimeError(f"deleteProject 失败：HTTP {st} {body}")
+
+        append_log(log_file, f"[veo][project] deleted project_id={pid}")
+        resp = tx.get("_json")
+        return {
+            "success": True,
+            "project_id": pid,
+            "response": resp,
+            "status": st,
+        }
 
 
 def _veo_resolve_n_frames(payload: Dict[str, Any]) -> int:
@@ -3859,6 +4110,187 @@ def _veo_parse_batch_generate_images_fife_url(resp: Any) -> tuple[str, Optional[
     return fife, mid
 
 
+def _veo_parse_batch_generate_images_workflow_info(
+    resp: Any,
+    *,
+    fallback_project_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """从 batchGenerateImages 返回中提取 workflowId 与 projectId，用于归档生成记录。"""
+    if not isinstance(resp, dict):
+        return None, None
+
+    workflow_id: Optional[str] = None
+    workflow_project_id: Optional[str] = None
+
+    def _first_media(obj: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(obj, dict):
+            return None
+        media = obj.get("media")
+        if isinstance(media, list):
+            for item in media:
+                if isinstance(item, dict):
+                    return item
+        reqs = obj.get("responses")
+        if isinstance(reqs, list):
+            for req in reqs:
+                if not isinstance(req, dict):
+                    continue
+                media2 = req.get("media")
+                if isinstance(media2, list):
+                    for item in media2:
+                        if isinstance(item, dict):
+                            return item
+        return None
+
+    m0 = _first_media(resp)
+    if isinstance(m0, dict):
+        workflow_id = str(m0.get("workflowId") or "").strip() or None
+        img_block = m0.get("image")
+        if isinstance(img_block, dict):
+            gen = img_block.get("generatedImage")
+            if isinstance(gen, dict):
+                workflow_id = workflow_id or (str(gen.get("workflowId") or "").strip() or None)
+
+    workflows_raw = resp.get("workflows")
+    workflows: List[Any] = list(workflows_raw) if isinstance(workflows_raw, list) else []
+    if not workflows:
+        reqs = resp.get("responses")
+        if isinstance(reqs, list):
+            for req in reqs:
+                if not isinstance(req, dict):
+                    continue
+                wf2 = req.get("workflows")
+                if isinstance(wf2, list):
+                    workflows.extend(wf2)
+
+    selected_workflow: Optional[Dict[str, Any]] = None
+    for wf in workflows:
+        if not isinstance(wf, dict):
+            continue
+        name = str(wf.get("name") or "").strip()
+        if workflow_id and name == workflow_id:
+            selected_workflow = wf
+            break
+        if selected_workflow is None:
+            selected_workflow = wf
+
+    if isinstance(selected_workflow, dict):
+        workflow_id = workflow_id or (str(selected_workflow.get("name") or "").strip() or None)
+        workflow_project_id = str(selected_workflow.get("projectId") or "").strip() or None
+
+    workflow_project_id = workflow_project_id or (str(fallback_project_id or "").strip() or None)
+    return workflow_id, workflow_project_id
+
+
+async def _veo_archive_flow_workflow_in_window(
+    *,
+    page: Any,
+    access_token: str,
+    workflow_id: Optional[str],
+    project_id: Optional[str],
+    log_file: Path,
+    workflow_kind: str = "image",
+) -> bool:
+    """将 Flow workflow 标记为 archived=true，避免生成内容继续留在项目记录中。"""
+    kind = str(workflow_kind or "flow").strip() or "flow"
+    log_prefix = f"[veo][{kind}]"
+    wid = str(workflow_id or "").strip()
+    pid = str(project_id or "").strip()
+    if not wid:
+        append_log(log_file, f"{log_prefix} archive workflow skipped: missing workflowId")
+        return False
+    if not pid:
+        append_log(log_file, f"{log_prefix} archive workflow skipped: missing projectId workflowId={wid!r}")
+        return False
+
+    url = f"{FLOW_FLOW_WORKFLOWS_BASE_URL}/{wid}"
+    json_data = {
+        "workflow": {
+            "name": wid,
+            "projectId": pid,
+            "metadata": {"archived": True},
+        },
+        "updateMask": "metadata.archived",
+    }
+    try:
+        tx = await page_fetch_json(
+            page,
+            url=url,
+            method="PATCH",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}",
+            },
+            json_data=json_data,
+            log_file=log_file,
+        )
+    except Exception as e:
+        append_log(log_file, f"{log_prefix} archive workflow failed workflowId={wid!r}: {e}")
+        return False
+
+    try:
+        st = int(tx.get("status")) if tx.get("status") is not None else 0
+    except Exception:
+        st = 0
+    if st >= 400:
+        body = safe_trim(str(tx.get("response_body") or ""), 500)
+        append_log(
+            log_file,
+            f"{log_prefix} archive workflow rejected workflowId={wid!r} status={st} body={body!r}",
+        )
+        return False
+
+    append_log(log_file, f"{log_prefix} archive workflow ok workflowId={wid!r} projectId={pid!r} status={st}")
+    return True
+
+
+async def _veo_archive_uploaded_image_workflows_in_window(
+    *,
+    page: Any,
+    access_token: str,
+    uploaded_workflows: List[Dict[str, str]],
+    log_file: Path,
+    workflow_kind: str,
+) -> Dict[str, int]:
+    """归档本次任务中通过 flow/uploadImage 上传的参考图 workflow。"""
+    stats = {"total": 0, "archived": 0, "skipped": 0}
+    if page is None:
+        stats["skipped"] = len(uploaded_workflows or [])
+        if stats["skipped"]:
+            append_log(log_file, f"[veo][{workflow_kind}] upload image archive skipped: page is None")
+        return stats
+
+    seen: set[str] = set()
+    for item in list(uploaded_workflows or []):
+        if not isinstance(item, dict):
+            continue
+        workflow_id = str(item.get("workflow_id") or "").strip()
+        if not workflow_id or workflow_id in seen:
+            stats["skipped"] += 1
+            continue
+        seen.add(workflow_id)
+        stats["total"] += 1
+        project_id = str(item.get("project_id") or "").strip()
+        ok = await _veo_archive_flow_workflow_in_window(
+            page=page,
+            access_token=access_token,
+            workflow_id=workflow_id,
+            project_id=project_id,
+            log_file=log_file,
+            workflow_kind=workflow_kind,
+        )
+        if ok:
+            stats["archived"] += 1
+    if stats["total"] or stats["skipped"]:
+        append_log(
+            log_file,
+            f"[veo][{workflow_kind}] uploaded image workflow archive summary "
+            f"total={stats['total']} archived={stats['archived']} skipped={stats['skipped']}",
+        )
+    return stats
+
+
 async def _veo_ui_fill_prompt_textbox(page, *, prompt: Any, log_file: Path) -> bool:
     """在 `role="textbox"` 的可编辑区填入 prompt（仅输入；提交由后续 `page_fetch_json` 完成）。"""
     try:
@@ -3930,6 +4362,7 @@ async def _veo_execute_image_mode(
     image_inputs: List[Dict[str, Any]] = []
     i2i_urls: List[str] = []
     raw_i2i_batches: List[bytes] = []
+    uploaded_image_workflows: List[Dict[str, str]] = []
     i2i_image_count = 0
     page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
 
@@ -4004,6 +4437,7 @@ async def _veo_execute_image_mode(
                     project_id=project_id,
                     image_bytes=rb,
                     log_file=log_file,
+                    uploaded_workflows=uploaded_image_workflows,
                 )
                 image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
                 append_log(
@@ -4096,6 +4530,14 @@ async def _veo_execute_image_mode(
                 last_submit_err = f"submit fetch error: {_short_err_msg(e, max_len=200)}"
                 print(f"last_submit_err: {last_submit_err}")
                 append_log(log_file, f"[veo][image] submit fetch error: {e}")
+                try:
+                    await sess._bring_target_page_to_front(
+                        refresh_target=True,
+                        drafts_url=bring_prefix,
+                        acquire_bring_lock=False,
+                    )
+                except Exception:
+                    pass
                 continue
     
             st = tx.get("status")
@@ -4106,6 +4548,14 @@ async def _veo_execute_image_mode(
                 print(f"last_submit_err: {last_submit_err}")
                 append_log(log_file, f"[veo][image] submit rejected: {last_submit_err}")
                 recaptcha_override = None
+                try:
+                    await sess._bring_target_page_to_front(
+                        refresh_target=True,
+                        drafts_url=bring_prefix,
+                        acquire_bring_lock=False,
+                    )
+                except Exception:
+                    pass
                 continue
     
             resp = tx.get("_json")
@@ -4117,10 +4567,16 @@ async def _veo_execute_image_mode(
                 append_log(log_file, f"[veo][image] bad response: {last_submit_err}")
                 recaptcha_override = None
                 continue
+            workflow_id, workflow_project_id = _veo_parse_batch_generate_images_workflow_info(
+                resp,
+                fallback_project_id=str(project_id),
+            )
     
             append_log(
                 log_file,
-                f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} media={safe_trim(str(media_name or ''), 60)!r}",
+                f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} "
+                f"media={safe_trim(str(media_name or ''), 60)!r} "
+                f"workflowId={safe_trim(str(workflow_id or ''), 80)!r}",
             )
     
             share_url = fife_url
@@ -4210,6 +4666,16 @@ async def _veo_execute_image_mode(
                         append_log(log_file, f"[veo][image] upsample failed, fallback 1K: {e}")
                         share_url = fife_url
                         res_label = "1K"
+
+            # 获取 1K fifeUrl 后需归档远端 Flow workflow；若请求了 2K，必须等放大流程
+            # 用完 mediaId/fifeUrl 后再归档，避免影响 upsampleImage。
+            archived_workflow = await _veo_archive_flow_workflow_in_window(
+                page=page,
+                access_token=str(access_token),
+                workflow_id=workflow_id,
+                project_id=workflow_project_id,
+                log_file=log_file,
+            )
             sess._cancel_idle_close()
             elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
             await progress_cb(
@@ -4256,6 +4722,9 @@ async def _veo_execute_image_mode(
                 out["upsample_error"] = upsample_err
             if media_name:
                 out["generated_media_id"] = media_name
+            if workflow_id:
+                out["generated_workflow_id"] = workflow_id
+                out["workflow_archived"] = bool(archived_workflow)
             return out
 
         raise RuntimeError(last_submit_err or "图片生成提交失败")
@@ -4264,6 +4733,17 @@ async def _veo_execute_image_mode(
         try:
             return await _do_veo_image_page_work()
         finally:
+            if uploaded_image_workflows:
+                try:
+                    await _veo_archive_uploaded_image_workflows_in_window(
+                        page=sess.pw_ctx.page,
+                        access_token=str(access_token),
+                        uploaded_workflows=uploaded_image_workflows,
+                        log_file=log_file,
+                        workflow_kind="upload_image",
+                    )
+                except Exception as e:
+                    append_log(log_file, f"[veo][image] uploaded image archive finally failed: {e}")
             try:
                 await sess.pw_ctx.disconnect_playwright_only()
             except Exception:
@@ -4286,6 +4766,7 @@ async def veo_workflow(
     access_token: Optional[str] = None,
     access_expires: Optional[str] = None,
     headless: bool = False,
+    pure_mode: bool = True,
     db: Any = None,
     task_type_window_id: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -4375,6 +4856,7 @@ async def veo_workflow(
         window_key=window_key,
     )
     sess.browser_headless = headless
+    sess.browser_pure_mode = pure_mode
     sess.monitor_log_path = monitor_log_path
     sess.idle_close_seconds = idle_close_seconds
 
@@ -4417,7 +4899,7 @@ async def veo_workflow(
         },
     )
 
-    await sess.ensure_open(headless=headless)
+    await sess.ensure_open(headless=headless, pure_mode=pure_mode)
     append_log(log_file, "[veo] browser open / CDP connected")
 
     await sess._bring_target_page_to_front(refresh_target=True, drafts_url=bring_prefix)
@@ -4570,6 +5052,8 @@ async def veo_workflow(
             )
             i2v_raw_batches.append(raw_b)
 
+    uploaded_image_workflows: List[Dict[str, str]] = []
+
     async def _do_veo_video_page_work() -> Dict[str, Any]:
         nonlocal recaptcha_override
 
@@ -4610,6 +5094,7 @@ async def veo_workflow(
                     project_id=project_id,
                     image_bytes=raw_b,
                     log_file=log_file,
+                    uploaded_workflows=uploaded_image_workflows,
                 )
                 r2v_reference_images.append(
                     {"imageUsageType": "IMAGE_USAGE_TYPE_ASSET", "mediaId": mid}
@@ -4629,6 +5114,7 @@ async def veo_workflow(
                     project_id=project_id,
                     image_bytes=raw_b,
                     log_file=log_file,
+                    uploaded_workflows=uploaded_image_workflows,
                 )
                 media_ids.append(mid)
                 append_log(log_file, f"[veo][i2v] uploaded {label} mediaId={safe_trim(mid, 80)!r}")
@@ -4775,6 +5261,14 @@ async def veo_workflow(
             except Exception as e:
                 last_submit_err = _short_err_msg(e, max_len=200)
                 append_log(log_file, f"[veo] submit fetch error: {e}")
+                try:
+                    await sess._bring_target_page_to_front(
+                        refresh_target=True,
+                        drafts_url=bring_prefix,
+                        acquire_bring_lock=False,
+                    )
+                except Exception:
+                    pass
                 continue
 
             st = tx.get("status")
@@ -4784,6 +5278,14 @@ async def veo_workflow(
                 last_submit_err = f"HTTP {st} {body}"
                 append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
                 recaptcha_override = None
+                try:
+                    await sess._bring_target_page_to_front(
+                        refresh_target=True,
+                        drafts_url=bring_prefix,
+                        acquire_bring_lock=False,
+                    )
+                except Exception:
+                    pass
                 continue
 
             resp = tx.get("_json")
@@ -4811,7 +5313,7 @@ async def veo_workflow(
 
         await progress_cb(25, {"stage": "polling", "operations": len(operations)})
         sess._cancel_idle_close()
-        video_url = await _veo_poll_operations_until_video_url(
+        video_url, video_workflow_id, video_workflow_project_id = await _veo_poll_operations_until_video_url(
             page=page,
             access_token=str(at),
             log_file=log_file,
@@ -4819,14 +5321,8 @@ async def veo_workflow(
             operations=operations,
             max_wait_seconds=max_wait_seconds,
             poll_interval_seconds=poll_interval_seconds,
+            project_id=str(project_id),
             sess=sess,
-        )
-
-        elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
-        await progress_cb(100, {"stage": "done", "elapsed_ms": elapsed_ms, "video_url": video_url})
-        append_log(
-            log_file,
-            f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} video_url={safe_trim(video_url or '', 120)!r}",
         )
 
         if want_i2v:
@@ -4853,6 +5349,34 @@ async def veo_workflow(
                         "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
                     )
 
+        archived_workflow = await _veo_archive_flow_workflow_in_window(
+            page=page,
+            access_token=str(at),
+            workflow_id=video_workflow_id,
+            project_id=video_workflow_project_id or str(project_id),
+            log_file=log_file,
+            workflow_kind="video",
+        )
+
+        elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
+        await progress_cb(
+            100,
+            {
+                "stage": "done",
+                "elapsed_ms": elapsed_ms,
+                "video_url": video_url,
+                "workflow_id": video_workflow_id,
+                "workflow_archived": archived_workflow,
+            },
+        )
+        append_log(
+            log_file,
+            f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} "
+            f"video_url={safe_trim(video_url or '', 120)!r} "
+            f"workflowId={safe_trim(str(video_workflow_id or ''), 80)!r} "
+            f"archived={archived_workflow}",
+        )
+
         if want_ingredients:
             _done_msg = "VEO Ingredients（多图参考）视频完成"
             _vtype = "r2v"
@@ -4877,12 +5401,26 @@ async def veo_workflow(
             out["i2v_image_count"] = len(i2v_urls)
         if want_ingredients:
             out["ingredients_image_count"] = len(ingredients_urls)
+        if video_workflow_id:
+            out["generated_workflow_id"] = video_workflow_id
+            out["workflow_archived"] = bool(archived_workflow)
         return out
 
     async with sess._bring_drafts_lock:
         try:
             return await _do_veo_video_page_work()
         finally:
+            if uploaded_image_workflows:
+                try:
+                    await _veo_archive_uploaded_image_workflows_in_window(
+                        page=sess.pw_ctx.page,
+                        access_token=str(at),
+                        uploaded_workflows=uploaded_image_workflows,
+                        log_file=log_file,
+                        workflow_kind="upload_image",
+                    )
+                except Exception as e:
+                    append_log(log_file, f"[veo][video] uploaded image archive finally failed: {e}")
             try:
                 await sess.pw_ctx.disconnect_playwright_only()
             except Exception:
