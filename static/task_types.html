@@ -132,7 +132,7 @@
         </div>
         <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
         <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.me/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
+        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -2901,7 +2901,7 @@
           const _isDreamina = _handler === "dreamina_workflow";
           const _targetPageHandler = _isVeo || _isGrok || _isDreamina;
           const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow" || _handler === "dreamina_workflow";
-          const _openTitle = "会先清空该窗口本地缓存，再仅打开指纹窗口（不连自动化、不导航；禁止自动关闭）";
+          const _openTitle = "会先清空该窗口本地缓存，再打开/唤起指纹窗口；若窗口内没有目标页或其子页面，则新建 page 打开目标页（禁止自动关闭）";
           const _startTitle = _targetPageHandler ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           const _openAccountTitle = _isVeo
             ? "开号/连接：连接后自动判断是否为 Google 登录页；若页面可见 @gmail.com（选账号列表）则走「连接置前」自动点选；否则走完整 Google 登录并打开 Flow（完成后断开 CDP）"
@@ -4324,9 +4324,9 @@
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
-          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
-          toast("已打开指纹窗口（未连接自动化），已禁止自动关闭", "success");
+          toast(d?.page_url ? "已打开指纹窗口并确保目标页存在，已禁止自动关闭" : "已打开指纹窗口，已禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
         } catch (e) {
           toast(e.message, "error");
@@ -5151,7 +5151,8 @@
           ids,
           runner: async (mappingId) => {
             const hl = getMappingHeadless(mappingId);
-            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}`, { method: "POST" });
+            const pm = getMappingPureMode(mappingId);
+            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
           },
         });
       }

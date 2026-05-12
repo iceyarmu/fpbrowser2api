@@ -21,11 +21,12 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from ..core.config import config as app_config
 from ..core.database import Database
+from ..core.logger import logger
 from ..core.paths import MONITOR_LOG_FILE
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
@@ -154,6 +155,137 @@ def _veo_cached_access_still_valid(
     if dt.tzinfo is None:
         return datetime.now() + margin < dt
     return datetime.now(timezone.utc) + margin < dt.astimezone(timezone.utc)
+
+
+def _veo_should_fetch_next_update_cooldown(cooldown_until_val: Any) -> bool:
+    """无记录、不可解析或当前时间已超过 cooldown_until 时，需要重新抓取 one.google 活动页上的重置时间。"""
+    raw = str(cooldown_until_val or "").strip()
+    if not raw:
+        return True
+    try:
+        if len(raw) >= 19:
+            until = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+            return datetime.now() > until
+    except ValueError:
+        pass
+    try:
+        until = datetime.strptime(raw[:10], "%Y-%m-%d")
+        return datetime.now() > until
+    except ValueError:
+        pass
+    try:
+        until = datetime.fromisoformat(raw.replace(" ", "T", 1))
+        if until.tzinfo is None:
+            return datetime.now() > until
+        return datetime.now(timezone.utc) > until.astimezone(timezone.utc)
+    except ValueError:
+        return True
+
+
+async def refresh_veo_balance(
+    *,
+    db: Database,
+    picked: Any,
+    refresh_timeout_seconds: float,
+    signal_window_pool_replenish: Optional[Callable[[], None]] = None,
+) -> Optional[Dict[str, Any]]:
+    """VEO：在指纹窗口内 fetch aisandbox credits，与 admin 刷新额度一致。"""
+    if str(picked.create_task_handler or "").strip().lower() != "veo_workflow":
+        return None
+
+    at = str(picked.sora_access_token or "").strip()
+    try:
+        row = await db.get_task_type_window_context(picked.mapping_id)
+        if row:
+            t2 = str(row.get("sora_access_token") or "").strip() or None
+            if t2:
+                at = t2
+                picked.sora_access_token = t2
+                picked.sora_access_expires = str(row.get("sora_access_expires") or "").strip() or None
+    except Exception:
+        pass
+    if not at:
+        return None
+
+    try:
+        veo_sess = get_or_create_veo_session(
+            vendor=picked.browser_vendor,
+            base_url=picked.browser_base_url,
+            access_key=picked.browser_access_key,
+            space_id=picked.space_id,
+            window_key=picked.window_key,
+        )
+        veo_sess.browser_headless = picked.headless
+    except Exception:
+        return None
+
+    veo_target = str(picked.default_target_url or "").strip() or "https://labs.google/fx"
+    veo_info: Optional[Dict[str, Any]] = None
+    try:
+        veo_info = await veo_fetch_credits_in_window(
+            sess=veo_sess,
+            target_url=veo_target,
+            access_token=at,
+        )
+    except Exception as e:
+        logger.warning("refresh_veo_balance failed: mapping=%s err=%s", picked.mapping_id, e)
+        return None
+
+    try:
+        if veo_info is not None and veo_info.get("credits") is not None:
+            st0 = await db.get_mapping_runtime_state(mapping_id=picked.mapping_id)
+            need_next_update = _veo_should_fetch_next_update_cooldown((st0 or {}).get("cooldown_until"))
+            new_cu: Optional[str] = None
+            if need_next_update:
+                new_cu = await veo_fetch_next_update_cooldown_from_one_google_activity(
+                    sess=veo_sess,
+                    target_url=veo_target,
+                )
+
+            _kw: Dict[str, Any] = {
+                "mapping_id": picked.mapping_id,
+                "remaining_quota": int(veo_info.get("credits") or 0),
+                "sora_remaining_count": int(veo_info.get("credits") or 0),
+            }
+            if new_cu:
+                _kw["cooldown_until"] = str(new_cu)
+            await db.update_task_type_window(**_kw)
+            if new_cu:
+                veo_info = dict(veo_info)
+                veo_info["cooldown_until"] = str(new_cu)
+            try:
+                cur_q = int(veo_info.get("credits") or 0)
+                if cur_q < 30 and signal_window_pool_replenish is not None:
+                    hi = await db.task_type_has_mapping_remaining_quota_above(picked.task_code, 30)
+                    if hi:
+                        signal_window_pool_replenish()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return veo_info
+
+
+async def refresh_veo_balance_best_effort(
+    *,
+    db: Database,
+    picked: Any,
+    refresh_timeout_seconds: float,
+    signal_window_pool_replenish: Optional[Callable[[], None]] = None,
+    task_id: Optional[str] = None,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            refresh_veo_balance(
+                db=db,
+                picked=picked,
+                refresh_timeout_seconds=refresh_timeout_seconds,
+                signal_window_pool_replenish=signal_window_pool_replenish,
+            ),
+            timeout=refresh_timeout_seconds,
+        )
+    except Exception as e:
+        logger.warning("refresh_veo_balance skipped: task=%s mapping=%s err=%s", task_id, picked.mapping_id, e)
 
 
 def _build_debug_progress_panel_script() -> str:

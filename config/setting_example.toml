@@ -19,7 +19,7 @@ debug_enabled = false
 log_to_file = false
 
 [ai_agent]
-# 大模型中转站地址在代码中固定为 https://www.newtoken.me/，这里仅配置默认模型和默认 API Key。
+# 大模型中转站地址在代码中固定为 https://www.newtoken.club/，这里仅配置默认模型和默认 API Key。
 # 也可用环境变量 AI_AGENT_API_KEY / NEWTOKEN_API_KEY / OPENAI_API_KEY 注入，优先级高于本配置。
 default_model = "gpt-5.5"
 api_key = ""
