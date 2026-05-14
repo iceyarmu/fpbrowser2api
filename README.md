@@ -28,9 +28,6 @@
 cd fpbrowser2api
 
 # 创建虚拟环境
-# 注意，只支持python 3.10.x版本！！！
-# 注意，只支持python 3.10.x版本！！！
-# 注意，只支持python 3.10.x版本！！！
 python -m venv venv
 
 # 激活虚拟环境
