@@ -47,7 +47,6 @@ from .sora_task_executor import (
 from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
-
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
@@ -288,6 +287,222 @@ async def refresh_veo_balance_best_effort(
         logger.warning("refresh_veo_balance skipped: task=%s mapping=%s err=%s", task_id, picked.mapping_id, e)
 
 
+
+# ---------------------------------------------------------------------------
+# 反风控注入（仅对 labs.google/fx/tools/flow 目标页生效）
+#
+# 设计原则：
+# - 精准打击：只拦截「纯遥测/行为采集」端点，业务接口与 reCAPTCHA 一律放行
+# - 自动化痕迹清理：navigator.webdriver、cdc_* 等 CDP/ChromeDriver 残留
+# - Hook 三大出口：navigator.sendBeacon / window.fetch / XMLHttpRequest
+# - 放行白名单优先于拦截黑名单，避免误伤业务
+# ---------------------------------------------------------------------------
+def _build_veo_anti_detection_bootstrap_script() -> str:
+    """返回反风控 bootstrap 脚本（幂等，重复注入不会叠加）。"""
+    return r"""
+(() => {
+  try {
+    const W = window;
+    if (W.__veo_anti_detect_installed__) return;
+    try {
+      Object.defineProperty(W, '__veo_anti_detect_installed__', {
+        value: true, writable: false, configurable: false,
+      });
+    } catch (_e) { W.__veo_anti_detect_installed__ = true; }
+
+    const NOOP = function () {};
+    const log = (...args) => { try { console.debug('[veo-anti-detect]', ...args); } catch (_e) {} };
+
+    // ---------- 1. 清理自动化/CDP 指纹 ----------
+    try {
+      Object.defineProperty(Navigator.prototype, 'webdriver', {
+        get: () => undefined, configurable: true,
+      });
+    } catch (_e) {}
+    try {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined, configurable: true,
+      });
+    } catch (_e) {}
+    try {
+      // 清除 ChromeDriver / Selenium 注入的 cdc_ / $cdc_ / $chrome_asyncScriptInfo 等变量
+      const names = Object.getOwnPropertyNames(W);
+      for (const k of names) {
+        if (/^\$?cdc_[a-zA-Z0-9]+_/.test(k) || /^\$chrome_asyncScriptInfo$/.test(k)) {
+          try { delete W[k]; } catch (_e) {}
+        }
+      }
+      // 文档对象上也可能有 $cdc_ 痕迹
+      try {
+        const dnames = Object.getOwnPropertyNames(document);
+        for (const k of dnames) {
+          if (/^\$?cdc_[a-zA-Z0-9]+_/.test(k)) {
+            try { delete document[k]; } catch (_e) {}
+          }
+        }
+      } catch (_e) {}
+    } catch (_e) {}
+
+    // 常见指纹探测点做一次"看起来正常"的兜底（不覆盖已存在的真实值）
+    try {
+      if (!('plugins' in navigator) || navigator.plugins.length === 0) {
+        // 不做伪造，避免与真实指纹浏览器底层冲突，只在为空时回填一个空数组避免直接抛异常
+      }
+    } catch (_e) {}
+
+    // ---------- 2. 端点黑/白名单 ----------
+    // 核心策略：Google 自有域名全部放行（reCAPTCHA 评分依赖 Google 遥测信号）
+    // 只拦截明确的第三方追踪
+    const GOOGLE_DOMAIN_RE = /\.(google\.com|googleapis\.com|gstatic\.com|google\.[a-z]{2,}|googleusercontent\.com|googlesyndication\.com|googletagmanager\.com|google-analytics\.com|recaptcha\.net)(:\d+)?(\/|$)/i;
+
+    // 拦截：仅第三方非 Google 的追踪/遥测
+    const BLOCK_PATTERNS = [
+      /hotjar\.com/i,
+      /clarity\.ms/i,
+      /facebook\.net.*\/tr/i,
+      /connect\.facebook\.net/i,
+      /bat\.bing\.com/i,
+      /datadoghq\.com/i,
+      /sentry\.io/i,
+      /newrelic\.com/i,
+      /segment\.io/i,
+      /segment\.com\/v1/i,
+      /mixpanel\.com/i,
+      /amplitude\.com/i,
+      /heapanalytics\.com/i,
+      /fullstory\.com/i,
+    ];
+
+    const shouldBlock = (url) => {
+      try {
+        const s = String(url || '');
+        if (!s) return false;
+        // Google 自有域名全部放行 — reCAPTCHA 需要这些信号来评分
+        if (GOOGLE_DOMAIN_RE.test(s)) return false;
+        for (const re of BLOCK_PATTERNS) { if (re.test(s)) return true; }
+      } catch (_e) {}
+      return false;
+    };
+
+    // ---------- 3. Hook navigator.sendBeacon ----------
+    try {
+      const origBeacon = navigator.sendBeacon ? navigator.sendBeacon.bind(navigator) : null;
+      navigator.sendBeacon = function (url, data) {
+        try {
+          if (shouldBlock(url)) { log('block beacon', url); return true; }
+        } catch (_e) {}
+        return origBeacon ? origBeacon(url, data) : true;
+      };
+    } catch (_e) {}
+
+    // ---------- 4. Hook window.fetch ----------
+    try {
+      const origFetch = W.fetch ? W.fetch.bind(W) : null;
+      if (origFetch) {
+        W.fetch = function (input, init) {
+          try {
+            let url = '';
+            if (typeof input === 'string') url = input;
+            else if (input && typeof input.url === 'string') url = input.url;
+            if (shouldBlock(url)) {
+              log('block fetch', url);
+              return Promise.resolve(new Response('', {
+                status: 204, statusText: 'No Content',
+              }));
+            }
+          } catch (_e) {}
+          return origFetch(input, init);
+        };
+      }
+    } catch (_e) {}
+
+    // ---------- 5. Hook XMLHttpRequest ----------
+    try {
+      const OrigOpen = XMLHttpRequest.prototype.open;
+      const OrigSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        try { this.__veo_url__ = url; } catch (_e) {}
+        return OrigOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        try {
+          if (shouldBlock(this.__veo_url__)) {
+            log('block xhr', this.__veo_url__);
+            const self = this;
+            setTimeout(() => {
+              try {
+                Object.defineProperty(self, 'readyState', { value: 4, configurable: true });
+                Object.defineProperty(self, 'status', { value: 204, configurable: true });
+                Object.defineProperty(self, 'responseText', { value: '', configurable: true });
+                Object.defineProperty(self, 'response', { value: '', configurable: true });
+              } catch (_e) {}
+              try { if (typeof self.onreadystatechange === 'function') self.onreadystatechange(); } catch (_e) {}
+              try { self.dispatchEvent(new Event('readystatechange')); } catch (_e) {}
+              try { self.dispatchEvent(new Event('load')); } catch (_e) {}
+              try { self.dispatchEvent(new Event('loadend')); } catch (_e) {}
+            }, 0);
+            return;
+          }
+        } catch (_e) {}
+        return OrigSend.apply(this, arguments);
+      };
+    } catch (_e) {}
+
+    // ---------- 6. 不再覆盖 ga/gtag/dataLayer — Google 产品页需要这些来正常评分 ----------
+    // 仅禁用非 Google 的风控 SDK
+    try {
+      // DataDome
+      try {
+        W.DD_RUM = Object.assign({}, W.DD_RUM, {
+          init: NOOP, addAction: NOOP, addError: NOOP,
+          addTiming: NOOP, startView: NOOP, setUser: NOOP,
+        });
+      } catch (_e) {}
+      // Akamai BMP / bot manager
+      W.bmak = W.bmak || {
+        pd: NOOP, startTracking: NOOP, stopTracking: NOOP, get_cf: () => '',
+      };
+    } catch (_e) {}
+
+    log('installed');
+  } catch (e) {
+    try { console.warn('[veo-anti-detect] bootstrap failed', e); } catch (_e) {}
+  }
+})();
+""".strip()
+
+
+async def _veo_apply_anti_detection_bootstrap(sess: "VeoSession", *, log_file: Path) -> None:
+    """对当前目标页及其后续导航注入反风控 bootstrap。
+
+    双保险：
+    - ``context.add_init_script``：后续任何导航/iframe 在页面脚本之前生效
+    - ``page.evaluate``：立即覆盖当前已加载的页面上下文
+    """
+    page = getattr(sess.pw_ctx, "page", None)
+    if page is None:
+        append_log(log_file, "[veo][anti_detect] skip: page is None")
+        return
+    script = _build_veo_anti_detection_bootstrap_script()
+
+    # 1) init_script：保证刷新 / iframe / 子页面都能前置执行
+    try:
+        ctx = getattr(page, "context", None)
+        if ctx is not None:
+            await ctx.add_init_script(script)
+            append_log(log_file, "[veo][anti_detect] add_init_script ok")
+    except Exception as e:
+        append_log(log_file, f"[veo][anti_detect] add_init_script failed: {e}")
+
+    # 2) 立即 evaluate：覆盖当前运行态
+    try:
+        await page.evaluate(script)
+        append_log(log_file, "[veo][anti_detect] bootstrap injected (current page)")
+    except Exception as e:
+        append_log(log_file, f"[veo][anti_detect] inject current page failed: {e}")
+
+
+
 def _build_debug_progress_panel_script() -> str:
     """返回调试进度面板注入脚本（单实例，重复调用只更新内容）。"""
     return r"""
@@ -509,6 +724,7 @@ class VeoSession:
     # ------------------------------------------------------------------
     async def _push_debug_progress(self, page: Any, text: str, *, level: str = "info") -> None:
         """向页面插件弹窗写入调试步骤；同一页面始终复用单个面板。"""
+        return;
         if page is None:
             return
         try:
@@ -1548,7 +1764,7 @@ class VeoSession:
 
             if refresh_target:
                 try:
-                    await drafts_page.goto(drafts_url, wait_until="domcontentloaded")
+                    await drafts_page.reload(wait_until="domcontentloaded", timeout=30_000)
                     await self._push_debug_progress(drafts_page, "目标页面刷新完成", level="ok")
                 except Exception:
                     await self._push_debug_progress(drafts_page, "目标页面刷新失败（将继续流程）", level="warn")
@@ -3014,194 +3230,6 @@ def _veo_page_is_target_flow_project_url(url: str, project_id: str) -> bool:
     exp = f"/fx/tools/flow/project/{pid}".rstrip("/").lower()
     return path == exp
 
-
-async def _veo_fetch_recaptcha_token_new_page(
-    browser_context: Any,
-    *,
-    project_id: str,
-    action: str,
-    log_file: Path,
-) -> Optional[str]:
-    """在真实 Labs 项目页上解析 site key 并 execute；若已有标签即在该项目页则复用，否则新开标签并 goto。
-
-    依赖指纹浏览器 context 内已有 Labs 登录态。
-    """
-    page = None
-    page_owned = False
-    page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
-    keys_seen: List[str] = []
-
-    def on_request(req: Any) -> None:
-        try:
-            sk = _veo_parse_recaptcha_site_key_from_url(req.url)
-            if sk and sk not in keys_seen:
-                keys_seen.append(sk)
-        except Exception:
-            pass
-
-    try:
-        reused: Any = None
-        try:
-            for p in list(getattr(browser_context, "pages", []) or []):
-                try:
-                    if bool(getattr(p, "is_closed", lambda: False)()):
-                        continue
-                except Exception:
-                    continue
-                try:
-                    u = str(getattr(p, "url", "") or "")
-                except Exception:
-                    u = ""
-                if _veo_page_is_target_flow_project_url(u, project_id):
-                    reused = p
-                    break
-        except Exception:
-            reused = None
-
-        if reused is not None:
-            page = reused
-            append_log(
-                log_file,
-                "[veo][recaptcha] reuse existing page on Flow project (skip new tab/goto)",
-            )
-        else:
-            page = await browser_context.new_page()
-            page_owned = True
-            await page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            )
-            append_log(log_file, f"[veo][recaptcha] new page goto real Flow project (resolve site key from page)")
-            try:
-                await page.goto(page_url, wait_until="load", timeout=45000)
-            except Exception as e:
-                append_log(
-                    log_file,
-                    f"[veo][recaptcha] goto failed: {type(e).__name__}: {str(e)[:200]}",
-                )
-                return None
-
-        page.on("request", on_request)
-
-        resolve_deadline = time.monotonic() + 18.0
-        website_key = await _veo_resolve_recaptcha_site_key_on_page(
-            page, keys_seen, deadline_monotonic=resolve_deadline
-        )
-        if website_key:
-            print(f"[veo][recaptcha] site key from page len={len(website_key)}")
-            append_log(log_file, f"[veo][recaptcha] site key from page len={len(website_key)}")
-        else:
-            website_key = VEO_RECAPTCHA_SITE_KEY
-            append_log(
-                log_file,
-                "[veo][recaptcha] site key not resolved from network/DOM, fallback VEO_RECAPTCHA_SITE_KEY",
-            )
-
-        reload_ok_event = asyncio.Event()
-        clr_ok_event = asyncio.Event()
-
-        def handle_response(response: Any) -> None:
-            try:
-                if response.status != 200:
-                    return
-                parsed = urlparse(response.url)
-                path = parsed.path or ""
-                if "recaptcha/enterprise/reload" not in path and "recaptcha/enterprise/clr" not in path:
-                    return
-                query = parse_qs(parsed.query or "")
-                key = (query.get("k") or [None])[0]
-                if key != website_key:
-                    return
-                if "recaptcha/enterprise/reload" in path:
-                    reload_ok_event.set()
-                elif "recaptcha/enterprise/clr" in path:
-                    clr_ok_event.set()
-            except Exception:
-                pass
-
-        page.on("response", handle_response)
-
-        def handle_request_failed(request: Any) -> None:
-            try:
-                failed_url = request.url or ""
-                if not any(d in failed_url for d in ["google.com", "gstatic.com", "recaptcha.net"]):
-                    return
-                failure = request.failure or ""
-                append_log(
-                    log_file,
-                    f"[veo][recaptcha] resource failed: url={failed_url[:200]!s} err={failure!s}",
-                )
-            except Exception:
-                pass
-
-        page.on("requestfailed", handle_request_failed)
-
-        try:
-            await page.wait_for_function("typeof grecaptcha !== 'undefined'", timeout=20000)
-        except Exception as e:
-            append_log(
-                log_file,
-                f"[veo][recaptcha] grecaptcha not ready: {type(e).__name__}: {str(e)[:200]}",
-            )
-            return None
-
-        try:
-            token = await asyncio.wait_for(
-                page.evaluate(
-                    """
-                    ([actionName, siteKey]) => {
-                        return new Promise((resolve, reject) => {
-                            const timeout = setTimeout(() => reject(new Error('timeout')), 25000);
-                            grecaptcha.enterprise.execute(siteKey, { action: actionName })
-                                .then((t) => { clearTimeout(timeout); resolve(t); })
-                                .catch((e) => { clearTimeout(timeout); reject(e); });
-                        });
-                    }
-                    """,
-                    [action, website_key],
-                ),
-                timeout=30,
-            )
-        except Exception as e:
-            append_log(log_file, f"[veo][recaptcha] execute failed: {type(e).__name__}: {str(e)[:200]}")
-            return None
-
-        try:
-            await asyncio.wait_for(reload_ok_event.wait(), timeout=12)
-        except asyncio.TimeoutError:
-            append_log(log_file, "[veo][recaptcha] timeout waiting enterprise/reload 200")
-            return None
-
-        try:
-            await asyncio.wait_for(clr_ok_event.wait(), timeout=12)
-        except asyncio.TimeoutError:
-            append_log(log_file, "[veo][recaptcha] timeout waiting enterprise/clr 200")
-            return None
-
-        raw_cfg = app_config.get_raw_config()
-        veo_cfg = raw_cfg.get("veo") if isinstance(raw_cfg, dict) else None
-        settle = 3.0
-        if isinstance(veo_cfg, dict):
-            try:
-                settle = float(veo_cfg.get("recaptcha_settle_seconds", settle) or settle)
-            except (TypeError, ValueError):
-                settle = 3.0
-        if settle > 0:
-            append_log(log_file, f"[veo][recaptcha] reload/clr ok, settle {settle:.1f}s")
-            await asyncio.sleep(settle)
-
-        s = str(token or "").strip()
-        return s or None
-    except Exception as e:
-        append_log(log_file, f"[veo][recaptcha] fatal: {type(e).__name__}: {str(e)[:200]}")
-        return None
-    finally:
-        if page_owned and page:
-            try:
-                await page.close()
-            except Exception:
-                pass
-
-
 async def _veo_fetch_recaptcha_token_enhanced(
     browser_context: Any,
     *,
@@ -3250,7 +3278,6 @@ async def _veo_fetch_recaptcha_token_enhanced(
             page_owned = True
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
                 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
                 delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
                 delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
@@ -3288,24 +3315,6 @@ async def _veo_fetch_recaptcha_token_enhanced(
         else:
             website_key = VEO_RECAPTCHA_SITE_KEY
             append_log(log_file, "[veo][recaptcha] using fallback site key")
-
-        try:
-            viewport = page.viewport_size
-            if viewport:
-                for _ in range(random.randint(2, 4)):
-                    x = random.randint(100, viewport.get("width", 1200) - 100)
-                    y = random.randint(100, viewport.get("height", 800) - 100)
-                    await page.mouse.move(x, y)
-                    await asyncio.sleep(random.uniform(0.1, 0.3))
-        except Exception:
-            pass
-
-        try:
-            await page.evaluate("window.scrollTo(0, Math.random() * 200)")
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-            await page.evaluate("window.scrollTo(0, 0)")
-        except Exception:
-            pass
 
         reload_ok_event = asyncio.Event()
         clr_ok_event = asyncio.Event()
@@ -4583,6 +4592,7 @@ async def _veo_execute_image_mode(
 
         for attempt in range(max_submit_retries):
             sess._cancel_idle_close()
+            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
             recaptcha_token = recaptcha_override
             if not recaptcha_token:
                 print(f"project_id: {project_id}")
@@ -4641,8 +4651,6 @@ async def _veo_execute_image_mode(
                     "image_mode": "multi_i2i" if i2i_image_count > 1 else ("i2i" if want_i2i else "t2i"),
                 },
             )
-
-            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
 
             try:
                 print(f"submit_url: {submit_url}")
@@ -4878,6 +4886,7 @@ async def _veo_execute_image_mode(
                     append_log(log_file, f"[veo][image] uploaded image archive finally failed: {e}")
             try:
                 await sess.pw_ctx.disconnect_playwright_only()
+                pass;
             except Exception:
                 pass
 
@@ -4932,6 +4941,7 @@ async def veo_workflow(
     if not image_mode:
         ingredients_urls = _veo_collect_ingredients_image_urls(payload)
         want_ingredients = len(ingredients_urls) >= 1
+        #raise NonPenalizedTaskError("Veo3.1视频维护中，暂时下架", status_code=400,content_violation=True)
 
     want_i2v = False
     if not image_mode:
@@ -4978,7 +4988,7 @@ async def veo_workflow(
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
     max_wait_seconds = float(payload.get("veo_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 1800.0)))
     poll_interval_seconds = float(payload.get("veo_pending_poll_interval_seconds") or 5.0)
-    max_submit_retries = 2
+    max_submit_retries = 1
 
     sess = get_or_create_veo_session(
         vendor=browser_vendor,
@@ -5036,10 +5046,35 @@ async def veo_workflow(
 
     await sess._bring_target_page_to_front(refresh_target=True, drafts_url=bring_prefix)
     sess._cancel_idle_close()
-    nav_timeout_ms = int(max(15_000, min(120_000, float(timeout_seconds) * 1000)))
-    #await sess.navigate_to(project_page, timeout_ms=nav_timeout_ms)
     await progress_cb(5, {"stage": "navigate", "url": project_page})
     append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
+
+    # 反风控注入：针对 bring_prefix 目标页（https://labs.google/fx/tools/flow/...）
+    # 在 access_token 获取与生成请求发起前，清理自动化痕迹并拦截遥测端点
+    '''
+    try:
+        await _veo_apply_anti_detection_bootstrap(sess, log_file=log_file)
+        # 让 init_script 在页面脚本之前生效：再刷一次
+        try:
+            await sess.pw_ctx.page.reload(wait_until="domcontentloaded", timeout=30_000)
+            await asyncio.sleep(1.0)
+        except Exception as _e_rl:
+            append_log(log_file, f"[veo][anti_detect] reload after inject failed: {_e_rl}")
+    except Exception as _e_anti:
+        append_log(log_file, f"[veo][anti_detect] skipped: {_e_anti}")
+    '''
+
+    # --- reload 后深度拟人行为：给 reCAPTCHA 足够的行为信号积累 ---
+    try:
+        _ha_page = getattr(sess.pw_ctx, "page", None)
+        if _ha_page and not _ha_page.is_closed():
+            from .window_human_activity import perform_deep_human_activity
+            _deep_result = await perform_deep_human_activity(
+                _ha_page, min_seconds=10.0, max_seconds=15.0,
+            )
+            append_log(log_file, f"[veo] post-inject deep human activity done: {_deep_result}")
+    except Exception as _e_post_ha:
+        append_log(log_file, f"[veo] post-inject human activity error: {_e_post_ha}")
 
     renew_margin = float(payload.get("veo_access_token_renew_margin_seconds") or 120.0)
     renew_margin = max(0.0, min(3600.0, renew_margin))
@@ -5258,6 +5293,7 @@ async def veo_workflow(
         last_submit_err: Optional[str] = None
 
         for attempt in range(max_submit_retries):
+            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
             recaptcha_token = recaptcha_override
             if not recaptcha_token:
                 recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
@@ -5375,8 +5411,6 @@ async def veo_workflow(
                 },
             )
 
-            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
-
             try:
                 tx = await page_fetch_json(
                     page,
@@ -5421,7 +5455,7 @@ async def veo_workflow(
                 continue
 
             resp = tx.get("_json")
-            ops = resp.get("operations") if isinstance(resp, dict) else None
+            ops = resp.get("media") if isinstance(resp, dict) else None
             if not isinstance(ops, list) or len(ops) == 0:
                 last_submit_err = f"提交返回无 operations: {safe_trim(str(resp), 300)}"
                 append_log(log_file, f"[veo] submit bad response: {last_submit_err}")
@@ -5555,5 +5589,6 @@ async def veo_workflow(
                     append_log(log_file, f"[veo][video] uploaded image archive finally failed: {e}")
             try:
                 await sess.pw_ctx.disconnect_playwright_only()
+                pass
             except Exception:
                 pass
