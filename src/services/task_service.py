@@ -83,8 +83,11 @@ from .veo_workflow_executor import (
 from .jimeng_task_executor import (
     DEFAULT_DREAMINA_TARGET,
     get_or_create_dreamina_session,
+    refresh_dreamina_balance,
     refresh_dreamina_balance_best_effort,
     dreamina_workflow,
+    _DREAMINA_MIN_CREDIT,
+    _DREAMINA_GIFT_CREDIT,
 )
 
 
@@ -125,17 +128,25 @@ class QueuedTask:
 def _remaining_quota_exclusive_floor_for_pick(
     task_type_code: str, payload: Optional[Dict[str, Any]]
 ) -> int:
+    credit_threthold = 1;
     """与 pick 时 remaining_quota >= floor 及预扣额度对齐（见 _consume_quota_after_window_pick）。"""
     code = (task_type_code or "").strip()
     if code == "sora_gen_video":
-        return 3
+        return 3, credit_threthold
     if code == "veo_workflow":
-        return 30 if _veo_resolve_n_frames(payload or {}) > 1 else 10
+        if _veo_resolve_n_frames(payload or {}) > 1:
+            return 30,credit_threthold
+        else:
+            return 10,credit_threthold
     if code == "grok_workflow":
-        return 30 if grok_ref_url_count(payload or {}) > 1 else 10
+        if _veo_resolve_n_frames(payload or {}) > 1:
+            return 30,credit_threthold
+        else:
+            return 10,credit_threthold
     if code == "dreamina_workflow":
-        return 345
-    return 3
+        credit_threthold = _DREAMINA_MIN_CREDIT - _DREAMINA_GIFT_CREDIT;
+        return _DREAMINA_MIN_CREDIT,credit_threthold
+    return 3,credit_threthold
 
 
 class TaskService:
@@ -180,6 +191,11 @@ class TaskService:
         self._window_pool_reconcile_interval: float = 600.0
         # supervisor 单次休眠上限，避免 stop 后长时间无响应
         self._window_pool_supervisor_poll_cap: float = 60.0
+        # Dreamina 余额刷新独立任务：不放在 _window_pool_supervisor_loop，避免被 reconcile/wait 阻塞。
+        self._dreamina_refresh_task: Optional[asyncio.Task] = None
+        self._dreamina_refresh_wake = asyncio.Event()
+        self._dreamina_refresh_timeout: float = 60.0
+        self._dreamina_refresh_scan_interval: float = 300.0
 
     def set_browser_pool_limit(self, limit: int) -> None:
         """Hot-update scheduling candidate pool size."""
@@ -190,6 +206,7 @@ class TaskService:
 
     def start_window_pool_maintainer(self) -> None:
         """在进程内启动窗口池协程（幂等）。"""
+        self.start_dreamina_balance_refresher()
         if self._window_pool_task is not None and not self._window_pool_task.done():
             return
         try:
@@ -198,6 +215,19 @@ class TaskService:
             pass
         self._window_pool_task = asyncio.create_task(
             self._window_pool_supervisor_loop(), name="window_pool_maintainer"
+        )
+
+    def start_dreamina_balance_refresher(self) -> None:
+        """启动 Dreamina 余额刷新独立协程（幂等）。"""
+        if self._dreamina_refresh_task is not None and not self._dreamina_refresh_task.done():
+            return
+        try:
+            self._window_pool_stop.clear()
+            self._dreamina_refresh_wake.set()  # 启动后立即扫描一次。
+        except Exception:
+            pass
+        self._dreamina_refresh_task = asyncio.create_task(
+            self._dreamina_balance_refresher_loop(), name="dreamina_balance_refresher"
         )
 
     async def refresh_window_pool_targets_now(self) -> None:
@@ -213,6 +243,16 @@ class TaskService:
     async def stop_window_pool_maintainer(self) -> None:
         """停止窗口池协程并尽量关闭池内会话。"""
         self._window_pool_stop.set()
+        rt = self._dreamina_refresh_task
+        self._dreamina_refresh_task = None
+        if rt is not None and not rt.done():
+            rt.cancel()
+            try:
+                await rt
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
         t = self._window_pool_task
         self._window_pool_task = None
         if t is not None and not t.done():
@@ -337,7 +377,6 @@ class TaskService:
             #         raise
             #     except Exception as e:
             #         logger.exception("window_pool cloudflare tick: %s", e)
-            now = time.monotonic()
             # 暂停使用空闲窗口拟人操作。
             if now >= next_human_activity:
                 try:
@@ -356,6 +395,183 @@ class TaskService:
             wait = max(0.1, wait)
             if await self._window_pool_wait_interruptible(wait):
                 break
+
+    async def _dreamina_balance_refresher_loop(self) -> None:
+        """Dreamina 余额刷新独立循环。
+
+        启动后立即扫描所有 enabled dreamina_workflow 窗口：
+        - 已到期/即将到期（cooldown_until <= now + 1 minute）的先刷新；
+        - 未到期的计算最近 cooldown_until，并睡到该时间前 1 分钟再刷新；
+        - 不设 80 个上限，符合条件的有多少刷多少。
+        """
+        while not self._window_pool_stop.is_set():
+            try:
+                due_rows = await self._dreamina_refresh_list_due_candidates()
+                if due_rows:
+                    await self._dreamina_refresh_rows(due_rows)
+                    continue
+                next_wait = await self._dreamina_refresh_seconds_until_next_due()
+                wait = min(max(1.0, next_wait), self._dreamina_refresh_scan_interval)
+                self._dreamina_refresh_wake.clear()
+                try:
+                    await asyncio.wait_for(self._dreamina_refresh_wake.wait(), timeout=wait)
+                except asyncio.TimeoutError:
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception("dreamina balance refresher loop: %s", e)
+                try:
+                    await asyncio.wait_for(self._window_pool_stop.wait(), timeout=30.0)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _dreamina_refresh_rows(self, rows: list[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        rows = sorted(rows, key=lambda r: str(r.get("cooldown_until") or ""))
+        logger.info("dreamina balance refresh: due=%d", len(rows))
+        ok = 0
+        fail = 0
+        for row in rows:
+            if self._window_pool_stop.is_set():
+                return
+            try:
+                picked = PickedWindow(
+                    mapping_id=int(row.get("mapping_id") or row.get("id")),
+                    window_pk=int(row.get("window_pk") or 0),
+                    window_key=str(row.get("window_key") or ""),
+                    task_code=str(row.get("task_code") or ""),
+                    task_concurrency=int(row.get("task_concurrency") or 1),
+                    threshold=int(row.get("continuous_error_threshold") or 3),
+                    close_window_threshold=int(row.get("continuous_error_close_window_threshold") or 3),
+                    timeout_seconds=int(row.get("timeout_seconds") or 1800),
+                    create_task_handler=str(row.get("create_task_handler") or ""),
+                    browser_vendor=str(row.get("browser_vendor") or "generic"),
+                    browser_base_url=str(row.get("browser_base_url") or ""),
+                    browser_access_key=row.get("browser_access_key"),
+                    space_id=str(row.get("space_id") or ""),
+                    sora_access_token=row.get("sora_access_token"),
+                    sora_access_expires=row.get("sora_access_expires"),
+                    default_target_url=row.get("default_target_url"),
+                    window_ip=row.get("window_ip"),
+                    headless=_db_bool(row.get("headless"), default=False),
+                    pure_mode=_db_bool(row.get("pure_mode"), default=True),
+                    error_retry_count=int(row.get("error_retry_count") or 0),
+                )
+                if not picked.sora_access_token:
+                    continue
+                await asyncio.wait_for(
+                    refresh_dreamina_balance(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=self._dreamina_refresh_timeout,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                    ),
+                    timeout=self._dreamina_refresh_timeout,
+                )
+                ok += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                fail += 1
+                logger.warning("dreamina balance refresh mapping=%s err=%s", row.get("mapping_id") or row.get("id"), e)
+            try:
+                await asyncio.wait_for(self._window_pool_stop.wait(), timeout=random.uniform(0.1, 0.5))
+                return
+            except asyncio.TimeoutError:
+                pass
+        logger.info("dreamina balance refresh done: ok=%d fail=%d", ok, fail)
+
+    async def _dreamina_refresh_list_due_candidates(self) -> list[Dict[str, Any]]:
+        return await self._dreamina_refresh_list_candidates(due_only=True)
+
+    async def _dreamina_refresh_seconds_until_next_due(self) -> float:
+        threshold = int(_DREAMINA_MIN_CREDIT - _DREAMINA_GIFT_CREDIT)
+        async with self.db._read_conn() as db:  # type: ignore[attr-defined]
+            import aiosqlite
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT CAST((julianday(MIN(m.cooldown_until)) - julianday(datetime('now','localtime', '+1 minute'))) * 86400.0 AS REAL) AS wait_seconds
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                JOIN windows w ON w.id = m.window_pk
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND b.deleted = 0
+                  AND t.create_task_handler = 'dreamina_workflow'
+                  AND TRIM(COALESCE(m.sora_access_token, '')) <> ''
+                  AND COALESCE(m.remaining_quota, 0) >= ?
+                  AND m.cooldown_until IS NOT NULL
+                  AND m.cooldown_until > datetime('now','localtime', '+1 minute')
+                """,
+                (threshold,),
+            )
+            row = await cur.fetchone()
+            if not row or row["wait_seconds"] is None:
+                return self._dreamina_refresh_scan_interval
+            try:
+                return max(1.0, float(row["wait_seconds"]))
+            except Exception:
+                return self._dreamina_refresh_scan_interval
+
+    async def _dreamina_refresh_list_candidates(self, *, due_only: bool) -> list[Dict[str, Any]]:
+        threshold = int(_DREAMINA_MIN_CREDIT - _DREAMINA_GIFT_CREDIT)
+        async with self.db._read_conn() as db:  # type: ignore[attr-defined]
+            import aiosqlite
+            db.row_factory = aiosqlite.Row
+            due_clause = "AND m.cooldown_until <= datetime('now','localtime', '+1 minute')" if due_only else ""
+            cur = await db.execute(
+                f"""
+                SELECT
+                  m.id AS mapping_id,
+                  m.window_pk,
+                  m.remaining_quota,
+                  m.sora_remaining_count,
+                  m.sora_access_token,
+                  m.sora_access_expires,
+                  m.cooldown_until,
+                  m.headless,
+                  m.pure_mode,
+                  t.code AS task_code,
+                  t.concurrency AS task_concurrency,
+                  t.continuous_error_threshold,
+                  t.continuous_error_close_window_threshold,
+                  t.timeout_seconds,
+                  t.create_task_handler,
+                  t.error_retry_count,
+                  t.default_target_url,
+                  w.window_key,
+                  w.proxy_addr AS window_ip,
+                  s.space_id,
+                  b.vendor AS browser_vendor,
+                  b.lan_addr AS browser_base_url,
+                  b.access_key AS browser_access_key
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                JOIN windows w ON w.id = m.window_pk
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND b.deleted = 0
+                  AND t.create_task_handler = 'dreamina_workflow'
+                  AND TRIM(COALESCE(m.sora_access_token, '')) <> ''
+                  AND COALESCE(m.remaining_quota, 0) >= ?
+                  AND m.cooldown_until IS NOT NULL
+                  {due_clause}
+                ORDER BY m.cooldown_until ASC, m.remaining_quota ASC, m.updated_at ASC
+                """,
+                (threshold,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
     async def _window_pool_human_activity_tick(self) -> None:
         """对当前窗口池中的所有窗口做一轮拟人化页面操作。"""
@@ -427,14 +643,15 @@ class TaskService:
             if not code:
                 continue
             handler = (t.create_task_handler or "").strip()
+            credit_threthold = 1;
             if handler in ("veo_workflow", "grok_workflow"):
                 hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
                 floor = 30 if hi else 10
             else:
-                floor = _remaining_quota_exclusive_floor_for_pick(code, None)
+                floor,credit_threthold = _remaining_quota_exclusive_floor_for_pick(code, None)
             try:
                 ids = await self.db.list_window_pool_target_mapping_ids(
-                    code, self._browser_pool_limit, floor
+                    code, self._browser_pool_limit, floor,credit_threthold
                 )
             except Exception as e:
                 logger.warning("window_pool targets %s: %s", code, e)
@@ -1182,7 +1399,7 @@ class TaskService:
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
         - 若任务类型开启窗口池：仅从 `_window_pool_targets` 内由 DB 单事务 `pick_and_reserve_window_from_pool` 原子挑选（与全局 pick 相同：+60s error_cooldown_until，避免高并发下多任务盯上同一 mapping）；池为空或无可用则返回 None（不回退全局 pick）
         """
-        floor = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
+        floor,credit_threthold = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
         try:
             tt = await self.db.get_task_type_by_code(task_type_code)
         except Exception:
@@ -1196,6 +1413,7 @@ class TaskService:
                 task_type_code,
                 pool_ids,
                 remaining_quota_exclusive_floor=floor,
+                credit_threthold=credit_threthold
             )
             if not r:
                 return None
@@ -1205,6 +1423,7 @@ class TaskService:
             task_type_code=task_type_code,
             browser_pool_limit=self._browser_pool_limit,
             remaining_quota_exclusive_floor=floor,
+            credit_threthold=credit_threthold
         )
         if not r:
             return None

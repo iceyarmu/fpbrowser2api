@@ -215,35 +215,47 @@ async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
 
 
 async def refresh_quota__dreamina_credits(ctx: RefreshQuotaContext) -> int:
-    """Dreamina：通过指纹浏览器读取 commerce API 余额（total_credit）。"""
+    """Dreamina：本地请求 commerce API 读取余额（total_credit）。"""
     row = ctx.mapping_row or {}
-    vendor = str(row.get("vendor") or "roxy")
-    base_url = str(row.get("lan_addr") or "")
-    access_key = row.get("access_key")
     space_id = str(row.get("space_id") or "")
     window_key = str(row.get("window_key") or "")
-    if not base_url or not space_id or not window_key:
-        raise RuntimeError("mapping 缺少 vendor/lan_addr/space_id/window_key，无法打开指纹窗口")
+    if not space_id or not window_key:
+        raise RuntimeError("mapping 缺少 space_id/window_key，无法读取窗口绑定 IP 国家")
 
     default_target_url = str(row.get("default_target_url") or "").strip()
     target_url = default_target_url or "https://dreamina.capcut.com/ai-tool/video/generate"
 
-    from .jimeng_task_executor import (  # type: ignore
-        get_or_create_dreamina_session,
-        dreamina_fetch_credits_in_window,
-    )
+    from types import SimpleNamespace
 
-    sess = get_or_create_dreamina_session(
-        vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
-    )
-    if "_headless" in row:
-        sess.browser_headless = bool(row["_headless"])
+    from .jimeng_task_executor import dreamina_fetch_credits_in_window  # type: ignore
 
     access_token = str(row.get("sora_access_token") or "").strip()
     if not access_token:
         raise RuntimeError("缺少 Dreamina sessionid，请先点击 access_token 列的“更新”读取并保存")
 
-    info = await dreamina_fetch_credits_in_window(sess=sess, target_url=target_url, access_token=access_token)
+    window_pk = int(row.get("window_pk") or 0)
+    country_code = ""
+    try:
+        if window_pk > 0:
+            country_code = await ctx.db.get_window_bound_ip_last_country(window_pk=window_pk)
+        if not country_code:
+            country_code = await ctx.db.get_window_bound_ip_last_country(space_id=space_id, window_key=window_key)
+    except Exception:
+        country_code = ""
+
+    picked = SimpleNamespace(
+        window_pk=window_pk,
+        mapping_id=int(row.get("id") or row.get("mapping_id") or 0),
+        space_id=space_id,
+        window_key=window_key,
+    )
+    info = await dreamina_fetch_credits_in_window(
+        target_url=target_url,
+        access_token=access_token,
+        db=ctx.db,
+        picked=picked,
+        country_code=country_code,
+    )
     total_credit = int(info.get("total_credit") or 0)
 
     kwargs: Dict[str, Any] = {

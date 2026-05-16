@@ -1804,6 +1804,71 @@ class Database:
                     continue
             return out
 
+    async def get_window_bound_ip_last_country(self, *, space_id: str = "", window_key: str = "", window_pk: int = 0) -> str:
+        """读取窗口绑定代理 IP 的 last_country。
+
+        优先按 windows.proxy_id 关联 proxies.last_country；读取不到时降级使用
+        windows.proxy_country / windows.raw_json 中同步到的 lastCountry。调用方可传
+        window_pk，或传 space_id + window_key。
+        """
+        sid = str(space_id or "").strip()
+        wk = str(window_key or "").strip()
+        try:
+            wpk = int(window_pk or 0)
+        except Exception:
+            wpk = 0
+        if wpk <= 0 and (not sid or not wk):
+            return ""
+
+        where_sql = "w.id = ?" if wpk > 0 else "s.space_id = ? AND w.window_key = ?"
+        params: tuple[Any, ...] = (wpk,) if wpk > 0 else (sid, wk)
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"""
+                SELECT
+                  w.proxy_country AS window_proxy_country,
+                  w.raw_json AS window_raw_json,
+                  p.last_country AS proxy_last_country
+                FROM windows w
+                JOIN spaces s ON s.id = w.space_pk AND s.deleted = 0
+                LEFT JOIN proxies p
+                  ON p.space_pk = w.space_pk
+                 AND p.deleted = 0
+                 AND p.proxy_id = w.proxy_id
+                WHERE w.deleted = 0
+                  AND {where_sql}
+                LIMIT 1
+                """,
+                params,
+            )
+            row = await cur.fetchone()
+        if not row:
+            return ""
+        d = dict(row)
+        for key in ("proxy_last_country", "window_proxy_country"):
+            code = str(d.get(key) or "").strip().lower()
+            if code:
+                return code
+        raw = d.get("window_raw_json")
+        if raw:
+            try:
+                raw_obj = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(raw_obj, dict):
+                    inner = raw_obj.get("raw") if isinstance(raw_obj.get("raw"), dict) else raw_obj
+                    code = str(
+                        inner.get("lastCountry")
+                        or inner.get("last_country")
+                        or inner.get("proxyCountry")
+                        or inner.get("proxy_country")
+                        or ""
+                    ).strip().lower()
+                    if code:
+                        return code
+            except Exception:
+                return ""
+        return ""
+
     async def upsert_windows(self, space_pk: int, windows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """把同步到的窗口信息保存到 DB（按 space_pk+window_key 唯一 upsert）。
 
@@ -4618,6 +4683,7 @@ class Database:
         task_type_code: str,
         browser_pool_limit: int = 100,
         remaining_quota_exclusive_floor: int = 2,
+        credit_threthold: int  = 1,
     ) -> Optional[Dict[str, Any]]:
         """挑选 1 个窗口并原子预占 1 个并发槽位（一步完成）。
 
@@ -4686,7 +4752,7 @@ class Database:
                             CASE
                               WHEN (
                                 ((b.remaining_quota >= ?)
-                                  OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                                  OR (b.remaining_quota >= ? AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                 AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                 AND (b.consecutive_errors < b.continuous_error_threshold)
                                 AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
@@ -4699,7 +4765,7 @@ class Database:
                                   b.window_status = 0
                                   AND (
                                     ((b.remaining_quota >= ?)
-                                      OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                                      OR (b.remaining_quota >= ? AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                                     AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                                     AND (b.consecutive_errors < b.continuous_error_threshold)
                                     AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
@@ -4729,7 +4795,7 @@ class Database:
                         ORDER BY consecutive_errors ASC, mapping_updated_at ASC,remaining_quota DESC
                         LIMIT 1
                         """,
-                        (pool_limit, code, quota_floor, quota_floor),
+                        (pool_limit, code, quota_floor, credit_threthold, quota_floor, credit_threthold),
                     )
                     #ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                     picked = await cur.fetchone()
@@ -4818,6 +4884,7 @@ class Database:
         task_type_code: str,
         pool_mapping_ids: List[int],
         remaining_quota_exclusive_floor: int = 3,
+        credit_threthold: int  = 1,
     ) -> Optional[Dict[str, Any]]:
         """在窗口池 mapping 集合内原子挑选并预占 1 槽位。
 
@@ -4857,17 +4924,18 @@ class Database:
                           AND m.id IN ({placeholders})
                           AND m.deleted = 0 AND m.enabled = 1
                           AND w.deleted = 0 AND w.enabled = 1
+                          AND w.window_status = 1
                           AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
                           AND (m.consecutive_errors < t.continuous_error_threshold)
                           AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
                           AND (
                             (m.remaining_quota >= ?)
-                            OR (m.remaining_quota >= 1 AND m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
+                            OR (m.remaining_quota >= ? AND m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
                           )
                         ORDER BY m.consecutive_errors ASC, m.updated_at ASC, m.remaining_quota DESC
                         LIMIT 1
                         """,
-                        (code, *ids, quota_floor),
+                        (code, *ids, quota_floor,credit_threthold),
                     )
                     picked = await cur.fetchone()
                     if not picked:
@@ -4988,6 +5056,7 @@ class Database:
         task_type_code: str,
         browser_pool_limit: int = 100,
         remaining_quota_exclusive_floor: int = 3,
+        credit_threthold: int = 1,
     ) -> List[int]:
         """与 pick_and_reserve_window_for_task 相同的候选与每浏览器上限，返回应保持在池中的 mapping_id 列表（不修改 inflight）。
 
@@ -5033,7 +5102,7 @@ class Database:
                       WHEN COALESCE(b.inflight_slots, 0) > 0 THEN 1
                       WHEN (
                         ((b.remaining_quota >= ?)
-                          OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                          OR (b.remaining_quota >= ? AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                         AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                         AND (b.consecutive_errors < b.continuous_error_threshold)
                         AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
@@ -5047,7 +5116,7 @@ class Database:
                           b.window_status = 0
                           AND (
                             ((b.remaining_quota >= ?)
-                              OR (b.remaining_quota >= 1 AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
+                              OR (b.remaining_quota >= ? AND b.cooldown_until IS NOT NULL AND b.cooldown_until <= datetime('now','localtime', '+5 minutes')))
                             AND (b.error_cooldown_until IS NULL OR b.error_cooldown_until <= datetime('now','localtime'))
                             AND (b.consecutive_errors < b.continuous_error_threshold)
                             AND (COALESCE(b.inflight_slots, 0) < b.task_concurrency)
@@ -5073,47 +5142,7 @@ class Database:
                   AND is_runnable = 1
                 ORDER BY consecutive_errors ASC, mapping_updated_at ASC, remaining_quota DESC
                 """,
-                (pool_limit, code, quota_floor, quota_floor),
-            )
-            rows = await cur.fetchall()
-            return [int(r["mapping_id"]) for r in rows]
-
-    async def list_mapping_ids_for_pool_pick(
-        self,
-        task_type_code: str,
-        pool_mapping_ids: List[int],
-        remaining_quota_exclusive_floor: int = 3,
-    ) -> List[int]:
-        """在窗口池集合内按调度顺序排列 mapping_id（仅只读过滤，不预占）。"""
-        code = (task_type_code or "").strip()
-        ids = [int(x) for x in (pool_mapping_ids or []) if int(x) > 0]
-        if not code or not ids:
-            return []
-        quota_floor = max(0, int(remaining_quota_exclusive_floor))
-        placeholders = ",".join("?" for _ in ids)
-        async with self._read_conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                f"""
-                SELECT m.id AS mapping_id
-                FROM task_types t
-                JOIN task_type_windows m ON m.task_type_id = t.id
-                JOIN windows w ON m.window_pk = w.id
-                WHERE t.deleted = 0 AND t.enabled = 1
-                  AND t.code = ?
-                  AND m.id IN ({placeholders})
-                  AND m.deleted = 0 AND m.enabled = 1
-                  AND w.deleted = 0 AND w.enabled = 1
-                  AND (m.error_cooldown_until IS NULL OR m.error_cooldown_until <= datetime('now','localtime'))
-                  AND (m.consecutive_errors < t.continuous_error_threshold)
-                  AND (COALESCE(m.inflight_slots, 0) < t.concurrency)
-                  AND (
-                    (m.remaining_quota >= ?)
-                    OR (m.remaining_quota >= 1 AND m.cooldown_until IS NOT NULL AND m.cooldown_until <= datetime('now','localtime', '+5 minutes'))
-                  )
-                ORDER BY m.consecutive_errors ASC, m.updated_at ASC, m.remaining_quota DESC
-                """,
-                (code, *ids, quota_floor),
+                (pool_limit, code, quota_floor, credit_threthold, quota_floor,credit_threthold),
             )
             rows = await cur.fetchall()
             return [int(r["mapping_id"]) for r in rows]

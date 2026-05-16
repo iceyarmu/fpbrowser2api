@@ -21,17 +21,22 @@ import datetime
 import hashlib
 import hmac
 import io
+import gzip
 import random
 import json
 import os
 import re
+import socket
+import ssl
 import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse, urlsplit, urlunsplit, parse_qsl
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit, parse_qsl
 from urllib.request import Request as UrlRequest, urlopen
+
+import httpx
 
 from ..core.database import Database
 from ..core.logger import logger
@@ -64,6 +69,7 @@ _DREAMINA_REMOVE_HISTORY_PATH = "/mweb/v1/remove_history"
 _DREAMINA_GET_LOCAL_ITEM_LIST_PATH = "/mweb/v1/get_local_item_list"
 _DREAMINA_GET_IMAGE_BY_URI_PATH = "/mweb/v1/get_image_by_uri"
 _DREAMINA_SUBJECT_CREATE_PATH = "/mweb/v1/dreamina_subject/create"
+_DREAMINA_UPDATE_SETTINGS_PATH = "/mweb/v1/update_settings"
 _DREAMINA_IMAGEX_BASE = "https://imagex16-normal-us-ttp.capcutapi.us"
 _DREAMINA_IMAGEX_BASE_CA = "https://imagex-normal-sg.capcutapi.com"
 _DREAMINA_AID = 513641
@@ -105,7 +111,8 @@ _SEEDANCE_BENEFIT_PRO_OUTPUT = "seedance_20_pro_720p_output"
 
 _DREAMINA_COMMERCE_BASE = "https://commerce.us.capcut.com"
 _DREAMINA_COMMERCE_BASE_CA = "https://commerce-api-sg.capcut.com"
-
+_DREAMINA_MIN_CREDIT = 255;#最小的dreamina积分才启动
+_DREAMINA_GIFT_CREDIT = 120;
 
 _DREAMINA_SESSIONS: Dict[str, "DreaminaSession"] = {}
 
@@ -158,8 +165,170 @@ def _dreamina_commerce_base_for_country(country_code: Any) -> str:
 
 
 def _dreamina_header_loc_for_country(country_code: Any) -> str:
-    code = _one_str(country_code).lower()
-    return "ca" if code == "ca" else "US"
+    code = _one_str(country_code).upper()
+    return code;
+
+
+def _dreamina_parse_proxy_url(proxy_url: str) -> Dict[str, str]:
+    raw = _one_str(proxy_url)
+    if not raw:
+        return {}
+    u = urlparse(raw if "://" in raw else f"http://{raw}")
+    return {
+        "scheme": (u.scheme or "http").lower(),
+        "host": _one_str(u.hostname),
+        "port": str(u.port or (443 if (u.scheme or "").lower() == "https" else 80)),
+        "username": unquote(u.username or ""),
+        "password": unquote(u.password or ""),
+    }
+
+
+def _dreamina_chain_http_to_socks5h_post_json(
+    *,
+    system_proxy: str,
+    window_proxy: str,
+    url: str,
+    headers: Dict[str, str],
+    json_data: Dict[str, Any],
+    timeout: float = 45.0,
+) -> Tuple[int, str]:
+    """通过 HTTP 系统代理 CONNECT 到窗口 SOCKS5，再由 SOCKS5 访问 HTTPS 目标。
+
+    链路：本机 -> system_proxy(http) -> window_proxy(socks5/socks5h) -> url。
+    仅用于 Dreamina 余额接口这种简单 HTTPS POST JSON 场景。
+    """
+    sp = _dreamina_parse_proxy_url(system_proxy)
+    wp = _dreamina_parse_proxy_url(window_proxy)
+    target = urlparse(url)
+    if sp.get("scheme") not in ("http", "https"):
+        raise RuntimeError("两层代理暂仅支持第一层 system_proxy 为 http/https 本地代理")
+    if wp.get("scheme") not in ("socks5", "socks5h", "socks"):
+        raise RuntimeError("两层代理暂仅支持第二层 window_proxy 为 socks5/socks5h")
+    if (target.scheme or "").lower() != "https":
+        raise RuntimeError("两层代理 POST 暂仅支持 https 目标")
+    if not sp.get("host") or not sp.get("port") or not wp.get("host") or not wp.get("port") or not target.hostname:
+        raise RuntimeError("代理或目标 URL 缺少 host/port")
+
+    def _read_until(sock: socket.socket, marker: bytes, limit: int = 65536) -> bytes:
+        buf = b""
+        while marker not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > limit:
+                raise RuntimeError("读取代理响应超限")
+        return buf
+
+    def _recvn(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise RuntimeError("连接提前关闭")
+            buf += chunk
+        return buf
+
+    with socket.create_connection((sp["host"], int(sp["port"])), timeout=timeout) as raw_sock:
+        raw_sock.settimeout(timeout)
+        sock: socket.socket = raw_sock
+        if sp.get("scheme") == "https":
+            sock = ssl.create_default_context().wrap_socket(raw_sock, server_hostname=sp["host"])
+            sock.settimeout(timeout)
+        connect_lines = [f"CONNECT {wp['host']}:{wp['port']} HTTP/1.1", f"Host: {wp['host']}:{wp['port']}"]
+        if sp.get("username") or sp.get("password"):
+            auth = base64.b64encode(f"{sp.get('username','')}:{sp.get('password','')}".encode()).decode()
+            connect_lines.append(f"Proxy-Authorization: Basic {auth}")
+        sock.sendall(("\r\n".join(connect_lines) + "\r\n\r\n").encode("ascii"))
+        resp_head = _read_until(sock, b"\r\n\r\n")
+        status_line = resp_head.split(b"\r\n", 1)[0].decode("iso-8859-1", "ignore")
+        if " 200 " not in f" {status_line} ":
+            raise RuntimeError(f"system_proxy CONNECT window_proxy 失败：{status_line}")
+
+        # SOCKS5 greeting + auth
+        if wp.get("username") or wp.get("password"):
+            sock.sendall(b"\x05\x02\x00\x02")
+        else:
+            sock.sendall(b"\x05\x01\x00")
+        ver_method = _recvn(sock, 2)
+        if ver_method[0] != 5 or ver_method[1] == 0xFF:
+            raise RuntimeError("window_proxy SOCKS5 握手失败")
+        if ver_method[1] == 2:
+            user_b = wp.get("username", "").encode("utf-8")
+            pwd_b = wp.get("password", "").encode("utf-8")
+            if len(user_b) > 255 or len(pwd_b) > 255:
+                raise RuntimeError("window_proxy SOCKS5 用户名/密码过长")
+            sock.sendall(b"\x01" + bytes([len(user_b)]) + user_b + bytes([len(pwd_b)]) + pwd_b)
+            auth_resp = _recvn(sock, 2)
+            if auth_resp != b"\x01\x00":
+                raise RuntimeError("window_proxy SOCKS5 认证失败")
+        elif ver_method[1] != 0:
+            raise RuntimeError(f"window_proxy SOCKS5 不支持的认证方式：{ver_method[1]}")
+
+        host_b = target.hostname.encode("idna")
+        port = target.port or 443
+        if len(host_b) > 255:
+            raise RuntimeError("目标域名过长")
+        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(host_b)]) + host_b + int(port).to_bytes(2, "big"))
+        rep = _recvn(sock, 4)
+        if rep[0] != 5 or rep[1] != 0:
+            raise RuntimeError(f"window_proxy SOCKS5 CONNECT 目标失败，rep={rep[1] if len(rep) > 1 else '?'}")
+        atyp = rep[3]
+        if atyp == 1:
+            _recvn(sock, 4)
+        elif atyp == 3:
+            ln = _recvn(sock, 1)[0]
+            _recvn(sock, ln)
+        elif atyp == 4:
+            _recvn(sock, 16)
+        _recvn(sock, 2)
+
+        tls_sock = ssl.create_default_context().wrap_socket(sock, server_hostname=target.hostname)
+        tls_sock.settimeout(timeout)
+        body = json.dumps(json_data or {}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        path = (target.path or "/") + (f"?{target.query}" if target.query else "")
+        req_headers = dict(headers or {})
+        req_headers["Host"] = target.netloc
+        req_headers["Content-Type"] = req_headers.get("Content-Type") or "application/json"
+        req_headers["Content-Length"] = str(len(body))
+        req_headers["Connection"] = "close"
+        if "Accept-Encoding" not in req_headers:
+            req_headers["Accept-Encoding"] = "gzip, deflate"
+        req = f"POST {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in req_headers.items()) + "\r\n"
+        tls_sock.sendall(req.encode("utf-8") + body)
+
+        raw = b""
+        while True:
+            chunk = tls_sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+        head, _, resp_body = raw.partition(b"\r\n\r\n")
+        head_text = head.decode("iso-8859-1", "ignore")
+        first = head_text.split("\r\n", 1)[0]
+        try:
+            status = int(first.split()[1])
+        except Exception:
+            status = 0
+        header_map: Dict[str, str] = {}
+        for line in head_text.split("\r\n")[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                header_map[k.strip().lower()] = v.strip().lower()
+        if header_map.get("transfer-encoding") == "chunked":
+            out = b""
+            rest = resp_body
+            while True:
+                line, _, rest = rest.partition(b"\r\n")
+                size = int(line.split(b";", 1)[0], 16)
+                if size <= 0:
+                    break
+                out += rest[:size]
+                rest = rest[size + 2 :]
+            resp_body = out
+        if "gzip" in header_map.get("content-encoding", ""):
+            resp_body = gzip.decompress(resp_body)
+        return status, resp_body.decode("utf-8", "replace")
 
 
 # ---- 参数解析 ----
@@ -182,13 +351,13 @@ def _dreamina_resolve_aspect_ratio(payload: Dict[str, Any]) -> str:
 def _dreamina_resolve_duration(payload: Dict[str, Any]) -> int:
     p = payload or {}
     if p.get("duration") is None or _one_str(p.get("duration")) == "":
-        raise NonPenalizedTaskError("payload.duration 不能为空，仅支持 10 或 15 秒", status_code=422, content_violation=True)
+        raise NonPenalizedTaskError("payload.duration 不能为空，仅支持 15 秒", status_code=422, content_violation=True)
     try:
         v = int(float(p.get("duration")))
     except (TypeError, ValueError):
-        raise NonPenalizedTaskError("payload.duration 格式错误，仅支持 10 或 15 秒", status_code=422, content_violation=True)
-    if v not in (10, 15):
-        raise NonPenalizedTaskError("payload.duration 仅支持 10 或 15 秒", status_code=422, content_violation=True)
+        raise NonPenalizedTaskError("payload.duration 格式错误，仅支持 15 秒", status_code=422, content_violation=True)
+    if v != 15:
+        raise NonPenalizedTaskError("payload.duration 仅支持 15 秒", status_code=422, content_violation=True)
     return v
 
 
@@ -249,10 +418,48 @@ async def dreamina_fetch_sessionid_in_window(
             refresh_target=False,
             drafts_url=(target_url or DEFAULT_DREAMINA_TARGET),
             acquire_bring_lock=False,
+            close_other_pages = False,
         )
         page = sess.pw_ctx.page
         if page is None:
             raise RuntimeError("Dreamina 页面未初始化（pw_ctx.page 为空）")
+
+        # 先读取/缓存窗口区域，再按区域选择 Dreamina API 域名：
+        #   us -> _DREAMINA_API_BASE
+        #   ca/tr -> _DREAMINA_API_BASE_CA（与其它 Dreamina 接口保持一致）
+        try:
+            await sess.refresh_store_country_code_from_cookies(target_url=target_url)
+        except Exception as e:
+            append_log(sess._log_file, f"[dreamina-update-settings] refresh store_country_code failed: {safe_trim(str(e), 200)}")
+
+        try:
+            update_settings_url = f"{sess.dreamina_api_base}{_DREAMINA_UPDATE_SETTINGS_PATH}"
+            update_settings_tx = await page_fetch_json(
+                page,
+                url=update_settings_url,
+                method="POST",
+                headers=build_jimeng_page_fetch_headers_body(
+                    uri=_DREAMINA_UPDATE_SETTINGS_PATH,
+                    appid=_DREAMINA_AID,
+                    appvr=_APPVR,
+                    pf="7",
+                    lan=sess.dreamina_header_loc,
+                    loc=sess.dreamina_header_loc,
+                    headers={"Referer": target_url or DEFAULT_DREAMINA_TARGET},
+                ),
+                json_data={"custom_settings": {"aigc_compliance_confirmed": True}},
+                log_file=sess._log_file,
+            )
+            append_log(
+                sess._log_file,
+                "[dreamina-update-settings] "
+                f"country={_one_str(sess.store_country_code) or 'default'} "
+                f"url={update_settings_url} "
+                f"response={safe_trim(_compact_json(update_settings_tx.get('_json')), 600)}",
+            )
+        except Exception as e:
+            # 该接口只用于确认 AIGC 合规设置，失败不应阻断 sessionid 读取流程。
+            append_log(sess._log_file, f"[dreamina-update-settings] failed: {safe_trim(str(e), 500)}")
 
         ctx = getattr(page, "context", None)
         if ctx is None:
@@ -416,6 +623,23 @@ def _dreamina_require_https_image_ref(ref: Dict[str, Any], *, label: str = "参�
         raise NonPenalizedTaskError(f"{label}仅支持 https 图片地址", status_code=422, content_violation=True)
 
 
+def _dreamina_image_ref_dedupe_key(ref: Dict[str, Any]) -> str:
+    """同一张外部图只上传/引用一次；忽略字段名差异（如 images[0] 与 first_image_url 相同）。"""
+    src = _one_str((ref or {}).get("source") or (ref or {}).get("url") or (ref or {}).get("image_url") or (ref or {}).get("imageUrl"))
+    if not src:
+        return ""
+    try:
+        parts = urlsplit(src.strip())
+        if parts.scheme and parts.netloc:
+            scheme = parts.scheme.lower()
+            netloc = parts.netloc.lower()
+            # URL 片段不参与取图；去掉尾部空白，保留 query，避免签名 URL 被误判相同。
+            return urlunsplit((scheme, netloc, parts.path, parts.query, ""))
+    except Exception:
+        pass
+    return src.strip()
+
+
 def _dreamina_collect_first_last_image_refs(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     p = payload or {}
     arr: List[Any] = []
@@ -470,6 +694,7 @@ def _dreamina_collect_omni_image_refs(payload: Dict[str, Any]) -> List[Dict[str,
     p = payload or {}
     refs: List[Dict[str, Any]] = []
     seen_fields: set[str] = set()
+    seen_sources: set[str] = set()
 
     def add(v: Any, field_name: Optional[str] = None) -> None:
         idx = len(refs) + 1
@@ -479,8 +704,13 @@ def _dreamina_collect_omni_image_refs(payload: Dict[str, Any]) -> List[Dict[str,
         fn = _one_str(ref.get("field_name"))
         if fn in seen_fields:
             return
+        source_key = _dreamina_image_ref_dedupe_key(ref)
+        if source_key and source_key in seen_sources:
+            return
         refs.append(ref)
         seen_fields.add(fn)
+        if source_key:
+            seen_sources.add(source_key)
 
     # 显式 image_file / image_file_N 优先，便于 prompt 中 @image_file_N 命中。
     if p.get("image_file") is not None:
@@ -1052,12 +1282,31 @@ def _dreamina_prepare_image_jpeg_under_1mb(image_bytes: bytes, *, log_file: Path
             pass
 
 
+def _dreamina_env_int(name: str, default: int, *, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    try:
+        value = int(str(os.getenv(name, "")).strip() or default)
+    except Exception:
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 async def _dreamina_page_fetch_upload_bytes(page: Any, *, url: str, headers: Dict[str, str], data: bytes, log_file: Path) -> None:
     """用 XMLHttpRequest 上传二进制；ImageX 跨域 fetch+credentials 会 CORS 失败。"""
     import base64
     safe_headers = {k: v for k, v in (headers or {}).items() if str(k).lower() not in {"host", "cookie", "content-length", "connection", "accept-encoding"}}
-    res = await page.evaluate(
-        """async ({url, headers, base64}) => {
+    timeout_ms = _dreamina_env_int("DREAMINA_IMAGEX_UPLOAD_TIMEOUT_MS", 300000, minimum=30000, maximum=900000)
+    retries = _dreamina_env_int("DREAMINA_IMAGEX_UPLOAD_RETRIES", 2, minimum=0, maximum=5)
+    payload = {"url": url, "headers": safe_headers, "base64": base64.b64encode(data).decode("ascii"), "timeoutMs": timeout_ms}
+    last_err: Optional[BaseException] = None
+    res: Optional[Dict[str, Any]] = None
+    for attempt in range(1, retries + 2):
+        try:
+            append_log(log_file, f"[dreamina-api-upload] binary upload attempt={attempt}/{retries + 1} bytes={len(data)} timeout_ms={timeout_ms} url={safe_trim(url, 120)}")
+            res = await page.evaluate(
+        """async ({url, headers, base64, timeoutMs}) => {
           return await new Promise((resolve, reject) => {
             const bin = atob(base64);
             const bytes = new Uint8Array(bin.length);
@@ -1070,13 +1319,25 @@ async def _dreamina_page_fetch_upload_bytes(page: Any, *, url: str, headers: Dic
             }
             xhr.onload = () => resolve({status: xhr.status, text: xhr.responseText || ''});
             xhr.onerror = () => reject(new Error('ImageX XHR binary upload network error'));
-            xhr.ontimeout = () => reject(new Error('ImageX XHR binary upload timeout'));
-            xhr.timeout = 120000;
+            xhr.ontimeout = () => reject(new Error(`ImageX XHR binary upload timeout after ${timeoutMs}ms`));
+            xhr.timeout = timeoutMs;
             xhr.send(bytes);
           });
         }""",
-        {"url": url, "headers": safe_headers, "base64": base64.b64encode(data).decode("ascii")},
-    )
+                payload,
+            )
+            break
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            retryable = ("timeout" in msg.lower()) or ("network error" in msg.lower())
+            if attempt > retries or not retryable:
+                raise
+            delay = min(2.0 * attempt, 8.0)
+            append_log(log_file, f"[dreamina-api-upload] binary upload retry after error attempt={attempt} delay={delay}s err={safe_trim(msg, 300)}")
+            await asyncio.sleep(delay)
+    if res is None:
+        raise last_err or RuntimeError("ImageX XHR binary upload failed without response")
     status = int((res or {}).get("status") or 0)
     if not (200 <= status < 300):
         raise NonPenalizedTaskError(f"Dreamina ImageX upload failed: status={status} body={safe_trim(_one_str((res or {}).get('text')), 500)}", status_code=502)
@@ -1282,22 +1543,24 @@ async def _dreamina_upload_image_refs_via_page_fetch(
 ) -> List[str]:
     if not refs:
         return []
-    token_tx = await page_fetch_json(
-        page,
-        url=f"{api_base}{_DREAMINA_GET_UPLOAD_TOKEN_PATH}",
-        method="POST",
-        headers=build_jimeng_page_fetch_headers(uri=_DREAMINA_GET_UPLOAD_TOKEN_PATH, appid=_DREAMINA_AID, appvr=_APPVR, pf="7", lan="en", loc=header_loc),
-        json_data={"scene": 2},
-        log_file=log_file,
-    )
-    token_obj = token_tx.get("_json") or {}
-    if _one_str(token_obj.get("ret")) not in ("", "0"):
-        raise NonPenalizedTaskError(f"Dreamina get_upload_token failed: {safe_trim(_compact_json(token_obj), 700)}", status_code=502)
-    token_data = token_obj.get("data") if isinstance(token_obj.get("data"), dict) else token_obj
-    append_log(log_file, f"[dreamina-api-upload] get_upload_token ok service_id={_one_str((token_data or {}).get('service_id'))}")
 
     uris: List[str] = []
     for i, ref in enumerate(refs, start=1):
+        # Dreamina/ImageX 的上传 token / SessionKey / StoreUri 按单张图片完整闭环使用。
+        # 不复用上一张图片的 token，避免多图时后续 Apply/Commit 绑定到过期或已消费的上传会话。
+        token_tx = await page_fetch_json(
+            page,
+            url=f"{api_base}{_DREAMINA_GET_UPLOAD_TOKEN_PATH}",
+            method="POST",
+            headers=build_jimeng_page_fetch_headers(uri=_DREAMINA_GET_UPLOAD_TOKEN_PATH, appid=_DREAMINA_AID, appvr=_APPVR, pf="7", lan="en", loc=header_loc),
+            json_data={"scene": 2},
+            log_file=log_file,
+        )
+        token_obj = token_tx.get("_json") or {}
+        if _one_str(token_obj.get("ret")) not in ("", "0"):
+            raise NonPenalizedTaskError(f"Dreamina get_upload_token failed for image {i}: {safe_trim(_compact_json(token_obj), 700)}", status_code=502)
+        token_data = token_obj.get("data") if isinstance(token_obj.get("data"), dict) else token_obj
+        append_log(log_file, f"[dreamina-api-upload] get_upload_token ok image={i}/{len(refs)} service_id={_one_str((token_data or {}).get('service_id'))}")
         uris.append(await _dreamina_upload_one_image_via_page_fetch(page, ref, token_data=token_data or {}, log_file=log_file, index=i, imagex_base=imagex_base))
     append_log(log_file, f"[dreamina-api-upload] uploaded {len(uris)} refs")
     return uris
@@ -1443,12 +1706,12 @@ class DreaminaSession:
     
     def get_credit_threshold(self):
         if self.is_US():
-            return 245;
+            return _DREAMINA_MIN_CREDIT;
         if self.is_TR():
             return 845;
         if self.is_CA():
             return 455;
-        return 30;
+        return _DREAMINA_MIN_CREDIT;
 
 
     @property
@@ -2280,119 +2543,236 @@ async def dreamina_admin_open_connect_page(
 
 
 async def dreamina_fetch_credits_in_window(
-    sess: "DreaminaSession",
     *,
     target_url: str,
     access_token: Optional[str] = None,
+    db: Any = None,
+    picked: Any = None,
+    country_code: Optional[str] = None,
+    log_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """在指纹窗口内 fetch Dreamina 余额/订阅接口，返回 {total_credit, cooldown_until}。
+    """本地请求 Dreamina 余额接口，返回 {total_credit, cooldown_until}。
 
-    若传入 access_token，则仅用于明确要求当前窗口已保存 sessionid；请求本身不注入新 Cookie，
-    仍使用当前指纹窗口 Cookie，并补齐 Jimeng/Dreamina 签名 headers 后请求 user_credit 与 user_info。
-    cooldown_until 来自 subscription/user_info 的 end_time，并转换为北京时间字符串。
+    不再通过指纹浏览器 page.fetch 读取余额；改为本地 httpx 调用 user_credit。
+    代理链路要求为：系统固定代理（通常日本） -> 窗口独立 SOCKS5 代理（美国/加拿大等）
+    -> Dreamina。httpx 只能配置最终一跳代理；第一层系统代理需要由运行环境/本机网络
+    对窗口 SOCKS5 连接做透明转发或路由承载，本函数会优先把 httpx 出口设置为窗口代理。
+    cooldown_until 来自 user_credit 返回的 credits_life_end，并转换为北京时间字符串。
     """
-    log_file = sess._log_file
+    log_file = log_file or MONITOR_LOG_FILE
+    token = _one_str(access_token)
+    if not token:
+        raise RuntimeError("Dreamina 本地读取余额缺少 sessionid/access_token")
 
-    sess._cancel_idle_close()
-    async with sess._bring_drafts_lock:
-        await sess.ensure_open(headless=sess.browser_headless, acquire_bring_lock=False)
-        await sess._bring_target_page_to_front(
-            refresh_target=False,
-            drafts_url=target_url,
-            acquire_bring_lock=False,
-            close_other_pages=False,
-        )
+    async def _resolve_system_proxy() -> str:
+        if db is None:
+            return ""
+        try:
+            syscfg = await db.get_system_config()
+            if bool(getattr(syscfg, "proxy_enabled", False)):
+                return _one_str(getattr(syscfg, "proxy_url", ""))
+        except Exception:
+            return ""
+        return ""
 
-        page = sess.pw_ctx.page
-        if page is None:
-            raise RuntimeError("Dreamina 页面未初始化（pw_ctx.page 为空）")
-        await sess.refresh_store_country_code_from_cookies(target_url=target_url)
-        user_credit_url = f"{sess.dreamina_commerce_base}/commerce/v1/benefits/user_credit"
-        subscription_user_info_url = f"{sess.dreamina_commerce_base}/commerce/v1/subscription/user_info"
+    async def _resolve_window_proxy() -> str:
+        if db is None or picked is None:
+            return ""
+        window_pk = int(getattr(picked, "window_pk", 0) or 0)
+        if window_pk <= 0:
+            return ""
+        try:
+            async with db._read_conn() as conn:  # type: ignore[attr-defined]
+                conn.row_factory = __import__("aiosqlite").Row
+                cur = await conn.execute(
+                    """
+                    SELECT p.protocol, p.host, p.port, p.proxy_username, p.proxy_password
+                    FROM windows w
+                    JOIN proxies p ON p.deleted = 0 AND (
+                         (COALESCE(w.proxy_id, 0) > 0 AND p.proxy_id = w.proxy_id)
+                      OR (COALESCE(w.proxy_id, 0) = 0 AND TRIM(COALESCE(w.proxy_addr, '')) <> '' AND (
+                           TRIM(COALESCE(p.last_ip, '')) = TRIM(w.proxy_addr)
+                        OR TRIM(COALESCE(p.host, '')) = TRIM(w.proxy_addr)
+                        OR TRIM(COALESCE(p.host, '') || ':' || COALESCE(p.port, '')) = TRIM(w.proxy_addr)
+                      ))
+                    )
+                    WHERE w.id = ? AND w.deleted = 0
+                    LIMIT 1
+                    """,
+                    (window_pk,),
+                )
+                row = await cur.fetchone()
+            if not row:
+                return ""
+            proto = _one_str(row["protocol"] or "socks5").lower()
+            if proto in ("socks", "socks5"):
+                # socks5h 让域名解析也走窗口代理，避免本机/第一层代理侧解析造成地区偏差。
+                proto = "socks5h"
+            elif proto not in ("socks5h", "http", "https"):
+                proto = "socks5h"
+            host = _one_str(row["host"])
+            port = _one_str(row["port"])
+            if not host or not port:
+                return ""
+            user = quote(_one_str(row["proxy_username"]), safe="")
+            pwd = quote(_one_str(row["proxy_password"]), safe="")
+            auth = f"{user}:{pwd}@" if user or pwd else ""
+            return f"{proto}://{auth}{host}:{port}"
+        except Exception as e:
+            append_log(log_file, f"[dreamina] resolve window proxy failed: {safe_trim(str(e), 200)}")
+            return ""
 
-        tx = await page_fetch_json(
-            page,
+    # 无需打开浏览器；地区根据窗口已缓存/默认配置选择。未缓存时从目标 URL 默认按 US 分支处理。
+    system_proxy = await _resolve_system_proxy()
+    print(f"system_proxy:{system_proxy}")
+    window_proxy = await _resolve_window_proxy()
+    # 余额接口必须走窗口独立代理，才能匹配该窗口绑定 IP 的国家；没有窗口代理时才回退系统代理。
+    # 若需要“两层代理”，请确保本机到 window_proxy 的 TCP 连接已经被系统固定代理透明承载。
+    proxy_url = window_proxy or system_proxy or None
+    cc = _one_str(country_code).lower()
+    commerce_base = _dreamina_commerce_base_for_country(cc)
+    header_loc = _dreamina_header_loc_for_country(cc)
+    header_lan = header_loc or "en"
+    user_credit_url = f"{commerce_base}/commerce/v1/benefits/user_credit"
+    print(f"proxy_url:{proxy_url} cc:{cc} commerce_base:{commerce_base}");
+    headers = build_jimeng_page_fetch_headers(
+        uri="/commerce/v1/benefits/user_credit",
+        appid=_DREAMINA_AID,
+        appvr=_APPVR,
+        pf="7",
+        lan=header_lan,
+        loc=header_loc,
+        headers={
+            "Origin": "https://dreamina.capcut.com",
+            "Referer": "https://dreamina.capcut.com/",
+            "Cookie": "; ".join([
+                f"sid_tt={token}",
+                f"sessionid={token}",
+                f"sessionid_ss={token}",
+            ]),
+        },
+    )
+    append_log(log_file, f"[dreamina] local user_credit country={cc or '-'} base={commerce_base} lan={header_lan} loc={header_loc} proxy_system={'yes' if system_proxy else 'no'} proxy_window={'yes' if window_proxy else 'no'}")
+    if system_proxy and window_proxy and _dreamina_parse_proxy_url(window_proxy).get("scheme") in ("socks", "socks5", "socks5h"):
+        status, body_text = await asyncio.to_thread(
+            _dreamina_chain_http_to_socks5h_post_json,
+            system_proxy=system_proxy,
+            window_proxy=window_proxy,
             url=user_credit_url,
-            method="POST",
-            headers=build_jimeng_page_fetch_headers(
-                uri="/commerce/v1/benefits/user_credit",
-                appid=_DREAMINA_AID,
-                appvr=_APPVR,
-                pf="7",
-                lan="en",
-                loc=sess.dreamina_header_loc,
-                headers={"Referer": "https://dreamina.capcut.com/"},
-            ),
+            headers=headers,
             json_data={},
-            log_file=log_file,
+            timeout=45.0,
         )
-        obj = tx.get("_json") or {}
+        try:
+            obj = json.loads(body_text)
+        except Exception:
+            obj = {}
+        tx = {"status": status, "response_body": body_text[:2000]}
         data = obj.get("data") if isinstance(obj, dict) else None
-        credit = (data or {}).get("credit") if isinstance(data, dict) else None
-        if not isinstance(credit, dict):
-            raise RuntimeError(f"Dreamina user_credit 返回缺少 credit：status={tx.get('status')} body={safe_trim(str(tx.get('response_body') or obj), 500)}")
-        def _credit_int(v: Any) -> int:
-            try:
-                return int(float(v or 0))
-            except Exception:
-                return 0
-
-        gift_credit = _credit_int(credit.get("gift_credit"))
-        purchase_credit = _credit_int(credit.get("purchase_credit"))
-        vip_credit = _credit_int(credit.get("vip_credit"))
-        total_credit = gift_credit + purchase_credit + vip_credit
-
-        cooldown_until: Optional[str] = None
-        sub_tx = await page_fetch_json(
-            page,
-            url=subscription_user_info_url,
-            method="POST",
-            headers=build_jimeng_page_fetch_headers(
-                uri="/commerce/v1/subscription/user_info",
-                appid=_DREAMINA_AID,
-                appvr=_APPVR,
-                pf="7",
-                lan="en",
-                loc=sess.dreamina_header_loc,
-                headers={"Referer": "https://dreamina.capcut.com/"},
-            ),
-            json_data={"aid": _DREAMINA_AID, "scene": "vip", "need_sign_info": True},
-            log_file=log_file,
-        )
-        sub_obj = sub_tx.get("_json") or {}
-        sub_data = sub_obj.get("data") if isinstance(sub_obj, dict) else None
-        if not isinstance(sub_data, dict) and isinstance(sub_obj, dict):
-            # 兼容接口只返回 response 字符串 JSON、未展开 data 的情况
-            resp_s = sub_obj.get("response")
+        if not isinstance(data, dict) and isinstance(obj, dict):
+            resp_s = obj.get("response")
             if isinstance(resp_s, str) and resp_s.strip():
                 try:
                     parsed = json.loads(resp_s)
                     if isinstance(parsed, dict):
-                        sub_data = parsed
+                        data = parsed
                 except Exception:
-                    sub_data = None
-        end_time = sub_data.get("end_time") if isinstance(sub_data, dict) else None
+                    data = None
+    else:
+        client_kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(45.0), "trust_env": True}
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
         try:
-            end_ts = int(float(end_time or 0))
-            if end_ts > 0:
-                bj_tz = datetime.timezone(datetime.timedelta(hours=8))
-                cooldown_until = datetime.datetime.fromtimestamp(end_ts, bj_tz).strftime("%Y-%m-%d %H:%M:%S")
+            client = httpx.AsyncClient(**client_kwargs)
+        except ImportError as e:
+            if proxy_url and str(proxy_url).lower().startswith(("socks5://", "socks5h://", "socks4://")):
+                raise RuntimeError("当前环境缺少 SOCKS 支持，请安装依赖：pip install 'httpx[socks]' socksio") from e
+            raise
+        async with client:
+            try:
+                resp = await client.post(user_credit_url, headers=headers, json={})
+            except ImportError as e:
+                if proxy_url and str(proxy_url).lower().startswith(("socks5://", "socks5h://", "socks4://")):
+                    raise RuntimeError("当前环境缺少 SOCKS 支持，请安装依赖：pip install 'httpx[socks]' socksio") from e
+                raise
+            obj = resp.json()
+            tx = {"status": resp.status_code, "response_body": resp.text[:2000]}
+        data = obj.get("data") if isinstance(obj, dict) else None
+        if not isinstance(data, dict) and isinstance(obj, dict):
+            # 兼容接口只返回 response 字符串 JSON、未展开 data 的情况。
+            resp_s = obj.get("response")
+            if isinstance(resp_s, str) and resp_s.strip():
+                try:
+                    parsed = json.loads(resp_s)
+                    if isinstance(parsed, dict):
+                        data = parsed
+                except Exception:
+                    data = None
+    credit = (data or {}).get("credit") if isinstance(data, dict) else None
+    if not isinstance(credit, dict):
+        raise RuntimeError(f"Dreamina user_credit 返回缺少 credit：status={tx.get('status')} body={safe_trim(str(tx.get('response_body') or obj), 500)}")
+    def _credit_int(v: Any) -> int:
+        try:
+            return int(float(v or 0))
         except Exception:
-            cooldown_until = None
+            return 0
 
-        append_log(
-            log_file,
-            f"[dreamina] user_credit gift={gift_credit} purchase={purchase_credit} vip={vip_credit} total={total_credit} cooldown_until={cooldown_until or ''}",
-        )
-        return {
-            "gift_credit": gift_credit,
-            "purchase_credit": purchase_credit,
-            "vip_credit": vip_credit,
-            "total_credit": total_credit,
-            "cooldown_until": cooldown_until,
-            "subscription_end_time": end_time,
-            "source": "user_credit_sessionid",
-        }
+    gift_credit = _credit_int(credit.get("gift_credit"))
+    purchase_credit = _credit_int(credit.get("purchase_credit"))
+    vip_credit = _credit_int(credit.get("vip_credit"))
+    total_credit = gift_credit + purchase_credit + vip_credit
+
+    cooldown_until: Optional[str] = None
+    credits_life_end: Optional[int] = None
+    if total_credit > 0 and isinstance(data, dict):
+        def _positive_ts(v: Any) -> Optional[int]:
+            try:
+                ts = int(float(v or 0))
+                return ts if ts > 0 else None
+            except Exception:
+                return None
+
+        candidates: List[int] = []
+        detail = data.get("credits_detail")
+        if isinstance(detail, dict):
+            for list_key in ("vip_credits", "gift_credits", "purchase_credits"):
+                items = detail.get(list_key)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    ts = _positive_ts(item.get("credits_life_end"))
+                    if ts is not None:
+                        candidates.append(ts)
+        if not candidates:
+            expiring = data.get("expiring_credits")
+            if isinstance(expiring, list):
+                for item in expiring:
+                    if not isinstance(item, dict):
+                        continue
+                    ts = _positive_ts(item.get("expire_time"))
+                    if ts is not None:
+                        candidates.append(ts)
+        if candidates:
+            credits_life_end = min(candidates)
+            bj_tz = datetime.timezone(datetime.timedelta(hours=8))
+            cooldown_until = datetime.datetime.fromtimestamp(credits_life_end, bj_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    append_log(
+        log_file,
+        f"[dreamina] user_credit gift={gift_credit} purchase={purchase_credit} vip={vip_credit} total={total_credit} cooldown_until={cooldown_until or ''}",
+    )
+    return {
+        "gift_credit": gift_credit,
+        "purchase_credit": purchase_credit,
+        "vip_credit": vip_credit,
+        "total_credit": total_credit,
+        "cooldown_until": cooldown_until,
+        "subscription_end_time": credits_life_end,
+        "credits_life_end": credits_life_end,
+        "source": "user_credit_local_sessionid",
+    }
 
 
 async def refresh_dreamina_balance(
@@ -2405,25 +2785,26 @@ async def refresh_dreamina_balance(
     if str(picked.create_task_handler or "").strip().lower() != "dreamina_workflow":
         return None
 
-    try:
-        sess = get_or_create_dreamina_session(
-            vendor=picked.browser_vendor,
-            base_url=picked.browser_base_url,
-            access_key=picked.browser_access_key,
-            space_id=picked.space_id,
-            window_key=picked.window_key,
-        )
-        sess.browser_headless = picked.headless
-    except Exception:
-        return None
-
     d_target = str(picked.default_target_url or "").strip() or "https://dreamina.capcut.com/"
+    country_code = ""
+    try:
+        country_code = await db.get_window_bound_ip_last_country(window_pk=int(getattr(picked, "window_pk", 0) or 0))
+        if not country_code:
+            country_code = await db.get_window_bound_ip_last_country(
+                space_id=str(getattr(picked, "space_id", "") or ""),
+                window_key=str(getattr(picked, "window_key", "") or ""),
+            )
+    except Exception as e:
+        logger.warning("refresh_dreamina_balance read country failed: mapping=%s err=%s", picked.mapping_id, e)
+        country_code = ""
     d_info: Optional[Dict[str, Any]] = None
     try:
         d_info = await dreamina_fetch_credits_in_window(
-            sess,
             target_url=d_target,
             access_token=picked.sora_access_token,
+            db=db,
+            picked=picked,
+            country_code=country_code,
         )
     except Exception as e:
         logger.warning("refresh_dreamina_balance failed: mapping=%s err=%s", picked.mapping_id, e)
@@ -2440,7 +2821,12 @@ async def refresh_dreamina_balance(
                 update_kw["cooldown_until"] = str(d_info.get("cooldown_until"))
             await db.update_task_type_window(**update_kw)
             try:
-                credit_threshold  = sess.get_credit_threshold();
+                if _one_str(country_code).lower() == "tr":
+                    credit_threshold = 845
+                elif _one_str(country_code).lower() == "ca":
+                    credit_threshold = 455
+                else:
+                    credit_threshold = _DREAMINA_MIN_CREDIT
                 if int(d_info.get("total_credit") or 0) < credit_threshold and signal_window_pool_replenish is not None:
                     signal_window_pool_replenish()
             except Exception:
@@ -3395,7 +3781,13 @@ async def dreamina_workflow(
                 if page is None:
                     raise NonPenalizedTaskError("Dreamina 页面未打开", status_code=502)
 
-                store_country_code = await sess.refresh_store_country_code_from_cookies(target_url=target_page)
+                store_country_code = ""
+                try:
+                    if db is not None:
+                        store_country_code = await db.get_window_bound_ip_last_country(space_id=space_id, window_key=window_key)
+                except Exception as e:
+                    append_log(log_file, f"[dreamina-store-country] read bound ip last_country failed: {safe_trim(str(e), 200)}")
+                sess.store_country_code = store_country_code
                 await progress_cb(2, {
                     "stage": "store_country_code",
                     "store_country_code": store_country_code,

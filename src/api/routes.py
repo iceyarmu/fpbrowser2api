@@ -171,9 +171,14 @@ def _timestamp_ms(value: Any = None) -> int:
 
 def _normalize_newapi_task_status(status: Any) -> str:
     s = str(status or "").strip().lower()
-    if s == "running":
-        return "in_progress"
-    if s in {"queued", "in_progress", "completed", "failed"}:
+    # NewAPI/中转站实现对异步任务状态的解析不完全一致：
+    # - 有的认 OpenAI-ish 的 in_progress
+    # - 有的认 Midjourney/通用异步任务的 processing
+    # 对外优先使用更常见的 processing，避免上游只在 processing/completed/failed
+    # 分支里更新任务状态。
+    if s in {"running", "in_progress", "processing"}:
+        return "processing"
+    if s in {"queued", "completed", "failed"}:
         return s
     return s or "queued"
 
@@ -277,6 +282,7 @@ async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
 
+
     payload = _parse_task_prompt_payload(getattr(task, "prompt", None))
     result = task.result if isinstance(task.result, dict) else None
     status = _normalize_newapi_task_status(task.status)
@@ -291,11 +297,19 @@ async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
         "object": "video",
         "created_at": _timestamp_ms(task.created_at),
         "status": status,
+        # 兼容部分中转站/面板只读取 state 或 task_status 的实现。
+        "state": status,
+        "task_status": status,
         "progress": int(task.progress or 0),
         "model": model,
         "video_url": video_url,
         "metadata": {"result_urls": result_urls},
+        # 冗余标志，便于中转站判断是否终态。
+        "success": status == "completed",
+        "final": status in {"completed", "failed"},
     }
+
+    
     if image_url:
         resp["image_url"] = image_url
     if video_url or image_url:
@@ -310,8 +324,10 @@ async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
     if status == "failed":
         resp["error"] = {
             "message": task.error_message or "task failed",
-            "code": (result or {}).get("status_code") or (result or {}).get("error_type") or "task_failed",
+            # code 使用字符串，避免上游 JSON 结构体按 string 解析失败或忽略。
+            "code": str((result or {}).get("status_code") or (result or {}).get("error_type") or "task_failed"),
         }
+
     return JSONResponse(content=resp)
 
 

@@ -255,6 +255,7 @@ async def perform_human_activity_for_window_mapping(
         sess = get_or_create_grok_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         bring = sess._bring_target_page_to_front
     elif handler == "dreamina_workflow":
+        return;
         tu = target_url or DEFAULT_DREAMINA_TARGET
         sess = get_or_create_dreamina_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         bring = sess._bring_target_page_to_front

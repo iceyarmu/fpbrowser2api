@@ -90,11 +90,6 @@ class FPBrowserClient:
         """
         # 说明：显式拆分超时，避免某些版本/场景下默认值不生效导致“无限等待”
         timeout = httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=30.0)
-        if self.proxy_enabled and self.proxy_url:
-            try:
-                return httpx.AsyncClient(proxy=self.proxy_url, timeout=timeout)  # type: ignore[call-arg]
-            except TypeError:
-                return httpx.AsyncClient(proxies=self.proxy_url, timeout=timeout)  # type: ignore[call-arg]
         return httpx.AsyncClient(timeout=timeout)
 
     async def list_windows(

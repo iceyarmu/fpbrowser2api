@@ -1495,7 +1495,7 @@ async def delete_local_proxy(
         raise HTTPException(status_code=404, detail="browser not found")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     remote_err = ""
     remote_already_missing = False
     rsp: Dict[str, Any] = {}
@@ -1684,7 +1684,7 @@ async def sync_space_proxies(
         raise HTTPException(status_code=404, detail="browser not found")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     try:
         proxies = await client.list_proxies(
             vendor=browser.vendor,
@@ -1730,7 +1730,7 @@ async def import_space_proxies(space_pk: int, req: ImportProxiesRequest, token: 
 
     protocol_default = _normalize_proxy_protocol(req.protocol)
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
 
     updated = 0
     created = 0
@@ -2022,7 +2022,7 @@ async def sync_space_accounts(
         raise HTTPException(status_code=404, detail="browser not found")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     try:
         accounts = await client.list_accounts(
             vendor=browser.vendor,
@@ -2081,7 +2081,7 @@ async def import_space_accounts(space_pk: int, req: ImportAccountsRequest, token
 
     if to_create:
         syscfg = await db.get_system_config()
-        client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+        client = FPBrowserClient()
         try:
             rsp = await client.create_accounts_batch(
                 vendor=browser.vendor,
@@ -2145,7 +2145,7 @@ async def delete_space_account(space_pk: int, account_id: int, token: str = Depe
                 browser = target_browser
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     remote_err = ""
     remote_already_missing = False
     rsp: Dict[str, Any] = {}
@@ -2216,7 +2216,7 @@ async def hard_delete_space_account(space_pk: int, account_id: int, token: str =
                 browser = target_browser
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     remote_err = ""
     remote_already_missing = False
     rsp: Dict[str, Any] = {}
@@ -2510,7 +2510,7 @@ async def _mdf_window_account_and_proxy_from_local(
     local_proxy_id = int(getattr(target_win, "proxy_id", 0) or 0) if target_win else 0
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     try:
         mdf_payload: Dict[str, Any] = {
             "proxyInfo": _build_mdf_proxy_info(local_proxy_id),
@@ -2652,7 +2652,7 @@ async def set_window_proxy(space_pk: int, window_key: str, req: UpdateWindowProx
             }]
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     try:
         mdf_payload: Dict[str, Any] = {"proxyInfo": proxy_info}
         if wpl:
@@ -2730,7 +2730,7 @@ async def set_window_core_version(
         mdf_payload["windowPlatformList"] = wpl
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     try:
         rsp = await client.browser_mdf(
             vendor=browser.vendor,
@@ -2817,7 +2817,7 @@ async def set_window_pure_mode(
         mdf_payload["windowPlatformList"] = wpl
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     try:
         rsp = await client.browser_mdf(
             vendor=browser.vendor,
@@ -2884,10 +2884,7 @@ async def sync_windows(space_pk: int, token: str = Depends(verify_admin_token)):
         raise HTTPException(status_code=404, detail="browser not found")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(
-        proxy_enabled=syscfg.proxy_enabled,
-        proxy_url=syscfg.proxy_url,
-    )
+    client = FPBrowserClient()
     try:
         windows = await client.list_windows(
             vendor=browser.vendor,
@@ -2933,10 +2930,7 @@ async def sync_window_status(space_pk: int, token: str = Depends(verify_admin_to
     window_keys = [str(w.window_key or "").strip() for w in local_windows if str(w.window_key or "").strip()]
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(
-        proxy_enabled=syscfg.proxy_enabled,
-        proxy_url=syscfg.proxy_url,
-    )
+    client = FPBrowserClient()
     try:
         opened = await client.list_open_window_connection_infos(
             vendor=browser.vendor,
@@ -3020,7 +3014,7 @@ async def delete_window_local(space_pk: int, window_key: str, req: DeleteWindowR
     client = None
     if req.delete_remote or delete_account:
         syscfg = await db.get_system_config()
-        client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+        client = FPBrowserClient()
 
     if req.delete_remote:
         try:
@@ -3227,10 +3221,7 @@ async def get_browser_workspace_projects(browser_id: int, token: str = Depends(v
         raise HTTPException(status_code=404, detail="browser not found")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(
-        proxy_enabled=syscfg.proxy_enabled,
-        proxy_url=syscfg.proxy_url,
-    )
+    client = FPBrowserClient()
 
     try:
         rows = await client.list_workspace_projects(
@@ -3258,10 +3249,7 @@ async def get_space_proxy_detect_channels(space_pk: int, token: str = Depends(ve
         raise HTTPException(status_code=404, detail="browser not found")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(
-        proxy_enabled=syscfg.proxy_enabled,
-        proxy_url=syscfg.proxy_url,
-    )
+    client = FPBrowserClient()
 
     try:
         rows = await client.list_proxy_detect_channels(
@@ -3930,7 +3918,7 @@ async def refresh_mapping_remaining_quota(
         from ..services.task_handler_registry import refresh_quota__dreamina_credits
 
         fn = refresh_quota__dreamina_credits
-        handler_used = "dreamina_credits"
+        handler_used = ""
     else:
         try:
             fn = get_refresh_quota_handler(task_type.refresh_quota_handler)
@@ -4578,7 +4566,7 @@ async def clear_mapping_browser_cache(
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
     syscfg = await db.get_system_config()
-    client = FPBrowserClient(proxy_enabled=syscfg.proxy_enabled, proxy_url=syscfg.proxy_url)
+    client = FPBrowserClient()
     keys = [window_key]
 
     try:
