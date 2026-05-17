@@ -12,18 +12,23 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import io
 import json
 import random
 from math import gcd
 import re
+import socket
+import ssl
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
+import httpx
 from ..core.config import config as app_config
 from ..core.database import Database
 from ..core.logger import logger
@@ -46,10 +51,150 @@ from .sora_task_executor import (
 )
 from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
+from .browser_extension_bridge import (
+    should_use_extension_executor,
+    submit_extension_task,
+    wait_extension_client,
+)
+
+
+async def _noop_progress_cb(progress: int, data: Dict[str, Any]) -> None:
+    return None
+
+
+async def refresh_veo_balance_via_extension(
+    *,
+    db: Database,
+    picked: Any,
+    refresh_timeout_seconds: float,
+    signal_window_pool_replenish: Optional[Callable[[], None]] = None,
+) -> Optional[Dict[str, Any]]:
+    """插件执行器模式下也统一改为本地两层代理读取 VEO credits，避免打开/依赖浏览器窗口。"""
+    try:
+        at = str(picked.sora_access_token or "").strip()
+        try:
+            row = await db.get_task_type_window_context(picked.mapping_id)
+            if row:
+                t2 = str(row.get("sora_access_token") or "").strip() or None
+                if t2:
+                    at = t2
+                    picked.sora_access_token = t2
+                    picked.sora_access_expires = str(row.get("sora_access_expires") or "").strip() or None
+        except Exception:
+            pass
+        if not at:
+            return None
+
+        veo_target = str(picked.default_target_url or "").strip() or "https://labs.google/fx"
+        short_info = await fetch_short_access_token_by_proxy(
+            session_token=at,
+            target_url=veo_target,
+            db=db,
+            picked=picked,
+            log_file=MONITOR_LOG_FILE,
+        )
+        result = await asyncio.wait_for(
+            veo_fetch_credits_in_window(
+                sess=None,
+                target_url=veo_target,
+                access_token=str((short_info or {}).get("access_token") or ""),
+                db=db,
+                picked=picked,
+                log_file=MONITOR_LOG_FILE,
+            ),
+            timeout=max(1.0, float(refresh_timeout_seconds or 45.0)),
+        )
+        if result is not None and result.get("credits") is not None:
+            _kw: Dict[str, Any] = {
+                "mapping_id": picked.mapping_id,
+                "remaining_quota": int(result.get("credits") or 0),
+                "sora_remaining_count": int(result.get("credits") or 0),
+            }
+            _kw["cooldown_until"] = str(result.get("cooldown_until") or _veo_local_next_0105_cooldown_str())
+            await db.update_task_type_window(**_kw)
+            try:
+                cur_q = int(result.get("credits") or 0)
+                if cur_q < 30 and signal_window_pool_replenish is not None:
+                    hi = await db.task_type_has_mapping_remaining_quota_above(picked.task_code, 30)
+                    if hi:
+                        signal_window_pool_replenish()
+            except Exception:
+                pass
+            return result
+        return None
+    except Exception as e:
+        logger.warning("refresh_veo_balance_via_extension skipped: mapping=%s err=%s", getattr(picked, "mapping_id", None), e)
+        return None
+
+
+async def _veo_extension_upload_upsample_data_url_to_oss(
+    result: Dict[str, Any],
+    *,
+    project_id: str,
+    log_file: Path,
+) -> Dict[str, Any]:
+    """插件模式：把插件返回的 2K data:image/jpeg;base64 上传 OSS，并将结果 URL 回填。
+
+    非插件路径的 2K 放大是在 Python 内直接拿到 base64 后上传 OSS；插件路径的 base64
+    由浏览器插件返回，这里对齐非插件行为，避免最终 API 返回大段 base64。
+    """
+    if not isinstance(result, dict):
+        return result
+    if str(result.get("type") or "") != "veo_workflow_image":
+        return result
+    if not result.get("upsample_ok"):
+        return result
+    share = str(result.get("share_url") or result.get("image_url") or "").strip()
+    prefix = "data:image/"
+    if not share.startswith(prefix) or ";base64," not in share:
+        return result
+
+    oss_cfg = oss_config_from_setting_section((app_config.get_raw_config() or {}).get("oss"))
+    if not oss_cfg.enabled:
+        append_log(log_file, "[veo][extension][image] 2K data URL kept because OSS disabled")
+        return result
+
+    try:
+        b64 = share.split(";base64,", 1)[1].strip()
+        raw = base64.b64decode(b64, validate=False)
+        if not raw:
+            raise ValueError("base64 解码后为空")
+        media_name = str(result.get("generated_media_id") or "").strip() or None
+        object_key = build_veo_upsample_object_key(project_id=str(project_id), media_name=media_name)
+        url = await asyncio.to_thread(
+            upload_bytes_to_oss,
+            cfg=oss_cfg,
+            data=raw,
+            object_key=object_key,
+            content_type="image/jpeg",
+        )
+        out = dict(result)
+        out["share_url"] = url
+        out["image_url"] = url
+        out["upsample_url"] = url
+        out["upsample_oss_object_key"] = object_key
+        append_log(log_file, f"[veo][extension][image] uploaded 2K data URL to OSS object_key={object_key!r}")
+        return out
+    except Exception as e:
+        out = dict(result)
+        out["upsample_error"] = str(out.get("upsample_error") or f"OSS上传失败：{_short_err_msg(e, max_len=200)}")
+        append_log(log_file, f"[veo][extension][image] upload 2K data URL to OSS failed, keep data URL: {e}")
+        return out
 
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
+
+
+def _veo_payload_bool(payload: Dict[str, Any], key: str, default: bool) -> bool:
+    v = (payload or {}).get(key)
+    if v is None:
+        return bool(default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return str(v).strip().lower() not in {"0", "false", "no", "off", "none", "null"}
 
 def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
     try:
@@ -221,10 +366,19 @@ async def refresh_veo_balance(
     veo_target = str(picked.default_target_url or "").strip() or "https://labs.google/fx"
     veo_info: Optional[Dict[str, Any]] = None
     try:
+        short_info = await fetch_short_access_token_by_proxy(
+            session_token=at,
+            target_url=veo_target,
+            db=db,
+            picked=picked,
+            log_file=MONITOR_LOG_FILE,
+        )
         veo_info = await veo_fetch_credits_in_window(
             sess=veo_sess,
             target_url=veo_target,
-            access_token=at,
+            access_token=str((short_info or {}).get("access_token") or ""),
+            db=db,
+            picked=picked,
         )
     except Exception as e:
         logger.warning("refresh_veo_balance failed: mapping=%s err=%s", picked.mapping_id, e)
@@ -232,14 +386,7 @@ async def refresh_veo_balance(
 
     try:
         if veo_info is not None and veo_info.get("credits") is not None:
-            st0 = await db.get_mapping_runtime_state(mapping_id=picked.mapping_id)
-            need_next_update = _veo_should_fetch_next_update_cooldown((st0 or {}).get("cooldown_until"))
-            new_cu: Optional[str] = None
-            if need_next_update:
-                new_cu = await veo_fetch_next_update_cooldown_from_one_google_activity(
-                    sess=veo_sess,
-                    target_url=veo_target,
-                )
+            new_cu: Optional[str] = str(veo_info.get("cooldown_until") or "").strip() or _veo_local_next_0105_cooldown_str()
 
             _kw: Dict[str, Any] = {
                 "mapping_id": picked.mapping_id,
@@ -654,6 +801,12 @@ class VeoSession:
 
         self.debug_panel_seq: int = 0
         self.debug_panel_entries: list[Dict[str, str]] = []
+
+        self.veo_short_access_token: Optional[str] = None
+        self.veo_short_access_expires: Optional[str] = None
+        self.veo_short_session_token: Optional[str] = None
+        self.veo_short_email: Optional[str] = None
+        self.veo_short_token_lock = asyncio.Lock()
 
     @property
     def _log_file(self) -> Path:
@@ -2237,7 +2390,8 @@ async def veo_admin_unified_open_or_connect(
 # ---------------------------------------------------------------------------
 # Google Labs / Flow：余额与档位（与 flow2api flow_client.get_credits 对齐）
 # ---------------------------------------------------------------------------
-FLOW_LABS_CREDITS_URL = "https://aisandbox-pa.googleapis.com/v1/credits"
+VEO_GOOG_API_KEY = "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY"
+FLOW_LABS_CREDITS_URL = f"https://aisandbox-pa.googleapis.com/v1/credits?key={VEO_GOOG_API_KEY}"
 # 刷新 VEO 额度时：新开标签页读取「Next update: Apr 22」或「Next update: Tomorrow」作为额度重置日
 VEO_ONE_GOOGLE_AI_ACTIVITY_URL = "https://one.google.com/ai/activity?g1_landing_page=0"
 _VEO_NEXT_UPDATE_TOMORROW_RE = re.compile(
@@ -3449,13 +3603,156 @@ def _veo_month_token_to_num(month_tok: str) -> Optional[int]:
 
 
 def _veo_local_next_1305_datetime() -> datetime:
-    """本地「下一次 13:05」：当前时刻若已过当天 13:05 则为明天 13:05，否则为今天 13:05。"""
+    """本地「下一次 01:05」：当前时刻若已过当天 01:05 则为明天 01:05，否则为今天 01:05。"""
     now = datetime.now()
     today_0105 = now.replace(hour=1, minute=5, second=0, microsecond=0)
     if now > today_0105:
         nd = now.date() + timedelta(days=1)
         return datetime(nd.year, nd.month, nd.day, 1, 5, 0)
     return today_0105
+
+
+def _veo_local_next_0105_cooldown_str() -> str:
+    """VEO 余额接口不返回到期时间时，按本地北京时间下一次 01:05:00 作为 cooldown_until。"""
+    return _veo_local_next_1305_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _veo_parse_proxy_url(proxy_url: str) -> Dict[str, str]:
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return {}
+    u = urlparse(raw if "://" in raw else f"http://{raw}")
+    return {
+        "scheme": (u.scheme or "http").lower(),
+        "host": str(u.hostname or "").strip(),
+        "port": str(u.port or (443 if (u.scheme or "").lower() == "https" else 80)),
+        "username": unquote(u.username or ""),
+        "password": unquote(u.password or ""),
+    }
+
+
+def _veo_chain_http_to_socks5h_get(
+    *,
+    system_proxy: str,
+    window_proxy: str,
+    url: str,
+    headers: Dict[str, str],
+    timeout: float = 45.0,
+) -> tuple[int, str]:
+    """本机 -> system_proxy(http/https CONNECT) -> window_proxy(socks5h) -> HTTPS GET。"""
+    sp = _veo_parse_proxy_url(system_proxy)
+    wp = _veo_parse_proxy_url(window_proxy)
+    target = urlparse(url)
+    if sp.get("scheme") not in ("http", "https"):
+        raise RuntimeError("两层代理暂仅支持第一层 system_proxy 为 http/https")
+    if wp.get("scheme") not in ("socks5", "socks5h", "socks"):
+        raise RuntimeError("两层代理暂仅支持第二层 window_proxy 为 socks5/socks5h")
+    if (target.scheme or "").lower() != "https":
+        raise RuntimeError("VEO credits 两层代理仅支持 https 目标")
+    if not sp.get("host") or not wp.get("host") or not target.hostname:
+        raise RuntimeError("代理或目标 URL 缺少 host")
+
+    def _read_until(sock: socket.socket, marker: bytes, limit: int = 65536) -> bytes:
+        buf = b""
+        while marker not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > limit:
+                raise RuntimeError("读取代理响应超限")
+        return buf
+
+    def _recvn(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise RuntimeError("连接提前关闭")
+            buf += chunk
+        return buf
+
+    with socket.create_connection((sp["host"], int(sp["port"])), timeout=timeout) as raw_sock:
+        raw_sock.settimeout(timeout)
+        sock: socket.socket = raw_sock
+        if sp.get("scheme") == "https":
+            sock = ssl.create_default_context().wrap_socket(raw_sock, server_hostname=sp["host"])
+            sock.settimeout(timeout)
+        connect_lines = [f"CONNECT {wp['host']}:{wp['port']} HTTP/1.1", f"Host: {wp['host']}:{wp['port']}"]
+        if sp.get("username") or sp.get("password"):
+            auth = base64.b64encode(f"{sp.get('username','')}:{sp.get('password','')}".encode()).decode()
+            connect_lines.append(f"Proxy-Authorization: Basic {auth}")
+        sock.sendall(("\r\n".join(connect_lines) + "\r\n\r\n").encode("ascii"))
+        status_line = _read_until(sock, b"\r\n\r\n").split(b"\r\n", 1)[0].decode("iso-8859-1", "ignore")
+        if " 200 " not in f" {status_line} ":
+            raise RuntimeError(f"system_proxy CONNECT window_proxy 失败：{status_line}")
+
+        sock.sendall(b"\x05\x02\x00\x02" if (wp.get("username") or wp.get("password")) else b"\x05\x01\x00")
+        ver_method = _recvn(sock, 2)
+        if ver_method[0] != 5 or ver_method[1] == 0xFF:
+            raise RuntimeError("window_proxy SOCKS5 握手失败")
+        if ver_method[1] == 2:
+            user_b = wp.get("username", "").encode("utf-8")
+            pwd_b = wp.get("password", "").encode("utf-8")
+            sock.sendall(b"\x01" + bytes([len(user_b)]) + user_b + bytes([len(pwd_b)]) + pwd_b)
+            if _recvn(sock, 2) != b"\x01\x00":
+                raise RuntimeError("window_proxy SOCKS5 认证失败")
+        elif ver_method[1] != 0:
+            raise RuntimeError(f"window_proxy SOCKS5 不支持的认证方式：{ver_method[1]}")
+
+        host_b = target.hostname.encode("idna")
+        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(host_b)]) + host_b + int(target.port or 443).to_bytes(2, "big"))
+        rep = _recvn(sock, 4)
+        if rep[0] != 5 or rep[1] != 0:
+            raise RuntimeError(f"window_proxy SOCKS5 CONNECT 目标失败，rep={rep[1] if len(rep) > 1 else '?'}")
+        if rep[3] == 1:
+            _recvn(sock, 4)
+        elif rep[3] == 3:
+            _recvn(sock, _recvn(sock, 1)[0])
+        elif rep[3] == 4:
+            _recvn(sock, 16)
+        _recvn(sock, 2)
+
+        tls_sock = ssl.create_default_context().wrap_socket(sock, server_hostname=target.hostname)
+        tls_sock.settimeout(timeout)
+        path = (target.path or "/") + (f"?{target.query}" if target.query else "")
+        req_headers = dict(headers or {})
+        req_headers["Host"] = target.netloc
+        req_headers["Connection"] = "close"
+        req = f"GET {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in req_headers.items()) + "\r\n"
+        tls_sock.sendall(req.encode("utf-8"))
+        raw = b""
+        while True:
+            chunk = tls_sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+        head, _, resp_body = raw.partition(b"\r\n\r\n")
+        head_text = head.decode("iso-8859-1", "ignore")
+        try:
+            status = int(head_text.split("\r\n", 1)[0].split()[1])
+        except Exception:
+            status = 0
+        header_map: Dict[str, str] = {}
+        for line in head_text.split("\r\n")[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                header_map[k.strip().lower()] = v.strip().lower()
+        if header_map.get("transfer-encoding") == "chunked":
+            out = b""
+            rest = resp_body
+            while True:
+                line, _, rest = rest.partition(b"\r\n")
+                size = int(line.split(b";", 1)[0], 16)
+                if size <= 0:
+                    break
+                out += rest[:size]
+                rest = rest[size + 2 :]
+            resp_body = out
+        enc = header_map.get("content-encoding", "")
+        if "gzip" in enc:
+            resp_body = gzip.decompress(resp_body)
+        return status, resp_body.decode("utf-8", "replace")
 
 
 def _veo_next_update_text_to_cooldown_str(page_text: str) -> Optional[str]:
@@ -3596,67 +3893,135 @@ async def veo_fetch_next_update_cooldown_from_one_google_activity(
 
 async def veo_fetch_credits_in_window(
     *,
-    sess: "VeoSession",
+    sess: Optional["VeoSession"] = None,
     target_url: str,
     access_token: str,
+    db: Any = None,
+    picked: Any = None,
+    log_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """在指纹浏览器页面上下文中 GET aisandbox /v1/credits（与 Sora 的 page_fetch_json 一致）。
-
-    使用窗口所在页面的 fetch（credentials: include + Bearer），走指纹浏览器网络栈/代理。
-    """
+    """本地经两层代理 GET aisandbox /v1/credits，不再打开指纹浏览器窗口。"""
     tok = str(access_token or "").strip()
     if not tok:
         raise RuntimeError("缺少 access_token（请先获取并保存 access_token）")
 
-    
-    sess._cancel_idle_close()
+    log_file = log_file or (Path(sess.monitor_log_path) if sess is not None and getattr(sess, "monitor_log_path", None) else MONITOR_LOG_FILE)
 
-    async with sess._bring_drafts_lock:
-        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
-        await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
-        if sess.pw_ctx.page is None:
-            raise RuntimeError("page 未初始化")
+    async def _resolve_system_proxy() -> str:
+        if db is None:
+            return ""
+        try:
+            syscfg = await db.get_system_config()
+            if bool(getattr(syscfg, "proxy_enabled", False)):
+                return str(getattr(syscfg, "proxy_url", "") or "").strip()
+        except Exception:
+            return ""
+        return ""
 
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
+    async def _resolve_window_proxy() -> str:
+        if db is None or picked is None:
+            return ""
+        window_pk = int(getattr(picked, "window_pk", 0) or 0)
+        if window_pk <= 0:
+            return ""
+        try:
+            async with db._read_conn() as conn:  # type: ignore[attr-defined]
+                conn.row_factory = __import__("aiosqlite").Row
+                cur = await conn.execute(
+                    """
+                    SELECT p.protocol, p.host, p.port, p.proxy_username, p.proxy_password
+                    FROM windows w
+                    JOIN proxies p ON p.deleted = 0 AND (
+                         (COALESCE(w.proxy_id, 0) > 0 AND p.proxy_id = w.proxy_id)
+                      OR (COALESCE(w.proxy_id, 0) = 0 AND TRIM(COALESCE(w.proxy_addr, '')) <> '' AND (
+                           TRIM(COALESCE(p.last_ip, '')) = TRIM(w.proxy_addr)
+                        OR TRIM(COALESCE(p.host, '')) = TRIM(w.proxy_addr)
+                        OR TRIM(COALESCE(p.host, '') || ':' || COALESCE(p.port, '')) = TRIM(w.proxy_addr)
+                      ))
+                    )
+                    WHERE w.id = ? AND w.deleted = 0
+                    LIMIT 1
+                    """,
+                    (window_pk,),
+                )
+                row = await cur.fetchone()
+            if not row:
+                return ""
+            proto = str(row["protocol"] or "socks5").strip().lower()
+            if proto in ("socks", "socks5") or proto not in ("socks5h", "http", "https"):
+                proto = "socks5h"
+            host = str(row["host"] or "").strip()
+            port = str(row["port"] or "").strip()
+            if not host or not port:
+                return ""
+            user = quote(str(row["proxy_username"] or "").strip(), safe="")
+            pwd = quote(str(row["proxy_password"] or "").strip(), safe="")
+            auth = f"{user}:{pwd}@" if user or pwd else ""
+            return f"{proto}://{auth}{host}:{port}"
+        except Exception as e:
+            append_log(log_file, f"[veo] resolve window proxy failed: {safe_trim(str(e), 200)}")
+            return ""
 
-        tx = await page_fetch_json(
-            sess.pw_ctx.page,
+    system_proxy = await _resolve_system_proxy()
+    window_proxy = await _resolve_window_proxy()
+    proxy_url = window_proxy or system_proxy or None
+    headers = {
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Authorization": f"Bearer {tok}",
+        "Origin": "https://labs.google",
+        "Referer": "https://labs.google/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "x-goog-api-key": VEO_GOOG_API_KEY,
+        "x-client-data": "COPjygE=",
+    }
+    append_log(log_file, f"[veo] local credits proxy_system={'yes' if system_proxy else 'no'} proxy_window={'yes' if window_proxy else 'no'}")
+    if system_proxy and window_proxy and _veo_parse_proxy_url(window_proxy).get("scheme") in ("socks", "socks5", "socks5h"):
+        status, body_text = await asyncio.to_thread(
+            _veo_chain_http_to_socks5h_get,
+            system_proxy=system_proxy,
+            window_proxy=window_proxy,
             url=FLOW_LABS_CREDITS_URL,
-            method="GET",
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {tok}",
-            },
-            json_data=None,
-            log_file=log_file,
+            headers=headers,
+            timeout=45.0,
         )
-        status = tx.get("status")
-        await sess.pw_ctx.disconnect_playwright_only()
-        if status is not None and int(status) >= 400:
-            body = safe_trim(str(tx.get("response_body") or ""), 400)
-            raise RuntimeError(f"查询 credits 失败：HTTP {status} {body}")
-
-        return _veo_normalize_credits_payload(tx.get("_json"))
+        obj = json.loads(body_text) if body_text.strip() else {}
+    else:
+        client_kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(45.0), "trust_env": True}
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        try:
+            client = httpx.AsyncClient(**client_kwargs)
+        except ImportError as e:
+            if proxy_url and str(proxy_url).lower().startswith(("socks5://", "socks5h://", "socks4://")):
+                raise RuntimeError("当前环境缺少 SOCKS 支持，请安装依赖：pip install 'httpx[socks]' socksio") from e
+            raise
+        async with client:
+            try:
+                resp = await client.get(FLOW_LABS_CREDITS_URL, headers=headers)
+            except ImportError as e:
+                if proxy_url and str(proxy_url).lower().startswith(("socks5://", "socks5h://", "socks4://")):
+                    raise RuntimeError("当前环境缺少 SOCKS 支持，请安装依赖：pip install 'httpx[socks]' socksio") from e
+                raise
+            status, body_text = resp.status_code, resp.text
+            obj = resp.json() if resp.text.strip() else {}
+    if int(status or 0) >= 400:
+        raise RuntimeError(f"查询 credits 失败：HTTP {status} {safe_trim(body_text, 400)}")
+    out = _veo_normalize_credits_payload(obj)
+    out["cooldown_until"] = _veo_local_next_0105_cooldown_str()
+    return out
 
 
 # ---------------------------------------------------------------------------
-# 获取 access_token（从指纹浏览器读取 __Secure-next-auth.session-token 并转换）
+# 获取 token：长 token（浏览器 Cookie ST）与短 token（auth/session AT）
 # ---------------------------------------------------------------------------
-async def veo_fetch_access_token_in_window(
+async def fetch_long_access_token_in_window(
     *,
     sess: "VeoSession",
     target_url: str,
 ) -> Dict[str, Any]:
-    """在指纹浏览器窗口中读取 __Secure-next-auth.session-token cookie，
-    并通过 /fx/api/auth/session 端点获取 access_token。
-
-    流程：
-    1. 打开/复用指纹浏览器窗口，导航到 target_url
-    2. 通过 Playwright context.cookies() 读取 __Secure-next-auth.session-token
-    3. 在页面上下文中 fetch /fx/api/auth/session（credentials: include，自动携带 cookie）
-    4. 解析返回的 accessToken / expires / user 信息
-    """
-    
+    """只打开指纹浏览器读取长效 Cookie：__Secure-next-auth.session-token 及其 Cookie 过期时间。"""
     sess._cancel_idle_close()
 
     async with sess._bring_drafts_lock:
@@ -3669,6 +4034,7 @@ async def veo_fetch_access_token_in_window(
 
         # ── Step 1：从浏览器 cookie 中读取 __Secure-next-auth.session-token ──
         session_token = None
+        session_expires = None
         try:
             context = sess.pw_ctx.context
             if context:
@@ -3681,6 +4047,12 @@ async def veo_fetch_access_token_in_window(
                 for cookie in (cookies or []):
                     if cookie.get("name") == "__Secure-next-auth.session-token":
                         session_token = str(cookie.get("value") or "").strip() or None
+                        try:
+                            exp_num = float(cookie.get("expires") or 0)
+                            if exp_num > 0:
+                                session_expires = datetime.fromtimestamp(exp_num).strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            session_expires = None
                         break
         except Exception as e:
             append_log(log_file, f"[veo][token] context.cookies() failed: {e}")
@@ -3713,64 +4085,194 @@ async def veo_fetch_access_token_in_window(
             )
 
         append_log(log_file, f"[veo][token] session_token found, length={len(session_token)}")
-
-        # ── Step 2：通过 /fx/api/auth/session 端点将 ST 转换为 AT ──
-        # 参考 flow2api: flow_client.st_to_at()
-        #   GET https://labs.google/fx/api/auth/session  (Cookie: __Secure-next-auth.session-token={st})
-        #   返回: {"access_token": "AT", "expires": "...", "user": {"email": "..."}}
-        # 这里用 page_fetch_json (credentials: include) 自动携带 cookie，效果等价。
-        try:
-            parsed = urlparse(target_url)
-            auth_session_url = f"{parsed.scheme}://{parsed.netloc}/fx/api/auth/session"
-        except Exception:
-            auth_session_url = "https://labs.google/fx/api/auth/session"
-
-        access_token = None
-        expires = None
-        email = None
-
-        try:
-            tx = await page_fetch_json(
-                sess.pw_ctx.page,
-                url=auth_session_url,
-                method="GET",
-                headers={"Accept": "application/json"},
-                json_data=None,
-                log_file=log_file,
-            )
-            data = tx.get("_json")
-            if isinstance(data, dict):
-                # flow2api 返回 snake_case "access_token"
-                access_token = (
-                    str(data.get("access_token") or data.get("accessToken") or "").strip() or None
-                )
-                expires = str(data.get("expires") or "").strip() or None
-                user = data.get("user") if isinstance(data.get("user"), dict) else {}
-                email = str((user or {}).get("email") or "").strip() or None
-        except Exception as e:
-            append_log(log_file, f"[veo][token] auth/session fetch failed: {e}")
-
         await sess.pw_ctx.disconnect_playwright_only()
-
-        if access_token:
-            append_log(log_file, f"[veo][token] access_token obtained via auth/session, email={email}")
-            return {
-                "access_token": access_token,
-                "expires": expires,
-                "email": email,
-                "session_token": session_token,
-            }
-
-        # auth/session 未返回有效 access_token 时，直接返回 session_token（ST）作为凭证
-        # 与 flow2api 一致：ST 本身可用于后续 API 调用（通过 Cookie 方式认证）
-        append_log(log_file, "[veo][token] auth/session did not return access_token, using session_token directly")
         return {
             "access_token": session_token,
-            "expires": None,
-            "email": None,
             "session_token": session_token,
+            "expires": session_expires,
+            "email": None,
         }
 
+
+async def _veo_resolve_system_proxy(db: Any) -> str:
+    if db is None:
+        return ""
+    try:
+        syscfg = await db.get_system_config()
+        if bool(getattr(syscfg, "proxy_enabled", False)):
+            return str(getattr(syscfg, "proxy_url", "") or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+
+async def _veo_resolve_window_proxy(db: Any, picked: Any, log_file: Path) -> str:
+    if db is None or picked is None:
+        return ""
+    window_pk = int(getattr(picked, "window_pk", 0) or 0)
+    if window_pk <= 0:
+        return ""
+    try:
+        async with db._read_conn() as conn:  # type: ignore[attr-defined]
+            conn.row_factory = __import__("aiosqlite").Row
+            cur = await conn.execute(
+                """
+                SELECT p.protocol, p.host, p.port, p.proxy_username, p.proxy_password
+                FROM windows w
+                JOIN proxies p ON p.deleted = 0 AND (
+                     (COALESCE(w.proxy_id, 0) > 0 AND p.proxy_id = w.proxy_id)
+                  OR (COALESCE(w.proxy_id, 0) = 0 AND TRIM(COALESCE(w.proxy_addr, '')) <> '' AND (
+                       TRIM(COALESCE(p.last_ip, '')) = TRIM(w.proxy_addr)
+                    OR TRIM(COALESCE(p.host, '')) = TRIM(w.proxy_addr)
+                    OR TRIM(COALESCE(p.host, '') || ':' || COALESCE(p.port, '')) = TRIM(w.proxy_addr)
+                  ))
+                )
+                WHERE w.id = ? AND w.deleted = 0
+                LIMIT 1
+                """,
+                (window_pk,),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return ""
+        proto = str(row["protocol"] or "socks5").strip().lower()
+        if proto in ("socks", "socks5") or proto not in ("socks5h", "http", "https"):
+            proto = "socks5h"
+        host = str(row["host"] or "").strip()
+        port = str(row["port"] or "").strip()
+        if not host or not port:
+            return ""
+        user = quote(str(row["proxy_username"] or "").strip(), safe="")
+        pwd = quote(str(row["proxy_password"] or "").strip(), safe="")
+        auth = f"{user}:{pwd}@" if user or pwd else ""
+        return f"{proto}://{auth}{host}:{port}"
+    except Exception as e:
+        append_log(log_file, f"[veo] resolve window proxy failed: {safe_trim(str(e), 200)}")
+        return ""
+
+
+async def get_cached_short_access_token_for_session(
+    sess: "VeoSession",
+    *,
+    session_token: str,
+    target_url: str = "https://labs.google/fx",
+    db: Any = None,
+    picked: Any = None,
+    log_file: Optional[Path] = None,
+    margin_seconds: float = 120.0,
+) -> Dict[str, Any]:
+    """VeoSession ? short access_token ????????????? auth/session?"""
+    st = str(session_token or "").strip()
+    if not st:
+        raise RuntimeError("?? __Secure-next-auth.session-token")
+    log_file = log_file or (Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE)
+    async with sess.veo_short_token_lock:
+        if (
+            str(getattr(sess, "veo_short_session_token", "") or "").strip() == st
+            and _veo_cached_access_still_valid(
+                getattr(sess, "veo_short_access_token", None),
+                getattr(sess, "veo_short_access_expires", None),
+                margin_seconds=margin_seconds,
+            )
+        ):
+            append_log(log_file, "[veo][token] reuse cached short access_token from VeoSession")
+            return {
+                "access_token": str(sess.veo_short_access_token or ""),
+                "expires": sess.veo_short_access_expires,
+                "email": sess.veo_short_email,
+                "session_token": st,
+                "cached": True,
+            }
+        info = await fetch_short_access_token_by_proxy(
+            session_token=st, target_url=target_url, db=db, picked=picked, log_file=log_file
+        )
+        sess.veo_short_access_token = str(info.get("access_token") or "").strip() or None
+        sess.veo_short_access_expires = str(info.get("expires") or "").strip() or None
+        sess.veo_short_session_token = st
+        sess.veo_short_email = str(info.get("email") or "").strip() or None
+        append_log(log_file, "[veo][token] refreshed short access_token into VeoSession cache")
+        return dict(info)
+
+
+async def fetch_short_access_token_by_proxy(
+    *,
+    session_token: str,
+    target_url: str = "https://labs.google/fx",
+    db: Any = None,
+    picked: Any = None,
+    log_file: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """通过两层代理 GET https://labs.google/fx/api/auth/session，用长效 session-token 换短效 access_token。"""
+    st = str(session_token or "").strip()
+    if not st:
+        raise RuntimeError("缺少 __Secure-next-auth.session-token")
+    log_file = log_file or MONITOR_LOG_FILE
+    auth_session_url = "https://labs.google/fx/api/auth/session"
+    referer = (target_url or "https://labs.google/fx").strip() or "https://labs.google/fx"
+    headers = {
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Cookie": f"__Secure-next-auth.session-token={st}",
+        "Referer": referer,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+    }
+    system_proxy = await _veo_resolve_system_proxy(db)
+    window_proxy = await _veo_resolve_window_proxy(db, picked, log_file)
+    proxy_url = window_proxy or system_proxy or None
+    append_log(log_file, f"[veo][token] auth/session by proxy proxy_system={'yes' if system_proxy else 'no'} proxy_window={'yes' if window_proxy else 'no'}")
+    if system_proxy and window_proxy and _veo_parse_proxy_url(window_proxy).get("scheme") in ("socks", "socks5", "socks5h"):
+        status, body_text = await asyncio.to_thread(
+            _veo_chain_http_to_socks5h_get,
+            system_proxy=system_proxy,
+            window_proxy=window_proxy,
+            url=auth_session_url,
+            headers=headers,
+            timeout=45.0,
+        )
+        data = json.loads(body_text) if body_text.strip() else {}
+    else:
+        client_kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(45.0), "trust_env": True}
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.get(auth_session_url, headers=headers)
+            status, body_text = resp.status_code, resp.text
+            data = resp.json() if resp.text.strip() else {}
+    if int(status or 0) >= 400:
+        raise RuntimeError(f"auth/session 失败：HTTP {status} {safe_trim(body_text, 400)}")
+    if not isinstance(data, dict):
+        raise RuntimeError("auth/session 返回格式异常")
+    access_token = str(data.get("access_token") or data.get("accessToken") or "").strip()
+    if not access_token:
+        raise RuntimeError(f"auth/session 未返回 access_token：{safe_trim(str(data), 400)}")
+    user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    return {
+        "access_token": access_token,
+        "expires": str(data.get("expires") or "").strip() or None,
+        "email": str((user or {}).get("email") or "").strip() or None,
+        "session_token": st,
+    }
+
+
+async def veo_fetch_access_token_in_window(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+    db: Any = None,
+    picked: Any = None,
+) -> Dict[str, Any]:
+    """兼容旧入口：先从窗口读取长效 session-token，再经代理换短效 access_token。"""
+    long_info = await fetch_long_access_token_in_window(sess=sess, target_url=target_url)
+    return await get_cached_short_access_token_for_session(
+        sess,
+        session_token=str(long_info.get("session_token") or long_info.get("access_token") or ""),
+        target_url=target_url,
+        db=db,
+        picked=picked,
+        log_file=Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE,
+    )
 
 def _veo_trpc_create_project_url(target_url: str) -> str:
     raw = (target_url or "").strip() or "https://labs.google/fx"
@@ -5041,6 +5543,172 @@ async def veo_workflow(
         },
     )
 
+    if should_use_extension_executor(payload):
+        # 插件模式下任务执行不再每次用带 fpb_* 参数的 URL 打开/导航窗口。
+        # fpb_* 配置只在管理页“AccessToken / 过期 -> 更新”时写入一次，插件会持久化
+        # 到 chrome.storage.local；之后只要指纹浏览器窗口启动、插件启动，就用缓存配置
+        # 自动连接 WebSocket。这里保持目标页 URL 干净，避免额外 CDP/导航造成风控风险。
+        annotated_project_page = project_page
+        annotated_bring_prefix = project_page
+        ext_at = str(access_token or "").strip() or None
+        ext_session_token = str(access_token or "").strip() or None
+        ext_exp = str(access_expires or "").strip() or None
+        ext_tok_info: Optional[Dict[str, Any]] = None
+        ext_fetched_token_in_window = False
+        ext_renew_margin = float(payload.get("veo_access_token_renew_margin_seconds") or 120.0)
+        ext_renew_margin = max(0.0, min(3600.0, ext_renew_margin))
+        if db is not None and task_type_window_id:
+            try:
+                mid = int(task_type_window_id)
+                if mid > 0:
+                    row = await db.get_task_type_window_context(mid)
+                    if row:
+                        t2 = str(row.get("sora_access_token") or "").strip() or None
+                        e2 = str(row.get("sora_access_expires") or "").strip() or None
+                        if t2:
+                            ext_at, ext_exp = t2, e2
+                            ext_session_token = str(row.get("sora_session_token") or "").strip() or ext_session_token
+            except Exception as e:
+                append_log(log_file, f"[veo][extension] reload access_token from DB failed (use call args): {e}")
+
+        if _veo_cached_access_still_valid(ext_at, ext_exp, margin_seconds=ext_renew_margin):
+            ext_tok_info = {"access_token": ext_at, "expires": ext_exp or None}
+            append_log(
+                log_file,
+                f"[veo][extension] reuse mapping access_token (expires ok, margin_s={ext_renew_margin:.0f})",
+            )
+        else:
+            try:
+                append_log(log_file, "[veo][extension] access_token missing/expired; fetching in fingerprint window")
+                ext_tok_info = await fetch_long_access_token_in_window(sess=sess, target_url=project_page)
+                ext_fetched_token_in_window = True
+                ext_session_token = str((ext_tok_info or {}).get("session_token") or (ext_tok_info or {}).get("access_token") or "").strip() or None
+                ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
+                ext_at = None
+            except Exception as e:
+                append_log(log_file, f"[veo][extension] fetch access_token in window failed: {e}")
+                ext_session_token = None
+        if not ext_session_token:
+            raise NonPenalizedTaskError(
+                "缺少可用的 session_token：请确保指纹窗口已登录并可取得凭证",
+                status_code=401,
+            )
+        try:
+            ext_short_info = await get_cached_short_access_token_for_session(
+                sess,
+                session_token=ext_session_token,
+                target_url=project_page,
+                db=db,
+                picked=SimpleNamespace(window_pk=int(task_type_window_id or 0) if task_type_window_id else 0),
+                log_file=log_file,
+            )
+            ext_at = str((ext_short_info or {}).get("access_token") or "").strip() or None
+        except Exception as e:
+            append_log(log_file, f"[veo][extension] fetch short access_token by proxy failed: {e}")
+            ext_at = None
+        if not ext_at:
+            raise NonPenalizedTaskError("缺少可用的 short access_token：auth/session 未返回 access_token", status_code=401)
+        if ext_fetched_token_in_window and db is not None and task_type_window_id:
+            try:
+                mid = int(task_type_window_id)
+                if mid > 0:
+                    await db.update_task_type_window(
+                        mapping_id=mid,
+                        sora_access_token=ext_session_token,
+                        sora_access_expires=ext_exp or None,
+                    )
+                    append_log(log_file, f"[veo][extension] persisted refreshed Labs session_token to task_type_window id={mid}")
+            except Exception as e:
+                append_log(log_file, f"[veo][extension] persist access_token to DB failed (non-fatal): {e}")
+        if image_mode:
+            _ext_image_aspect = _veo_resolve_image_aspect_ratio(payload)
+            _ext_image_model = _veo_resolve_image_model_name(payload)
+            _ext_resolution_label, _ext_want_2k = _veo_resolve_image_output_resolution(payload)
+            _ext_i2i_urls = _veo_collect_image_generation_reference_urls(payload) if _veo_payload_has_image_generation_references(payload) else []
+            _ext_model_key = None
+            _ext_video_aspect = None
+        else:
+            if want_ingredients:
+                _ext_model_key, _ext_video_aspect = _veo_resolve_r2v_model(payload)
+            elif want_i2v:
+                _ext_video_aspect = _veo_resolve_i2v_aspect_ratio(payload)
+                _ext_model_key = (
+                    VEO_I2V_MODEL_PORTRAIT_FL
+                    if _ext_video_aspect == VIDEO_ASPECT_RATIO_PORTRAIT
+                    else VEO_I2V_MODEL_LANDSCAPE_FL
+                )
+            else:
+                _ext_model_key, _ext_video_aspect = _veo_resolve_t2v_model(payload)
+            _ext_image_aspect = None
+            _ext_image_model = None
+            _ext_resolution_label, _ext_want_2k = ("1K", False)
+            _ext_i2i_urls = []
+        ext_payload = dict(payload)
+        ext_payload.update(
+            {
+                "workflow_kind": "image" if image_mode else "video",
+                "video_mode": (
+                    "r2v"
+                    if want_ingredients
+                    else ("i2v" if want_i2v else "t2v")
+                ),
+                "project_id": project_id,
+                "project_page": annotated_project_page,
+                "bring_prefix": annotated_bring_prefix,
+                "n_frames": n_frames,
+                "image_mode": image_mode,
+                "ingredients_urls": ingredients_urls,
+                "i2v_urls": i2v_urls,
+                "timeout_seconds": timeout_seconds,
+                "max_wait_seconds": max_wait_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+                "access_token": ext_at,
+                "access_expires": ext_exp,
+                "extension_model_key": _ext_model_key,
+                "extension_video_aspect_ratio": _ext_video_aspect,
+                "extension_image_aspect_ratio": _ext_image_aspect,
+                "extension_image_model_name": _ext_image_model,
+                "extension_image_reference_urls": _ext_i2i_urls,
+                "extension_image_resolution_label": _ext_resolution_label,
+                "extension_image_want_2k": _ext_want_2k,
+            }
+        )
+        append_log(log_file, f"[veo][extension] dispatch workflow {_mode} project_id={project_id!r}")
+        # 如插件尚未连接，只打开/唤起指纹浏览器窗口（使用干净 URL）。插件配置必须已由
+        # 管理页“AccessToken / 过期 -> 更新”写入并持久化；这里不再通过 URL hash 下发配置，
+        # 也不做 one-shot CDP 导航，避免增加 Playwright/CDP 连接风控面。
+        if await wait_extension_client(space_id, window_key, timeout_seconds=0.2) is None:
+            try:
+                await sess.pw_ctx.open_fingerprint_window_only(
+                    args=[project_page],
+                    force_open=sess.browser_force_open,
+                    headless=headless,
+                    pure_mode=pure_mode,
+                )
+                append_log(log_file, "[veo][extension] opened fingerprint window (clean url; extension config comes from cached storage)")
+            except Exception as e:
+                append_log(log_file, f"[veo][extension] open window for extension failed: {e}")
+            await wait_extension_client(
+                space_id,
+                window_key,
+                timeout_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
+            )
+        _ext_result = await submit_extension_task(
+            space_id=space_id,
+            window_key=window_key,
+            provider="veo",
+            payload=ext_payload,
+            progress_cb=progress_cb,
+            timeout_seconds=max_wait_seconds + 120.0,
+        )
+        if image_mode:
+            _ext_result = await _veo_extension_upload_upsample_data_url_to_oss(
+                _ext_result,
+                project_id=str(project_id),
+                log_file=log_file,
+            )
+        return _ext_result
+
     await sess.ensure_open(headless=headless, pure_mode=pure_mode)
     append_log(log_file, "[veo] browser open / CDP connected")
 
@@ -5048,21 +5716,6 @@ async def veo_workflow(
     sess._cancel_idle_close()
     await progress_cb(5, {"stage": "navigate", "url": project_page})
     append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
-
-    # 反风控注入：针对 bring_prefix 目标页（https://labs.google/fx/tools/flow/...）
-    # 在 access_token 获取与生成请求发起前，清理自动化痕迹并拦截遥测端点
-    '''
-    try:
-        await _veo_apply_anti_detection_bootstrap(sess, log_file=log_file)
-        # 让 init_script 在页面脚本之前生效：再刷一次
-        try:
-            await sess.pw_ctx.page.reload(wait_until="domcontentloaded", timeout=30_000)
-            await asyncio.sleep(1.0)
-        except Exception as _e_rl:
-            append_log(log_file, f"[veo][anti_detect] reload after inject failed: {_e_rl}")
-    except Exception as _e_anti:
-        append_log(log_file, f"[veo][anti_detect] skipped: {_e_anti}")
-    '''
 
     # --- reload 后深度拟人行为：给 reCAPTCHA 足够的行为信号积累 ---
     try:
@@ -5081,12 +5734,14 @@ async def veo_workflow(
 
     at = str(access_token or "").strip() or None
     exp_db = str(access_expires or "").strip() or None
+    window_pk_for_proxy = 0
     if db is not None and task_type_window_id:
         try:
             mid = int(task_type_window_id)
             if mid > 0:
                 row = await db.get_task_type_window_context(mid)
                 if row:
+                    window_pk_for_proxy = int(row.get("window_pk") or 0)
                     t2 = str(row.get("sora_access_token") or "").strip() or None
                     e2 = str(row.get("sora_access_expires") or "").strip() or None
                     if t2:
@@ -5096,36 +5751,46 @@ async def veo_workflow(
 
     tok_info: Optional[Dict[str, Any]] = None
     fetched_token_in_window = False
-    if _veo_cached_access_still_valid(at, exp_db, margin_seconds=renew_margin):
-        append_log(
-            log_file,
-            f"[veo] reuse mapping access_token (expires ok, margin_s={renew_margin:.0f}, skip window fetch)",
-        )
-        tok_info = {"access_token": at, "expires": exp_db or None}
-    else:
+    long_session_token = at
+    if not _veo_cached_access_still_valid(long_session_token, exp_db, margin_seconds=renew_margin):
         try:
-            tok_info = await veo_fetch_access_token_in_window(sess=sess, target_url=project_page)
+            long_tok = await fetch_long_access_token_in_window(sess=sess, target_url=project_page)
             fetched_token_in_window = True
-            at = str((tok_info or {}).get("access_token") or "").strip() or None
+            long_session_token = str((long_tok or {}).get("session_token") or (long_tok or {}).get("access_token") or "").strip() or None
+            exp_db = str((long_tok or {}).get("expires") or "").strip() or None
         except Exception as e:
-            append_log(log_file, f"[veo] fetch access_token in window failed: {e}")
-            at = None
-    if not at:
+            append_log(log_file, f"[veo] fetch session_token in window failed: {e}")
+            long_session_token = None
+    if not long_session_token:
         raise NonPenalizedTaskError(
-            "缺少可用的 access_token：请在任务窗口映射中配置 Labs access_token，或确保指纹窗口已登录并可取得凭证",
+            "缺少可用的 session_token：请在任务窗口映射中配置 Labs session-token，或确保指纹窗口已登录并可取得凭证",
             status_code=401,
         )
+    try:
+        tok_info = await get_cached_short_access_token_for_session(
+            sess,
+            session_token=long_session_token,
+            target_url=project_page,
+            db=db,
+            picked=SimpleNamespace(window_pk=window_pk_for_proxy),
+            log_file=log_file,
+        )
+        at = str((tok_info or {}).get("access_token") or "").strip() or None
+    except Exception as e:
+        append_log(log_file, f"[veo] fetch short access_token by proxy failed: {e}")
+        at = None
+    if not at:
+        raise NonPenalizedTaskError("缺少可用的 short access_token：auth/session 未返回 access_token", status_code=401)
     if fetched_token_in_window and db is not None and task_type_window_id:
         try:
             mid = int(task_type_window_id)
             if mid > 0:
-                expires = str((tok_info or {}).get("expires") or "").strip() or None
                 await db.update_task_type_window(
                     mapping_id=mid,
-                    sora_access_token=at,
-                    sora_access_expires=expires,
+                    sora_access_token=long_session_token,
+                    sora_access_expires=exp_db or None,
                 )
-                append_log(log_file, f"[veo] persisted Labs access_token to task_type_window id={mid}")
+                append_log(log_file, f"[veo] persisted Labs session_token to task_type_window id={mid}")
         except Exception as e:
             append_log(log_file, f"[veo] persist access_token to DB failed (non-fatal): {e}")
 

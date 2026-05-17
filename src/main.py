@@ -19,6 +19,7 @@ from .core.config import config
 from .core.database import Database
 from .core.logger import logger, setup_logging
 from .core.paths import STATIC_DIR, ensure_runtime_dirs
+from .services import browser_extension_bridge
 
 
 db = Database()
@@ -252,6 +253,7 @@ async def request_logger(request: Request, call_next):
 app.include_router(routes.router)
 app.include_router(admin.router)
 app.include_router(analyze.router)
+app.include_router(browser_extension_bridge.router)
 
 
 # 静态资源（js/css/img）

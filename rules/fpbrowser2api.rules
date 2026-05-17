@@ -34,7 +34,7 @@ FPBrowser2API（Python/FastAPI）项目说明与约定
 
 2) 启动方式
 - 在 fpbrowser2api/ 下执行：python main.py
-- 默认端口：8002（配置在 config/setting.toml 的 [server].port）
+- 默认端口：8000（配置在 config/setting.toml 的 [server].port）
 
 3) 数据库与“自动更新”
 - SQLite DB 文件：fpbrowser2api/data/fpbrowser.db

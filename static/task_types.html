@@ -196,6 +196,11 @@
                   <input class="form-control form-control-sm" id="typeErrRetry" type="number" min="0" max="10" value="0" />
                   <div class="text-muted small">任务失败后自动换窗口重试的次数，0=不重试。</div>
                 </div>
+                <div class="col-12 col-md-3">
+                  <label class="form-label form-label-tight">窗口调用间隔（秒）</label>
+                  <input class="form-control form-control-sm" id="typeWindowCallCooldown" type="number" min="0" max="3600" value="30" />
+                  <div class="text-muted small">窗口被调用后进入冷却，默认 30 秒；0=不冷却。</div>
+                </div>
                 <div class="col-12 col-md-6">
                   <label class="form-label form-label-tight">绑定项目</label>
                   <select class="form-select form-select-sm" id="typeProjectId">
@@ -860,6 +865,7 @@
           "typeErrCloseWinThr",
           "typeTimeout",
           "typeErrRetry",
+          "typeWindowCallCooldown",
           "typeCreateHandler",
           "typeQuotaHandler",
           "typeDefaultTargetUrl",
@@ -2401,6 +2407,7 @@
         document.getElementById("typeErrCloseWinThr").value = t?.continuous_error_close_window_threshold ?? 3;
         document.getElementById("typeTimeout").value = t?.timeout_seconds ?? 1800;
         document.getElementById("typeErrRetry").value = t?.error_retry_count ?? 0;
+        document.getElementById("typeWindowCallCooldown").value = t?.window_call_cooldown_seconds ?? 30;
         document.getElementById("typeCreateHandler").value = t?.create_task_handler || "";
         document.getElementById("typeQuotaHandler").value = t?.refresh_quota_handler || "";
         document.getElementById("typeDefaultTargetUrl").value = t?.default_target_url || "";
@@ -2441,6 +2448,7 @@
             continuous_error_close_window_threshold: parseInt(document.getElementById("typeErrCloseWinThr").value, 10) || 3,
             timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
             error_retry_count: parseInt(document.getElementById("typeErrRetry").value, 10) || 0,
+            window_call_cooldown_seconds: parseInt(document.getElementById("typeWindowCallCooldown").value, 10) || 0,
             create_task_handler: document.getElementById("typeCreateHandler").value || null,
             refresh_quota_handler: document.getElementById("typeQuotaHandler").value || null,
             default_target_url: document.getElementById("typeDefaultTargetUrl").value.trim() || null,
@@ -2921,7 +2929,7 @@
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
-                  <button class="btn btn-primary btn-sm btn-icon" title="AI操作：携带该窗口的平台账号、密码、2FA 和网址，让智能体通过 Playwright 自动操作" aria-label="AI操作" data-act="aiOperation" data-mid="${m.id}"><i class="bi bi-robot" aria-hidden="true"></i><span class="visually-hidden">AI操作</span></button>
+                  <button class="btn btn-primary btn-sm btn-icon" title="AI操作：携带该窗口的平台账号、密码、2FA 和网址，让智能体通过 Playwright 自动操作" aria-label="AI操作" data-act="aiOperation" data-mid="${m.id}">AI<span class="visually-hidden">AI操作</span></button>
 
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>

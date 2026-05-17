@@ -50,6 +50,7 @@ from .playwright_broswer_context import (
     safe_trim,
 )
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
+from .browser_extension_bridge import should_use_extension_executor, submit_extension_task
 from .browser_automation_base import FingerprintBrowserAutomationBase
 from .veo_workflow_executor import (
     _build_debug_progress_panel_script,
@@ -3757,7 +3758,34 @@ async def dreamina_workflow(
         "duration": duration,
         "image_count": len(image_refs) + len(prompt_subject_refs),
     })
+    '''
+    if should_use_extension_executor(p):
+        ext_payload = dict(p)
+        ext_payload.update(
+            {
+                "workflow_kind": "video",
+                "video_mode": video_mode,
+                "reference_mode": reference_mode,
+                "target_page": target_page,
+                "aspect_ratio": aspect_ratio,
+                "duration": duration,
+                "image_refs": image_refs,
+                "prompt_subject_refs": prompt_subject_refs,
+                "prompt_subject_ids": prompt_subject_ids,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        append_log(log_file, f"[dreamina][extension] dispatch video_mode={video_mode!r} refs={len(image_refs)}")
+        return await submit_extension_task(
+            space_id=space_id,
+            window_key=window_key,
+            provider="dreamina",
+            payload=ext_payload,
+            progress_cb=progress_cb,
+            timeout_seconds=max(60.0, float(timeout_seconds or 600.0)) + 120.0,
+        )
 
+    '''
     async with sess.create_lock:
         try:
             sess.idle_close_disabled = True

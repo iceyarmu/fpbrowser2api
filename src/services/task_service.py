@@ -16,6 +16,7 @@ from ..core.database import Database
 from ..core.logger import logger
 from ..core.models import Task
 from ..core.public_api_limits import DEFAULT_PUBLIC_CREATE_TASK_MAX_INFLIGHT, calc_public_browser_pool_limit
+from ..core.config import config as app_config
 from .image_task_executor import simulate_image_task
 from .playwright_broswer_context import (
     acquire_browser_open_slot,
@@ -78,6 +79,7 @@ from .veo_workflow_executor import (
     _veo_resolve_n_frames,
     get_or_create_veo_session,
     refresh_veo_balance_best_effort,
+    refresh_veo_balance_via_extension,
     veo_workflow,
 )
 from .jimeng_task_executor import (
@@ -378,15 +380,15 @@ class TaskService:
             #     except Exception as e:
             #         logger.exception("window_pool cloudflare tick: %s", e)
             # 暂停使用空闲窗口拟人操作。
-            if now >= next_human_activity:
-                try:
-                    await self._window_pool_human_activity_tick()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.exception("window_pool human activity tick: %s", e)
-                last_human_activity = time.monotonic()
-                next_human_activity = last_human_activity + self._window_pool_random_human_activity_delay()
+            # if now >= next_human_activity:
+            #     try:
+            #         await self._window_pool_human_activity_tick()
+            #     except asyncio.CancelledError:
+            #         raise
+            #     except Exception as e:
+            #         logger.exception("window_pool human activity tick: %s", e)
+            #     last_human_activity = time.monotonic()
+            #     next_human_activity = last_human_activity + self._window_pool_random_human_activity_delay()
             now = time.monotonic()
             due_r = max(0.0, last_reconcile + self._window_pool_reconcile_interval - now)
             due_c = max(0.0, last_cf + self._window_pool_cf_interval - now)
@@ -1726,6 +1728,23 @@ class TaskService:
             except Exception:
                 refresh_timeout_seconds = 60.0
 
+            async def _refresh_veo_balance_after_task() -> None:
+                if app_config.extension_executor_enabled:
+                    await refresh_veo_balance_via_extension(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                    )
+                else:
+                    await refresh_veo_balance_best_effort(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                        task_id=task_id,
+                    )
+
             try:
                 # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
                 if picked.create_task_handler == "sora_gen_video":
@@ -1859,13 +1878,7 @@ class TaskService:
                     pass
 
                 if picked.create_task_handler == "veo_workflow":
-                    await refresh_veo_balance_best_effort(
-                        db=self.db,
-                        picked=picked,
-                        refresh_timeout_seconds=refresh_timeout_seconds,
-                        signal_window_pool_replenish=self._signal_window_pool_replenish,
-                        task_id=task_id,
-                    )
+                    await _refresh_veo_balance_after_task()
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
                         db=self.db,
@@ -1902,13 +1915,7 @@ class TaskService:
                 logger.info("task completed: %s", task_id)
             except Exception as e:
                 if picked.create_task_handler == "veo_workflow":
-                    await refresh_veo_balance_best_effort(
-                        db=self.db,
-                        picked=picked,
-                        refresh_timeout_seconds=refresh_timeout_seconds,
-                        signal_window_pool_replenish=self._signal_window_pool_replenish,
-                        task_id=task_id,
-                    )
+                    await _refresh_veo_balance_after_task()
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
                         db=self.db,

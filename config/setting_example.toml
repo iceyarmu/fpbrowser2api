@@ -1,6 +1,6 @@
 [server]
 host = "0.0.0.0"
-port = 8002
+port = 8000
 
 [global]
 admin_username = "admin"
@@ -17,6 +17,18 @@ debug_enabled = false
 
 # 是否把日志写入本地文件（fpbrowser2api/app.log）
 log_to_file = false
+
+[extension_executor]
+# 是否全局默认使用浏览器插件执行器；false 时可在单个任务 payload 里传 executor="extension" 启用。
+enabled = false
+# 指纹浏览器插件连接 Python 后端的 WebSocket 地址。
+# 如果 Python 和指纹浏览器不在同一台电脑，必须填 Python 后端的局域网 IP，不能用 127.0.0.1。
+# 例如 Python 后端运行在 192.168.2.10:8000：
+# bridge_url = "ws://192.168.2.10:8000/api/extension/ws"
+bridge_url = ""
+# 可选鉴权 token；留空则不校验。若填写，插件自动配置 URL hash 中会携带该 token。
+bridge_token = ""
+task_timeout_seconds = 1800
 
 [ai_agent]
 # 大模型中转站地址在代码中固定为 https://www.newtoken.club/，这里仅配置默认模型和默认 API Key。

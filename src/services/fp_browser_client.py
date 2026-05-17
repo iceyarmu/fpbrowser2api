@@ -33,6 +33,28 @@ from urllib.parse import urlsplit
 import httpx
 
 
+_SUPPRESS_PASSWORD_PROMPT_ARGS = (
+    # 只关闭 Chromium 自带的「保存/生成密码」气泡，不禁用扩展，避免影响指纹浏览器里的插件。
+    "--disable-save-password-bubble",
+    "--disable-password-generation",
+    "--remote-debugging-address=0.0.0.0",
+)
+
+
+def _append_unique_arg(args: List[str], arg: str) -> None:
+    arg = str(arg or "").strip()
+    if arg and arg not in args:
+        args.append(arg)
+
+
+def _normalize_browser_args(args: Optional[List[str]]) -> List[str]:
+    """复制并去重 browser/open args，避免复用 session 参数时被反复 append。"""
+    normalized: List[str] = []
+    for raw in args or []:
+        _append_unique_arg(normalized, str(raw or "").strip())
+    return normalized
+
+
 class RoxyRateLimiter:
     """RoxyBrowser API 速率限制：每分钟最多 200 次调用。留余量 180/分钟。"""
 
@@ -222,18 +244,20 @@ class FPBrowserClient:
             workspace_id = int(space_id)
         except Exception:
             raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
-        args = args or []
+        args = _normalize_browser_args(args)
+        for arg in _SUPPRESS_PASSWORD_PROMPT_ARGS:
+            _append_unique_arg(args, arg)
         if headless:
             ##args.append("--headless=old") 容易触发机器人
             ##args.append("--disable-gpu") 容易触发机器人
-            args.append("--disable-software-rasterizer")
-            args.append("--disable-animations")
-            args.append("--disable-threaded-animation")
-            args.append("--disable-threaded-scrolling")
-            args.append("--mute-audio")
-            args.append("--disable-extensions")
-            args.append("--autoplay-policy=user-gesture-required")
-            args.append("--blink-settings=imagesEnabled=false")
+            _append_unique_arg(args, "--disable-software-rasterizer")
+            _append_unique_arg(args, "--disable-animations")
+            _append_unique_arg(args, "--disable-threaded-animation")
+            _append_unique_arg(args, "--disable-threaded-scrolling")
+            _append_unique_arg(args, "--mute-audio")
+            _append_unique_arg(args, "--disable-extensions")
+            _append_unique_arg(args, "--autoplay-policy=user-gesture-required")
+            _append_unique_arg(args, "--blink-settings=imagesEnabled=false")
         else:
             if pure_mode:
                 ##args.append("--disable-software-rasterizer")
@@ -243,7 +267,7 @@ class FPBrowserClient:
                 ##args.append("--mute-audio")
                 ##args.append("--disable-extensions")
                 ##args.append("--autoplay-policy=user-gesture-required")
-                args.append("--blink-settings=imagesEnabled=false")
+                _append_unique_arg(args, "--blink-settings=imagesEnabled=false")
                 pass
 
         return await self._roxy_open_browser(

@@ -349,6 +349,7 @@ class Database:
                     continuous_error_threshold INTEGER DEFAULT 3,
                     continuous_error_close_window_threshold INTEGER DEFAULT 3,
                     timeout_seconds INTEGER DEFAULT 1800,
+                    window_call_cooldown_seconds INTEGER DEFAULT 30,
                     create_task_handler TEXT,
                     refresh_quota_handler TEXT,
                     default_target_url TEXT,
@@ -719,6 +720,7 @@ class Database:
                     ("project_id", "INTEGER"),
                     ("error_retry_count", "INTEGER DEFAULT 0"),
                     ("default_target_url", "TEXT"),
+                    ("window_call_cooldown_seconds", "INTEGER DEFAULT 30"),
                     ("window_pool_enabled", "BOOLEAN DEFAULT 0"),
                     ("window_pool_reconcile_interval_sec", "INTEGER DEFAULT 600"),
                     ("window_pool_cloudflare_interval_sec", "INTEGER DEFAULT 1800"),
@@ -4018,6 +4020,7 @@ class Database:
         refresh_quota_handler: Optional[str] = None,
         error_retry_count: int = 0,
         default_target_url: Optional[str] = None,
+        window_call_cooldown_seconds: int = 30,
         window_pool_enabled: bool = False,
         window_pool_reconcile_interval_sec: int = 600,
         window_pool_cloudflare_interval_sec: int = 1800,
@@ -4027,11 +4030,11 @@ class Database:
                 """
                 INSERT INTO task_types (
                   name, code, project_id, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
-                  create_task_handler, refresh_quota_handler, error_retry_count, default_target_url,
+                  window_call_cooldown_seconds, create_task_handler, refresh_quota_handler, error_retry_count, default_target_url,
                   window_pool_enabled, window_pool_reconcile_interval_sec, window_pool_cloudflare_interval_sec,
                   enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
@@ -4041,6 +4044,7 @@ class Database:
                     int(continuous_error_threshold),
                     int(continuous_error_close_window_threshold),
                     int(timeout_seconds),
+                    int(window_call_cooldown_seconds),
                     (create_task_handler or "").strip() or None,
                     (refresh_quota_handler or "").strip() or None,
                     int(error_retry_count),
@@ -4068,6 +4072,7 @@ class Database:
         enabled: bool,
         error_retry_count: int = 0,
         default_target_url: Optional[str] = None,
+        window_call_cooldown_seconds: int = 30,
         window_pool_enabled: bool = False,
         window_pool_reconcile_interval_sec: int = 600,
         window_pool_cloudflare_interval_sec: int = 1800,
@@ -4096,7 +4101,7 @@ class Database:
                 """
                 UPDATE task_types
                 SET name=?, code=?, project_id=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
-                    create_task_handler=?, refresh_quota_handler=?, error_retry_count=?, default_target_url=?,
+                    window_call_cooldown_seconds=?, create_task_handler=?, refresh_quota_handler=?, error_retry_count=?, default_target_url=?,
                     window_pool_enabled=?, window_pool_reconcile_interval_sec=?, window_pool_cloudflare_interval_sec=?,
                     enabled=?, updated_at=datetime('now','localtime')
                 WHERE id=?
@@ -4109,6 +4114,7 @@ class Database:
                     int(continuous_error_threshold),
                     int(continuous_error_close_window_threshold),
                     int(timeout_seconds),
+                    int(window_call_cooldown_seconds),
                     (create_task_handler or "").strip() or None,
                     (refresh_quota_handler or "").strip() or None,
                     int(error_retry_count),
@@ -4146,7 +4152,13 @@ class Database:
                   s.space_id AS space_id,
                   b.vendor,
                   b.lan_addr,
-                  b.access_key
+                  b.access_key,
+                  (
+                    SELECT v.project_id FROM veo_flow_projects v
+                    WHERE v.task_type_window_id = m.id AND v.deleted = 0
+                    ORDER BY v.updated_at DESC, v.id DESC
+                    LIMIT 1
+                  ) AS current_project_id
                 FROM task_type_windows m
                 JOIN task_types t ON m.task_type_id = t.id
                 JOIN windows w ON m.window_pk = w.id
@@ -4806,7 +4818,6 @@ class Database:
                     mapping_id = int(picked["mapping_id"])
                     task_concurrency = max(1, int(picked["task_concurrency"] or 1))
                     threshold = max(1, int(picked["continuous_error_threshold"] or 1))
-
                     # Step 2: 条件 UPDATE，确保并发/健康度/额度约束仍成立（在同一事务内保证原子性）
                     cur2 = await db.execute(
                         """
@@ -4915,7 +4926,8 @@ class Database:
                         SELECT
                           m.id AS mapping_id,
                           t.concurrency AS task_concurrency,
-                          t.continuous_error_threshold AS continuous_error_threshold
+                          t.continuous_error_threshold AS continuous_error_threshold,
+                          COALESCE(t.window_call_cooldown_seconds, 30) AS window_call_cooldown_seconds
                         FROM task_types t
                         JOIN task_type_windows m ON m.task_type_id = t.id
                         JOIN windows w ON m.window_pk = w.id
@@ -4945,12 +4957,13 @@ class Database:
                     mapping_id = int(picked["mapping_id"])
                     task_concurrency = max(1, int(picked["task_concurrency"] or 1))
                     threshold = max(1, int(picked["continuous_error_threshold"] or 1))
+                    window_call_cooldown_seconds = max(0, int(picked["window_call_cooldown_seconds"] or 30))
 
                     cur2 = await db.execute(
                         """
                         UPDATE task_type_windows
                         SET inflight_slots = COALESCE(inflight_slots, 0) + 1,
-                            error_cooldown_until = datetime('now','localtime', '+30 seconds'),
+                            error_cooldown_until = datetime('now','localtime', ?),
                             updated_at = datetime('now','localtime')
                         WHERE id = ?
                           AND deleted = 0 AND enabled = 1
@@ -4962,7 +4975,7 @@ class Database:
                           )
                           AND (error_cooldown_until IS NULL OR error_cooldown_until <= datetime('now','localtime'))
                         """,
-                        (mapping_id, threshold, task_concurrency, quota_floor),
+                        (f"+{window_call_cooldown_seconds} seconds", mapping_id, threshold, task_concurrency, quota_floor),
                     )
                     if int(cur2.rowcount or 0) <= 0:
                         await db.execute("ROLLBACK")

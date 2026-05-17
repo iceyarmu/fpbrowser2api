@@ -10,7 +10,9 @@ import secrets
 import shlex
 import subprocess
 from datetime import datetime
+from urllib.parse import urlparse
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 import httpx
@@ -36,11 +38,21 @@ def _admin_manual_open_target_url(ctx_row: Dict[str, Any]) -> str:
     """窗口列表左侧“打开”按钮使用的目标页。
 
     优先使用任务类型配置的 default_target_url；未配置时按工作流给一个默认目标页。
+    对 Veo：若该窗口已绑定 Flow project_id，则优先打开对应 project_page。
     """
     default_target_url = str(ctx_row.get("default_target_url") or "").strip()
+    handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
+    if handler == "veo_workflow":
+        try:
+            from ..services.veo_workflow_executor import _veo_project_page_url  # type: ignore
+
+            project_id = str(ctx_row.get("current_project_id") or ctx_row.get("veo_project_id") or "").strip()
+            if project_id:
+                return _veo_project_page_url(project_id=project_id, hint_url=default_target_url or "https://labs.google/fx")
+        except Exception:
+            pass
     if default_target_url:
         return default_target_url
-    handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
     if handler == "veo_workflow":
         return "https://veo.google.com"
     if handler == "grok_workflow":
@@ -60,11 +72,40 @@ def _admin_manual_open_target_url(ctx_row: Dict[str, Any]) -> str:
     return "https://sora.chatgpt.com/drafts"
 
 
+def _safe_hostname(url: str) -> str:
+    try:
+        return str(urlparse(str(url or "").strip()).hostname or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _main_domain(hostname: str) -> str:
+    host = str(hostname or "").strip().lower().strip(".")
+    if not host:
+        return ""
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return host
+    second_level_markers = {"ac", "co", "com", "edu", "gov", "net", "org"}
+    country_tlds = {"au", "br", "cn", "hk", "jp", "kr", "mx", "nz", "sg", "tw", "uk", "za"}
+    if len(parts[-1]) == 2 and parts[-1] in country_tlds and parts[-2] in second_level_markers and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _same_main_domain(url_a: str, url_b: str) -> bool:
+    host_a = _safe_hostname(url_a)
+    host_b = _safe_hostname(url_b)
+    if not host_a or not host_b:
+        return False
+    return _main_domain(host_a) == _main_domain(host_b)
+
+
 async def _ensure_manual_open_has_target_page(pw_ctx: Any, target_url: str) -> str:
     """打开/唤起指纹窗口后，确保窗口内存在目标页或其子页面。
 
-    规则：若已有 http(s) 页面 URL 以目标 URL 为前缀（去掉 query/hash 与末尾 / 后比较），则置前；
-    否则复用 about:blank，仍没有则新建 page，并打开目标页。
+    规则：先找目标 URL 前缀一致页面；再找主域名一致页面并复用导航；
+    最后才复用其它可用页/新建 page，避免同主域名页面重复打开。
     """
     from ..services.playwright_broswer_context import pick_working_page_from_context  # type: ignore
 
@@ -83,6 +124,7 @@ async def _ensure_manual_open_has_target_page(pw_ctx: Any, target_url: str) -> s
 
     target_base = _base(target)
     pages = list(getattr(ctx, "pages", []) or [])
+    same_domain_page = None
     for p in pages:
         try:
             if bool(getattr(p, "is_closed", lambda: False)()):
@@ -95,10 +137,12 @@ async def _ensure_manual_open_has_target_page(pw_ctx: Any, target_url: str) -> s
                 except Exception:
                     pass
                 return u
+            if same_domain_page is None and _same_main_domain(u, target):
+                same_domain_page = p
         except Exception:
             continue
 
-    page = await pick_working_page_from_context(ctx)
+    page = same_domain_page or await pick_working_page_from_context(ctx)
     await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
     try:
         await page.bring_to_front()
@@ -397,6 +441,7 @@ class CreateTaskTypeRequest(BaseModel):
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
+    window_call_cooldown_seconds: int = Field(default=30, ge=0, le=3600)
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
     error_retry_count: int = Field(default=0, ge=0, le=10)
@@ -414,6 +459,7 @@ class UpdateTaskTypeRequest(BaseModel):
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
+    window_call_cooldown_seconds: int = Field(default=30, ge=0, le=3600)
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
     error_retry_count: int = Field(default=0, ge=0, le=10)
@@ -3806,6 +3852,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             req.continuous_error_threshold,
             req.continuous_error_close_window_threshold,
             req.timeout_seconds,
+            window_call_cooldown_seconds=req.window_call_cooldown_seconds,
             create_task_handler=req.create_task_handler,
             refresh_quota_handler=req.refresh_quota_handler,
             error_retry_count=req.error_retry_count,
@@ -3852,6 +3899,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             continuous_error_threshold=req.continuous_error_threshold,
             continuous_error_close_window_threshold=req.continuous_error_close_window_threshold,
             timeout_seconds=req.timeout_seconds,
+            window_call_cooldown_seconds=req.window_call_cooldown_seconds,
             create_task_handler=req.create_task_handler,
             refresh_quota_handler=req.refresh_quota_handler,
             enabled=req.enabled,
@@ -3910,7 +3958,7 @@ async def refresh_mapping_remaining_quota(
     )
 
     create_handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
-    # veo_workflow：始终走指纹窗口内 fetch credits（与刷新会员信息一致），不依赖任务类型上选的 refresh_quota_handler
+    # veo_workflow：始终走 VEO 两层代理 fetch credits，不依赖任务类型上选的 refresh_quota_handler
     if create_handler == "veo_workflow":
         fn = refresh_quota__veo_flow_credits
         handler_used = "veo_flow_credits"
@@ -4065,27 +4113,41 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         }
 
     if handler == "veo_workflow":
-        # 在指纹浏览器页面内请求 credits（与 Sora 的 page_fetch_json 一致，走窗口网络栈）
+        # VEO：使用已保存的长效 session-token，通过两层代理换短效 access_token 后请求 credits；
+        # 不再打开/依赖指纹浏览器窗口。
         from ..services.veo_workflow_executor import (  # type: ignore
-            get_or_create_veo_session,
+            fetch_short_access_token_by_proxy,
             veo_fetch_credits_in_window,
             veo_format_paygate_tier_label,
         )
 
-        at = str(ctx_row.get("sora_access_token") or "").strip()
-        if not at:
-            raise HTTPException(status_code=400, detail="缺少 access_token，请先获取并保存")
+        long_session_token = str(ctx_row.get("sora_access_token") or "").strip()
+        if not long_session_token:
+            raise HTTPException(status_code=400, detail="缺少 session-token，请先获取并保存")
 
         default_target_url = str(ctx_row.get("default_target_url") or "").strip()
         target_url = default_target_url or "https://labs.google/fx"
-
-        veo_ctx = get_or_create_veo_session(
-            vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
+        picked = SimpleNamespace(
+            window_pk=int(ctx_row.get("window_pk") or 0),
+            mapping_id=int(mapping_id),
+            space_id=space_id,
+            window_key=window_key,
         )
-        veo_ctx.browser_headless = headless
 
         try:
-            info = await veo_fetch_credits_in_window(sess=veo_ctx, target_url=target_url, access_token=at)
+            short_info = await fetch_short_access_token_by_proxy(
+                session_token=long_session_token,
+                target_url=target_url,
+                db=db,
+                picked=picked,
+            )
+            info = await veo_fetch_credits_in_window(
+                sess=None,
+                target_url=target_url,
+                access_token=str((short_info or {}).get("access_token") or ""),
+                db=db,
+                picked=picked,
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
 
@@ -4096,10 +4158,6 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             mapping_id=mapping_id,
             sora_plan_title=plan_title,
         )
-        try:
-            await veo_ctx.disconnect_playwright_under_bring_lock()
-        except Exception:
-            pass
         return {
             "success": True,
             "mapping_id": mapping_id,
@@ -4324,22 +4382,30 @@ async def convert_sora_session_token_to_access_token(
         }
 
     if handler == "veo_workflow":
-        default_target_url = str(ctx_row.get("default_target_url") or "").strip()
-        target_url = default_target_url or "https://labs.google/fx"
+        target_url = _admin_manual_open_target_url(ctx_row) or "https://labs.google/fx"
 
         try:
-            from ..services.veo_workflow_executor import get_or_create_veo_session, veo_fetch_access_token_in_window  # type: ignore
+            from ..services.veo_workflow_executor import (  # type: ignore
+                fetch_long_access_token_in_window,
+                get_or_create_veo_session,
+            )
+            from ..services.browser_extension_bridge import annotate_url_with_extension_config  # type: ignore
 
             veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
             veo_ctx.browser_headless = headless
-            info = await veo_fetch_access_token_in_window(sess=veo_ctx, target_url=target_url)
+            # “更新 AccessToken / 过期”是唯一主动向插件下发 space_id/window_key/bridge_url 的入口。
+            # content script 收到 fpb_* 后会写入 chrome.storage.local，之后窗口关闭/重启仍沿用缓存。
+            long_info = await fetch_long_access_token_in_window(
+                sess=veo_ctx,
+                target_url=annotate_url_with_extension_config(target_url, space_id=space_id, window_key=window_key),
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
 
-        access_token = str((info or {}).get("access_token") or "").strip() or None
-        expires = str((info or {}).get("expires") or "").strip() or None
+        access_token = str((long_info or {}).get("session_token") or (long_info or {}).get("access_token") or "").strip() or None
+        expires = str((long_info or {}).get("expires") or "").strip() or None
         if not access_token:
-            raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 access_token / session_token")
+            raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 session_token")
 
         await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
         try:
@@ -4351,7 +4417,7 @@ async def convert_sora_session_token_to_access_token(
             "mapping_id": mapping_id,
             "access_token": access_token,
             "expires": expires,
-            "session_token": str((info or {}).get("session_token") or "").strip() or None,
+            "session_token": str((long_info or {}).get("session_token") or "").strip() or None,
             "source": "window",
         }
     else:

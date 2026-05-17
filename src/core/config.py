@@ -57,7 +57,7 @@ class Config:
 
     @property
     def server_port(self) -> int:
-        return int(self._config.get("server", {}).get("port", 8002))
+        return int(self._config.get("server", {}).get("port", 8000))
 
     # -------- global/security --------
     @property
@@ -136,6 +136,49 @@ class Config:
     def set_stop_accepting_tasks_from_db(self, enabled: bool) -> None:
         self._stop_accepting_tasks = bool(enabled)
         self._config.setdefault("system", {})["stop_accepting_tasks"] = bool(enabled)
+
+    # -------- browser extension executor --------
+    @property
+    def extension_executor_enabled(self) -> bool:
+        import os
+        raw = os.getenv("FPB_EXTENSION_EXECUTOR_ENABLED", "")
+        if raw.strip():
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._config.get("extension_executor", {}).get("enabled", False))
+
+    @property
+    def extension_bridge_token(self) -> str:
+        import os
+        raw = os.getenv("FPB_EXTENSION_BRIDGE_TOKEN", "")
+        if raw.strip():
+            return raw.strip()
+        return str(self._config.get("extension_executor", {}).get("bridge_token", "") or "")
+
+    @property
+    def extension_bridge_url(self) -> str:
+        """浏览器插件连接 Python 后端的 WebSocket 地址。
+
+        指纹浏览器和 Python 不在同一台机器时，应在 config/setting.toml 中配置成
+        ws://<Python后端局域网IP>:<端口>/api/extension/ws
+        环境变量 FPB_EXTENSION_BRIDGE_URL 仍保留为最高优先级覆盖。
+        """
+        import os
+        raw = os.getenv("FPB_EXTENSION_BRIDGE_URL", "")
+        if raw.strip():
+            return raw.strip()
+        return str(self._config.get("extension_executor", {}).get("bridge_url", "") or "").strip()
+
+    @property
+    def extension_task_timeout_seconds(self) -> float:
+        import os
+        raw = os.getenv("FPB_EXTENSION_TASK_TIMEOUT_SECONDS", "")
+        if raw.strip():
+            try:
+                return max(1.0, float(raw))
+            except ValueError:
+                pass
+        return max(1.0, float(self._config.get("extension_executor", {}).get("task_timeout_seconds", 1800.0)))
+
 
 
 config = Config()

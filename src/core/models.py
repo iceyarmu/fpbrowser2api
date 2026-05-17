@@ -190,6 +190,8 @@ class TaskType(BaseModel):
     continuous_error_threshold: int = 3
     continuous_error_close_window_threshold: int = 3
     timeout_seconds: int = 1800
+    # 窗口调用冷却时间（秒）：从窗口池取用窗口后，短时间内不再重复调用同一窗口
+    window_call_cooldown_seconds: int = 30
     # 动态函数 key（来自 services/task_handler_registry.py）
     create_task_handler: Optional[str] = None
     refresh_quota_handler: Optional[str] = None
@@ -205,6 +207,13 @@ class TaskType(BaseModel):
     deleted: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @field_validator("window_call_cooldown_seconds", mode="before")
+    @classmethod
+    def _coerce_window_call_cooldown(cls, v: Any) -> int:
+        if v is None:
+            return 30
+        return int(v)
 
     @field_validator("window_pool_reconcile_interval_sec", mode="before")
     @classmethod
