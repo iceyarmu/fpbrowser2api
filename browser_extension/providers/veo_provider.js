@@ -206,7 +206,7 @@ async function getAccessTokenFromPage(tabId) {
             if (!r.ok) continue;
             const j = await r.json();
             const tok = j && (j.accessToken || j.access_token || j.token);
-            if (tok) return { access_token: tok, expires: j.expires || null };
+            if (tok) return { access_token: tok, expires: j.expires || null, email: (j.user && j.user.email) || null };
           } catch (_) {}
         }
         return {};
@@ -216,6 +216,178 @@ async function getAccessTokenFromPage(tabId) {
   });
   if (!result || !result.access_token) throw new Error(`VEO access token not found: ${JSON.stringify(result || {})}`);
   return result;
+}
+
+function cookieExpiresToIso(cookie) {
+  const exp = Number(cookie && cookie.expirationDate);
+  if (!Number.isFinite(exp) || exp <= 0) return null;
+  try {
+    return new Date(exp * 1000).toISOString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function veoCookieUrl(targetUrl) {
+  try {
+    const u = new URL(targetUrl || "https://labs.google/fx");
+    if (!/(\.|^)labs\.google$/i.test(u.hostname)) return "https://labs.google/fx";
+    return `${u.origin}/fx`;
+  } catch (_) {
+    return "https://labs.google/fx";
+  }
+}
+
+async function getLongAccessTokenFromCookies(targetUrl) {
+  const url = veoCookieUrl(targetUrl);
+  const baseName = "__Secure-next-auth.session-token";
+  let exact = null;
+  try {
+    exact = await chrome.cookies.get({ url, name: baseName });
+  } catch (_) {
+    exact = null;
+  }
+  if (exact && exact.value) {
+    return {
+      access_token: exact.value,
+      session_token: exact.value,
+      expires: cookieExpiresToIso(exact),
+      cookie_name: exact.name
+    };
+  }
+
+  let cookies = [];
+  try {
+    cookies = await chrome.cookies.getAll({ url });
+  } catch (_) {
+    cookies = [];
+  }
+  const parts = cookies
+    .filter(c => c && typeof c.name === "string" && (c.name === baseName || c.name.startsWith(`${baseName}.`)) && c.value)
+    .sort((a, b) => {
+      const ai = a.name === baseName ? -1 : Number.parseInt(a.name.slice(baseName.length + 1), 10);
+      const bi = b.name === baseName ? -1 : Number.parseInt(b.name.slice(baseName.length + 1), 10);
+      return (Number.isFinite(ai) ? ai : 9999) - (Number.isFinite(bi) ? bi : 9999);
+    });
+  if (!parts.length) {
+    throw new Error("未找到 __Secure-next-auth.session-token cookie（请确认窗口已登录 Google/VEO）");
+  }
+  const token = parts.map(c => String(c.value || "")).join("");
+  if (!token) throw new Error("VEO long session-token cookie 为空");
+  const expCookie = parts.find(c => Number(c.expirationDate) > 0) || parts[0];
+  return {
+    access_token: token,
+    session_token: token,
+    expires: cookieExpiresToIso(expCookie),
+    cookie_name: parts.length === 1 ? parts[0].name : `${baseName}.*`,
+    cookie_parts: parts.length
+  };
+}
+
+async function fetchShortAccessTokenByExtensionFetch(targetUrl) {
+  const cookieUrl = veoCookieUrl(targetUrl);
+  const origin = new URL(cookieUrl).origin;
+  const tries = [
+    `${origin}/fx/api/auth/session`,
+    `${origin}/api/auth/session`
+  ];
+  let last = "";
+  for (const u of tries) {
+    try {
+      const r = await fetch(u, {
+        method: "GET",
+        credentials: "include",
+        headers: { "Accept": "application/json" }
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        last = `HTTP ${r.status} ${text.slice(0, 200)}`;
+        continue;
+      }
+      const j = text ? JSON.parse(text) : {};
+      const tok = j && (j.accessToken || j.access_token || j.token);
+      if (tok) {
+        return {
+          access_token: tok,
+          expires: j.expires || null,
+          email: (j.user && j.user.email) || null
+        };
+      }
+      last = `auth/session missing token: ${JSON.stringify(j).slice(0, 200)}`;
+    } catch (e) {
+      last = String((e && e.message) || e || "");
+    }
+  }
+  throw new Error(last || "auth/session 未返回 access_token");
+}
+
+async function fetchVeoLongAccessTokenTask(msg, runtime) {
+  const p = msg.payload || {};
+  const targetUrl = p.target_url || p.project_page || "https://labs.google/fx";
+  await runtime.progress(5, { stage: "long_access_token" });
+  const longInfo = await getLongAccessTokenFromCookies(targetUrl);
+  await runtime.progress(100, { stage: "done", token_kind: "long" });
+  return {
+    type: "veo_long_access_token",
+    ...longInfo,
+    source: "extension.cookies"
+  };
+}
+
+async function fetchVeoShortAccessTokenTask(msg, runtime) {
+  const p = msg.payload || {};
+  const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  await runtime.progress(5, { stage: "short_access_token" });
+  let shortInfo = null;
+  try {
+    shortInfo = await fetchShortAccessTokenByExtensionFetch(projectPage);
+  } catch (_) {
+    const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+    shortInfo = await getAccessTokenFromPage(tabId);
+  }
+  await runtime.progress(100, { stage: "done", token_kind: "short" });
+  return {
+    type: "veo_short_access_token",
+    access_token: shortInfo.access_token,
+    expires: shortInfo.expires || null,
+    email: shortInfo.email || null,
+    source: "extension.auth_session"
+  };
+}
+
+async function fetchVeoAccessTokensTask(msg, runtime) {
+  const p = msg.payload || {};
+  const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  await runtime.progress(3, { stage: "long_access_token" });
+  const longInfo = await getLongAccessTokenFromCookies(projectPage);
+
+  await runtime.progress(15, { stage: "short_access_token" });
+  let shortInfo = null;
+  let shortSource = "extension.fetch";
+  try {
+    shortInfo = await fetchShortAccessTokenByExtensionFetch(projectPage);
+  } catch (e) {
+    shortSource = "page.auth_session";
+    await runtime.progress(20, { stage: "short_access_token_page_fallback", error: String((e && e.message) || e || "").slice(0, 200) });
+    const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+    shortInfo = await getAccessTokenFromPage(tabId);
+  }
+  if (!longInfo.session_token) throw new Error("VEO long session_token not found");
+  if (!shortInfo || !shortInfo.access_token) throw new Error("VEO short access_token not found");
+  await runtime.progress(100, { stage: "done", token_kind: "long_short" });
+  return {
+    type: "veo_access_tokens",
+    access_token: longInfo.session_token,
+    session_token: longInfo.session_token,
+    expires: longInfo.expires || null,
+    cookie_name: longInfo.cookie_name || null,
+    cookie_parts: longInfo.cookie_parts || 1,
+    short_access_token: shortInfo.access_token,
+    short_expires: shortInfo.expires || null,
+    email: shortInfo.email || null,
+    source: "extension",
+    short_source: shortSource
+  };
 }
 
 function normalizeCreditsPayload(data) {
@@ -865,6 +1037,16 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
 
 export async function runVeoTask(msg, runtime) {
   const p = msg.payload || {};
+  const action = String(p.action || p.workflow_kind || "").trim();
+  if (action === "fetch_long_access_token") {
+    return await fetchVeoLongAccessTokenTask(msg, runtime);
+  }
+  if (action === "fetch_short_access_token") {
+    return await fetchVeoShortAccessTokenTask(msg, runtime);
+  }
+  if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
+    return await fetchVeoAccessTokensTask(msg, runtime);
+  }
   try {
     const got = await chrome.storage.local.get(["veo_archive_enabled"]);
     const enabled = got.veo_archive_enabled !== false; // default enabled

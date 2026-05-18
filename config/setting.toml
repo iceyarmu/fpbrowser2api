@@ -16,9 +16,9 @@ log_to_file = false
 [extension_executor]
 # 是否全局默认使用浏览器插件执行器；false 时可在单个任务 payload 里传 executor="extension" 启用
 enabled = true
-# 指纹浏览器插件连接 Python 后端的 WebSocket 地址。
-# 注意：如果 Python 和指纹浏览器不在同一台电脑，这里必须填 Python 后端的局域网 IP，不能用 127.0.0.1。
-bridge_url = "ws://192.168.1.4:8000/api/extension/ws"
+base_url = "127.0.0.1:8000"
+# 指纹浏览器插件连接 Python 后端的 WebSocket 地址为f"ws://{base_url}/api/extension/ws"
+# 插件配置中转页：Python 先打开f"http://{base_url}/"页面写入 fpb_* 与 redirect_url，插件连接 WS 后再跳转目标站点。
 # 可选鉴权 token；留空则不校验
 bridge_token = ""
 task_timeout_seconds = 1800

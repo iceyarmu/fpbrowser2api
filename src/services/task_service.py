@@ -32,7 +32,6 @@ from .sora_task_executor import (
 )
 from .task_executor_types import NonPenalizedTaskError
 from .window_human_activity import (
-    perform_human_activity_for_window_mapping,
     random_human_activity_delay,
 )
 
@@ -78,8 +77,8 @@ from .grok_workflow_executor import (
 from .veo_workflow_executor import (
     _veo_resolve_n_frames,
     get_or_create_veo_session,
-    refresh_veo_balance_best_effort,
     refresh_veo_balance_via_extension,
+    veo_fetch_access_tokens_via_extension,
     veo_workflow,
 )
 from .jimeng_task_executor import (
@@ -91,6 +90,7 @@ from .jimeng_task_executor import (
     _DREAMINA_MIN_CREDIT,
     _DREAMINA_GIFT_CREDIT,
 )
+from .gpt_task_executor import gpt_workflow, gpt_fetch_access_token_in_window, DEFAULT_GPT_TARGET
 
 
 @dataclass
@@ -115,7 +115,6 @@ class PickedWindow:
     headless: bool = False
     pure_mode: bool = True
     error_retry_count: int = 0
-
 
 @dataclass
 class QueuedTask:
@@ -328,8 +327,6 @@ class TaskService:
         # 首轮尽快 reconcile 一次以预热池；之后按 _window_pool_reconcile_interval
         last_reconcile = time.monotonic() - self._window_pool_reconcile_interval
         # 空闲窗口拟人操作：启动后按 [_window_pool_reconcile_interval, _window_pool_cf_interval] 随机延迟执行
-        last_human_activity = time.monotonic()
-        next_human_activity = last_human_activity + self._window_pool_random_human_activity_delay()
         while not self._window_pool_stop.is_set():
             try:
                 r_sec, c_sec = await self.db.get_window_pool_maintainer_intervals_seconds()
@@ -337,23 +334,6 @@ class TaskService:
                 self._window_pool_cf_interval = float(c_sec)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
-            try:
-                # 配置热更新后，保证下一次拟人操作仍落在“上次执行时间 + [reconcile, cf]”范围内。
-                min_human_delay = max(
-                    1.0,
-                    float(min(self._window_pool_reconcile_interval, self._window_pool_cf_interval)),
-                )
-                max_human_delay = max(
-                    min_human_delay,
-                    float(max(self._window_pool_reconcile_interval, self._window_pool_cf_interval)),
-                )
-                scheduled_delay = next_human_activity - last_human_activity
-                if scheduled_delay < min_human_delay or scheduled_delay > max_human_delay:
-                    next_human_activity = (
-                        last_human_activity + self._window_pool_random_human_activity_delay()
-                    )
             except Exception:
                 pass
             now = time.monotonic()
@@ -370,30 +350,10 @@ class TaskService:
                 except Exception as e:
                     logger.exception("window_pool reconcile: %s", e)
             now = time.monotonic()
-            # 暂停使用 Cloudflare 检测。
-            # if now - last_cf >= self._window_pool_cf_interval:
-            #     last_cf = now
-            #     try:
-            #         await self._window_pool_cloudflare_tick()
-            #     except asyncio.CancelledError:
-            #         raise
-            #     except Exception as e:
-            #         logger.exception("window_pool cloudflare tick: %s", e)
-            # 暂停使用空闲窗口拟人操作。
-            # if now >= next_human_activity:
-            #     try:
-            #         await self._window_pool_human_activity_tick()
-            #     except asyncio.CancelledError:
-            #         raise
-            #     except Exception as e:
-            #         logger.exception("window_pool human activity tick: %s", e)
-            #     last_human_activity = time.monotonic()
-            #     next_human_activity = last_human_activity + self._window_pool_random_human_activity_delay()
             now = time.monotonic()
             due_r = max(0.0, last_reconcile + self._window_pool_reconcile_interval - now)
             due_c = max(0.0, last_cf + self._window_pool_cf_interval - now)
-            due_h = max(0.0, next_human_activity - now)
-            wait = min(due_r, due_c, due_h, self._window_pool_supervisor_poll_cap)
+            wait = min(due_r, due_c, self._window_pool_supervisor_poll_cap)
             wait = max(0.1, wait)
             if await self._window_pool_wait_interruptible(wait):
                 break
@@ -575,51 +535,6 @@ class TaskService:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def _window_pool_human_activity_tick(self) -> None:
-        """对当前窗口池中的所有窗口做一轮拟人化页面操作。"""
-        async with self._window_pool_lock:
-            mids: list[int] = sorted(
-                {
-                    int(mid)
-                    for ids in self._window_pool_targets.values()
-                    for mid in (ids or set())
-                    if int(mid) > 0
-                }
-            )
-        if not mids:
-            return
-        random.shuffle(mids)
-        logger.info("window_pool human activity tick: windows=%d", len(mids))
-        for mid in mids:
-            if self._window_pool_stop.is_set():
-                return
-            try:
-                await asyncio.wait_for(
-                    self._window_pool_human_activity_one(mid),
-                    timeout=240.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("window_pool human activity mapping=%s timeout", mid)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning("window_pool human activity mapping=%s err=%s", mid, e)
-
-            if self._window_pool_stop.is_set():
-                return
-            try:
-                await asyncio.wait_for(
-                    self._window_pool_stop.wait(),
-                    timeout=random.uniform(0.2, 1.2),
-                )
-                return
-            except asyncio.TimeoutError:
-                pass
-
-
-    async def _window_pool_human_activity_one(self, mapping_id: int) -> None:
-        """连接单个窗口 CDP，并通过 browser_automation_base 执行拟人操作。"""
-        await perform_human_activity_for_window_mapping(self.db, mapping_id)
 
     async def _window_pool_reconcile_once(self) -> None:
         async with self._window_pool_reconcile_serial:
@@ -635,18 +550,26 @@ class TaskService:
             return
 
         new_targets: dict[str, set[int]] = {}
+        # 任务类型仍存在、但被禁用或关闭了窗口池时，只应从窗口池管理集合中移除，
+        # 不能主动关闭已经由窗口池/用户打开的指纹浏览器窗口。
+        #
+        # 之前这里把这类 code 直接从 new_targets 里略过，后面的 diff 逻辑会把
+        # prev[code] 全部视为「需要关闭」，导致后台保存“关闭窗口池”后整批窗口
+        # 被 _window_pool_close_mapping 调度 idle close。
+        inactive_existing_codes: set[str] = set()
 
         for t in all_types:
             if self._window_pool_stop.is_set():
                 return
-            if not t.enabled or not bool(getattr(t, "window_pool_enabled", False)):
-                continue
             code = (t.code or "").strip()
             if not code:
                 continue
+            if not t.enabled or not bool(getattr(t, "window_pool_enabled", False)):
+                inactive_existing_codes.add(code)
+                continue
             handler = (t.create_task_handler or "").strip()
             credit_threthold = 1;
-            if handler in ("veo_workflow", "grok_workflow"):
+            if handler in ("veo_workflow", "grok_workflow", "gpt_workflow"):
                 hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
                 floor = 30 if hi else 10
             else:
@@ -667,6 +590,13 @@ class TaskService:
         to_close: list[int] = []
         for code, old_set in prev.items():
             if code not in new_targets:
+                if code in inactive_existing_codes:
+                    logger.info(
+                        "window_pool disabled for task_type=%s; detach %d managed windows without closing",
+                        code,
+                        len(old_set),
+                    )
+                    continue
                 to_close.extend(old_set)
             else:
                 to_close.extend(old_set - new_targets[code])
@@ -690,12 +620,9 @@ class TaskService:
                     s = self._window_pool_targets.get(code)
                     if s is not None:
                         s.discard(mid)
-                try:
-                    await self.db.update_task_type_window(mapping_id=mid, enabled=False)
-                except Exception as e:
-                    logger.warning(
-                        "window_pool disable mapping=%s after open failure: %s", mid, e
-                    )
+                logger.warning(
+                    "window_pool open mapping=%s failed; keep mapping enabled", mid
+                )
             await asyncio.sleep(0)
 
     async def _window_pool_open_mapping(self, mapping_id: int) -> bool:
@@ -723,7 +650,7 @@ class TaskService:
                     tu = target_url or "https://labs.google/fx"
                     if picked_pid is not None:
                         tu = f"https://labs.google/fx/tools/flow/project/{picked_pid}"
-                    
+
                     sess = get_or_create_veo_session(
                         vendor=vendor,
                         base_url=base_url,
@@ -735,17 +662,46 @@ class TaskService:
                     sess.browser_pure_mode = pure_mode
                     sess.idle_close_disabled = True
                     sess._cancel_idle_close()
-                    await sess.ensure_open(
-                        args=[],
-                        force_open=False,
-                        headless=headless,
-                        pure_mode=pure_mode,
-                    )
-                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
+
                     try:
-                        await sess.disconnect_playwright_under_bring_lock()
-                    except Exception:
-                        pass
+                        # VEO 窗口池只打开/唤起目标窗口，不连接 CDP，降低 Playwright 暴露面。
+                        await sess.pw_ctx.open_fingerprint_window_only(
+                            args=[tu],
+                            force_open=sess.browser_force_open,
+                            headless=headless,
+                            pure_mode=pure_mode,
+                        )
+                        await asyncio.sleep(3.0)
+                    except Exception as e:
+                        logger.warning("window_pool open VEO mapping=%s by open-only failed: %s", mapping_id, e)
+                        return False
+
+                    token_info = None
+                    try:
+                        token_info = await veo_fetch_access_tokens_via_extension(
+                            sess=sess,
+                            target_url=tu,
+                            space_id=space_id,
+                            window_key=window_key,
+                            connect_wait_seconds=8.0,
+                            token_timeout_seconds=45.0,
+                            log_file=sess._log_file,
+                        )
+                    except Exception as e:
+                        logger.warning("window_pool VEO extension token mapping=%s failed: %s", mapping_id, e)
+                        try:
+                            await self.db.update_task_type_window(mapping_id=mapping_id, enabled=False)
+                        except Exception:
+                            pass
+                        return True
+
+                    long_session_token = str((token_info or {}).get("session_token") or (token_info or {}).get("access_token") or "").strip()
+                    if long_session_token:
+                        await self.db.update_task_type_window(
+                            mapping_id=mapping_id,
+                            sora_access_token=long_session_token,
+                            sora_access_expires=str((token_info or {}).get("expires") or "").strip() or None,
+                        )
                     return True
                 elif handler == "grok_workflow":
                     tu = target_url or DEFAULT_GROK_TARGET
@@ -794,6 +750,49 @@ class TaskService:
                     await ds._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
                     try:
                         await ds.disconnect_playwright_under_bring_lock()
+                    except Exception:
+                        pass
+                    return True
+                elif handler == "gpt_workflow":
+                    from .gpt_task_executor import DEFAULT_GPT_TARGET, gpt_fetch_access_token_in_window  # type: ignore
+
+                    tu = target_url or DEFAULT_GPT_TARGET
+                    sess = get_or_create_veo_session(
+                        vendor=vendor,
+                        base_url=base_url,
+                        access_key=access_key,
+                        space_id=space_id,
+                        window_key=window_key,
+                    )
+                    sess.browser_headless = headless
+                    sess.browser_pure_mode = pure_mode
+                    sess.idle_close_disabled = True
+                    sess._cancel_idle_close()
+                    await sess.ensure_open(args=[], force_open=False, headless=headless, pure_mode=pure_mode)
+                    await sess._bring_target_page_to_front(refresh_target=False, drafts_url=tu)
+                    try:
+                        tok_info = await gpt_fetch_access_token_in_window(
+                            browser_vendor=vendor,
+                            browser_base_url=base_url,
+                            browser_access_key=access_key,
+                            space_id=space_id,
+                            window_key=window_key,
+                            target_url=tu,
+                            headless=headless,
+                            pure_mode=pure_mode,
+                            timeout_seconds=45.0,
+                        )
+                        access_token = str((tok_info or {}).get("access_token") or "").strip()
+                        if access_token:
+                            await self.db.update_task_type_window(
+                                mapping_id=mapping_id,
+                                sora_access_token=access_token,
+                                sora_access_expires=str((tok_info or {}).get("expires") or "").strip() or None,
+                            )
+                    except Exception as e:
+                        logger.warning("window_pool gpt token refresh mapping=%s failed: %s", mapping_id, e)
+                    try:
+                        await sess.disconnect_playwright_under_bring_lock()
                     except Exception:
                         pass
                     return True
@@ -1736,14 +1735,6 @@ class TaskService:
                         refresh_timeout_seconds=refresh_timeout_seconds,
                         signal_window_pool_replenish=self._signal_window_pool_replenish,
                     )
-                else:
-                    await refresh_veo_balance_best_effort(
-                        db=self.db,
-                        picked=picked,
-                        refresh_timeout_seconds=refresh_timeout_seconds,
-                        signal_window_pool_replenish=self._signal_window_pool_replenish,
-                        task_id=task_id,
-                    )
 
             try:
                 # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
@@ -1770,7 +1761,7 @@ class TaskService:
                         veo_payload.get("veo_url") or veo_payload.get("target_url") or ""
                     ).strip():
                         veo_payload["veo_url"] = picked.default_target_url
-                    result = await asyncio.wait_for(
+                    result,project_page = await asyncio.wait_for(
                         veo_workflow(
                             veo_payload,
                             progress_cb,
@@ -1789,6 +1780,7 @@ class TaskService:
                         ),
                         timeout=float(picked.timeout_seconds),
                     )
+                    picked.default_target_url = project_page;
                 elif picked.create_task_handler == "grok_workflow":
                     grok_payload = dict(payload or {})
                     result = await asyncio.wait_for(
@@ -1826,6 +1818,28 @@ class TaskService:
                             headless=picked.headless,
                             access_token=picked.sora_access_token,
                             access_expires=picked.sora_access_expires,
+                            pure_mode=picked.pure_mode,
+                            db=self.db,
+                            task_type_window_id=picked.mapping_id,
+                        ),
+                        timeout=float(picked.timeout_seconds),
+                    )
+                elif picked.create_task_handler == "gpt_workflow":
+                    gpt_payload = dict(payload or {})
+                    result = await asyncio.wait_for(
+                        gpt_workflow(
+                            gpt_payload,
+                            progress_cb,
+                            browser_vendor=picked.browser_vendor,
+                            browser_base_url=picked.browser_base_url,
+                            browser_access_key=picked.browser_access_key,
+                            space_id=picked.space_id,
+                            window_key=picked.window_key,
+                            timeout_seconds=float(picked.timeout_seconds),
+                            access_token=picked.sora_access_token,
+                            access_expires=picked.sora_access_expires,
+                            default_target_url=picked.default_target_url,
+                            headless=picked.headless,
                             pure_mode=picked.pure_mode,
                             db=self.db,
                             task_type_window_id=picked.mapping_id,

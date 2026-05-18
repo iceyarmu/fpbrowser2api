@@ -16,5 +16,7 @@ if __name__ == "__main__":
         host=config.server_host,
         port=config.server_port,
         reload=False,
+        ws_ping_interval=30,
+        ws_ping_timeout=120,
     )
 

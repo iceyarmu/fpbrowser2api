@@ -35,7 +35,7 @@ active_admin_tokens: dict[str, str] = {}  # token -> username
 
 
 def _admin_manual_open_target_url(ctx_row: Dict[str, Any]) -> str:
-    """窗口列表左侧“打开”按钮使用的目标页。
+    """manual-open 非 browser_only 模式使用的目标页。
 
     优先使用任务类型配置的 default_target_url；未配置时按工作流给一个默认目标页。
     对 Veo：若该窗口已绑定 Flow project_id，则优先打开对应 project_page。
@@ -69,6 +69,13 @@ def _admin_manual_open_target_url(ctx_row: Dict[str, Any]) -> str:
             return str(DEFAULT_DREAMINA_TARGET or "").strip() or "https://dreamina.capcut.com/ai-tool/video/generate"
         except Exception:
             return "https://dreamina.capcut.com/ai-tool/video/generate"
+    if handler == "gpt_workflow":
+        try:
+            from ..services.gpt_task_executor import DEFAULT_GPT_TARGET  # type: ignore
+
+            return str(DEFAULT_GPT_TARGET or "").strip() or "https://chatgpt.com/"
+        except Exception:
+            return "https://chatgpt.com/"
     return "https://sora.chatgpt.com/drafts"
 
 
@@ -3958,15 +3965,22 @@ async def refresh_mapping_remaining_quota(
     )
 
     create_handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
-    # veo_workflow：始终走 VEO 两层代理 fetch credits，不依赖任务类型上选的 refresh_quota_handler
+    # veo_workflow：始终走 VEO credits handler（插件优先，失败回退两层代理），不依赖任务类型上选的 refresh_quota_handler
     if create_handler == "veo_workflow":
         fn = refresh_quota__veo_flow_credits
         handler_used = "veo_flow_credits"
+        target_url = _admin_manual_open_target_url(ctx_row) or "https://labs.google/fx"
+        ctx_row["default_target_url"] = target_url;
     elif create_handler == "dreamina_workflow":
         from ..services.task_handler_registry import refresh_quota__dreamina_credits
 
         fn = refresh_quota__dreamina_credits
-        handler_used = ""
+        handler_used = "dreamina_credits"
+    elif create_handler == "gpt_workflow":
+        from ..services.task_handler_registry import refresh_quota__gpt_balance
+
+        fn = refresh_quota__gpt_balance
+        handler_used = "gpt_balance"
     else:
         try:
             fn = get_refresh_quota_handler(task_type.refresh_quota_handler)
@@ -4112,12 +4126,42 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             "subscription_end": None,
         }
 
+    if handler == "gpt_workflow":
+        from ..services.gpt_task_executor import DEFAULT_GPT_TARGET, gpt_fetch_membership_by_proxy  # type: ignore
+
+        access_token = str(ctx_row.get("sora_access_token") or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail="缺少 GPT access_token，请先获取并保存")
+        try:
+            info = await gpt_fetch_membership_by_proxy(
+                access_token=access_token,
+                target_url=str(ctx_row.get("default_target_url") or "").strip() or DEFAULT_GPT_TARGET,
+                db=db,
+                picked=SimpleNamespace(
+                    window_pk=int(ctx_row.get("window_pk") or 0),
+                    mapping_id=int(mapping_id),
+                    space_id=space_id,
+                    window_key=window_key,
+                ),
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
+        plan_title = str((info or {}).get("membership") or "").strip() or "ChatGPT（Web 账号）"
+        await db.update_task_type_window(mapping_id=mapping_id, sora_plan_title=plan_title)
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "plan_title": plan_title,
+            "subscription_end": None,
+            "raw": (info or {}).get("raw"),
+        }
+
     if handler == "veo_workflow":
         # VEO：使用已保存的长效 session-token，通过两层代理换短效 access_token 后请求 credits；
         # 不再打开/依赖指纹浏览器窗口。
         from ..services.veo_workflow_executor import (  # type: ignore
             fetch_short_access_token_by_proxy,
-            veo_fetch_credits_in_window,
+            veo_fetch_credits_by_proxy,
             veo_format_paygate_tier_label,
         )
 
@@ -4141,7 +4185,7 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
                 db=db,
                 picked=picked,
             )
-            info = await veo_fetch_credits_in_window(
+            info = await veo_fetch_credits_by_proxy(
                 sess=None,
                 target_url=target_url,
                 access_token=str((short_info or {}).get("access_token") or ""),
@@ -4349,6 +4393,38 @@ async def convert_sora_session_token_to_access_token(
             detail="grok_workflow 不支持从此接口自动获取令牌：请在上方「保存」中手工粘贴 Grok SSO（与 grok2api 池化 token 同源，可选），或依赖指纹窗口内已登录的 Cookie。",
         )
 
+    if handler == "gpt_workflow":
+        target_url = _admin_manual_open_target_url(ctx_row)
+        try:
+            from ..services.gpt_task_executor import gpt_fetch_access_token_in_window  # type: ignore
+            from ..services.browser_extension_bridge import annotate_url_with_extension_config  # type: ignore
+
+            info = await gpt_fetch_access_token_in_window(
+                browser_vendor=vendor,
+                browser_base_url=base_url,
+                browser_access_key=access_key,
+                space_id=space_id,
+                window_key=window_key,
+                target_url=annotate_url_with_extension_config(target_url, space_id=space_id, window_key=window_key),
+                headless=headless,
+                pure_mode=bool(ctx_row.get("pure_mode")) if ctx_row.get("pure_mode") is not None else True,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"自动获取 GPT access_token 失败：{e}")
+
+        access_token = str((info or {}).get("access_token") or "").strip() or None
+        expires = str((info or {}).get("expires") or "").strip() or None
+        if not access_token:
+            raise HTTPException(status_code=400, detail="自动获取失败：ChatGPT /api/auth/session 未返回 access_token")
+        await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "access_token": access_token,
+            "expires": expires,
+            "source": "chatgpt_window_cookie",
+        }
+
     if handler == "dreamina_workflow":
         default_target_url = str(ctx_row.get("default_target_url") or "").strip()
         target_url = default_target_url or "https://dreamina.capcut.com/ai-tool/video/generate"
@@ -4397,7 +4473,7 @@ async def convert_sora_session_token_to_access_token(
             # content script 收到 fpb_* 后会写入 chrome.storage.local，之后窗口关闭/重启仍沿用缓存。
             long_info = await fetch_long_access_token_in_window(
                 sess=veo_ctx,
-                target_url=annotate_url_with_extension_config(target_url, space_id=space_id, window_key=window_key),
+                target_url=target_url,
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
@@ -4418,7 +4494,7 @@ async def convert_sora_session_token_to_access_token(
             "access_token": access_token,
             "expires": expires,
             "session_token": str((long_info or {}).get("session_token") or "").strip() or None,
-            "source": "window",
+            "source": str((long_info or {}).get("source") or "extension").strip() or "extension",
         }
     else:
         try:
@@ -4454,9 +4530,15 @@ async def manual_open_mapping_window(
     pure_mode: Optional[bool] = Query(
         None, description="指纹 browser_open 纯净模式；省略时按绑定 pure_mode 列"
     ),
+    browser_only: bool = Query(
+        False, description="仅打开/唤起指纹浏览器窗口；不连接 CDP、不判断/打开目标页"
+    ),
     token: str = Depends(verify_admin_token),
 ):
-    """手动打开指纹浏览器窗口并禁止空闲自动关闭；确保窗口里有目标页或目标子页面。"""
+    """手动打开指纹浏览器窗口并禁止空闲自动关闭。
+
+    browser_only=true 时只调用指纹浏览器 browser_open，不连接 CDP、不检查/导航目标页。
+    """
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -4474,7 +4556,7 @@ async def manual_open_mapping_window(
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
     effective_pure = _effective_browser_pure_mode(ctx_row, pure_mode)
-    target_url = _admin_manual_open_target_url(ctx_row)
+    target_url = "" if browser_only else _admin_manual_open_target_url(ctx_row)
     final_url = ""
 
     if handler == "veo_workflow":
@@ -4490,12 +4572,13 @@ async def manual_open_mapping_window(
             pass
         try:
             await veo_ctx.pw_ctx.open_fingerprint_window_only(
-                args=veo_ctx.browser_open_args,
+                args=[] if browser_only else veo_ctx.browser_open_args,
                 force_open=veo_ctx.browser_force_open,
                 headless=headless,
                 pure_mode=effective_pure,
             )
-            final_url = await _ensure_manual_open_has_target_page(veo_ctx.pw_ctx, target_url)
+            if not browser_only:
+                final_url = await _ensure_manual_open_has_target_page(veo_ctx.pw_ctx, target_url)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
         finally:
@@ -4521,7 +4604,8 @@ async def manual_open_mapping_window(
                 headless=headless,
                 pure_mode=effective_pure,
             )
-            final_url = await _ensure_manual_open_has_target_page(grok_ctx.pw_ctx, target_url)
+            if not browser_only:
+                final_url = await _ensure_manual_open_has_target_page(grok_ctx.pw_ctx, target_url)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
         finally:
@@ -4542,12 +4626,13 @@ async def manual_open_mapping_window(
             pass
         try:
             await sora_ctx.pw_ctx.open_fingerprint_window_only(
-                args=sora_ctx.browser_open_args,
+                args=[] if browser_only else sora_ctx.browser_open_args,
                 force_open=sora_ctx.browser_force_open,
                 headless=headless,
                 pure_mode=effective_pure,
             )
-            final_url = await _ensure_manual_open_has_target_page(sora_ctx.pw_ctx, target_url)
+            if not browser_only:
+                final_url = await _ensure_manual_open_has_target_page(sora_ctx.pw_ctx, target_url)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
         finally:
@@ -4578,7 +4663,16 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
         raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
-    if handler == "grok_workflow":
+    if handler == "gpt_workflow":
+        from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+
+        gpt_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+        gpt_ctx.idle_close_disabled = False
+        try:
+            gpt_ctx._schedule_idle_close()
+        except Exception:
+            pass
+    elif handler == "grok_workflow":
         from ..services.grok_workflow_executor import get_or_create_grok_session  # type: ignore
 
         grok_ctx = get_or_create_grok_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
@@ -4634,7 +4728,8 @@ async def clear_mapping_browser_cache(
     syscfg = await db.get_system_config()
     client = FPBrowserClient()
     keys = [window_key]
-
+    local_rsp = None
+    """
     try:
         local_rsp = await client.browser_clear_local_cache(
             vendor=vendor,
@@ -4650,7 +4745,7 @@ async def clear_mapping_browser_cache(
             status_code=400,
             detail=f"清空本地缓存失败：{local_rsp.get('msg') or local_rsp}",
         )
-
+    """
     if local_only:
         return {
             "success": True,
@@ -4710,7 +4805,7 @@ async def open_account_mapping_window(
     ),
     token: str = Depends(verify_admin_token),
 ):
-    """开号/连接：Sora 走注册流程；Veo/Dreamina/Grok 打开目标页并断开 CDP。"""
+    """开号/连接：Sora 走注册流程；Veo/Dreamina/Grok/GPT 打开目标页并断开 CDP。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
@@ -4814,10 +4909,29 @@ async def open_account_mapping_window(
                 pure_mode=effective_pure,
                 timeout_seconds=timeout_seconds,
             )
+        elif handler == "gpt_workflow":
+            from ..services.gpt_task_executor import DEFAULT_GPT_TARGET  # type: ignore
+            from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+
+            target_url = str(ctx_row.get("default_target_url") or "").strip() or DEFAULT_GPT_TARGET
+            gpt_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+            gpt_ctx.browser_headless = headless
+            gpt_ctx.browser_pure_mode = effective_pure
+            gpt_ctx.idle_close_disabled = True
+            try:
+                gpt_ctx._cancel_idle_close()
+            except Exception:
+                pass
+            await gpt_ctx.pw_ctx.open_fingerprint_window_only(args=[target_url], force_open=False, headless=headless, pure_mode=effective_pure)
+            try:
+                await gpt_ctx.disconnect_playwright_under_bring_lock()
+            except Exception:
+                pass
+            result = {"message": "已打开 ChatGPT 页面，已断开自动化连接（请在本窗口完成登录）", "target_url": target_url}
         else:
             raise HTTPException(
                 status_code=400,
-                detail="当前任务类型不支持开号/连接（仅 sora_gen_video / veo_workflow / dreamina_workflow / grok_workflow）",
+                detail="当前任务类型不支持开号/连接（仅 sora_gen_video / veo_workflow / dreamina_workflow / grok_workflow / gpt_workflow）",
             )
     except HTTPException:
         raise
@@ -4836,7 +4950,7 @@ async def manual_start_mapping_window(
     ),
     token: str = Depends(verify_admin_token),
 ):
-    """立刻关闭指纹浏览器窗口并重新打开，进入 Sora drafts / Veo/Grok/Dreamina 目标页。
+    """立刻关闭指纹浏览器窗口并重新打开，进入 Sora drafts / Veo/Grok/Dreamina/GPT 目标页。
 
     不修改绑定上的 enabled（启用）状态，仅做窗口重启与页面置前。
     置前完成后断开本地 CDP（不关指纹窗口），降低站点通过调试端口识别自动化、触发 Cloudflare 的概率。
@@ -4947,6 +5061,34 @@ async def manual_start_mapping_window(
             raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
         try:
             await dreamina_ctx.disconnect_playwright_under_bring_lock()
+        except Exception:
+            pass
+    elif handler == "gpt_workflow":
+        from ..services.gpt_task_executor import DEFAULT_GPT_TARGET  # type: ignore
+        from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+
+        target_url = default_target_url or DEFAULT_GPT_TARGET
+        gpt_ctx = get_or_create_veo_session(
+            vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key
+        )
+        gpt_ctx.browser_headless = headless
+        gpt_ctx.browser_pure_mode = effective_pure
+        gpt_ctx.idle_close_disabled = True
+        try:
+            gpt_ctx._cancel_idle_close()
+        except Exception:
+            pass
+        try:
+            await gpt_ctx.close_and_drop()
+        except Exception:
+            pass
+        try:
+            await gpt_ctx.ensure_open(args=[], force_open=True, headless=headless, pure_mode=effective_pure)
+            await gpt_ctx._bring_target_page_to_front(refresh_target=False, drafts_url=target_url)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"启动窗口失败：{e}")
+        try:
+            await gpt_ctx.disconnect_playwright_under_bring_lock()
         except Exception:
             pass
     else:

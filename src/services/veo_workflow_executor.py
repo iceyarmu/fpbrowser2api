@@ -39,9 +39,6 @@ from .playwright_broswer_context import (
     append_log,
     get_or_create_ctx as get_or_create_playwright_ctx,
     page_fetch_json,
-    page_fetch_tx,
-    page_resolve_redirect_url,
-    pick_working_page_from_context,
     safe_trim,
 )
 from .sora_task_executor import (
@@ -51,8 +48,9 @@ from .sora_task_executor import (
 )
 from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
-from .browser_extension_bridge import (
-    should_use_extension_executor,
+from .browser_extension_bridge import should_use_extension_executor
+from .browser_extension_interaction import (
+    ensure_extension_connected_via_window,
     submit_extension_task,
     wait_extension_client,
 )
@@ -68,47 +66,59 @@ async def refresh_veo_balance_via_extension(
     picked: Any,
     refresh_timeout_seconds: float,
     signal_window_pool_replenish: Optional[Callable[[], None]] = None,
+    auto_triger_connection: Optional[bool] = True,
 ) -> Optional[Dict[str, Any]]:
-    """插件执行器模式下也统一改为本地两层代理读取 VEO credits，避免打开/依赖浏览器窗口。"""
+    """Refresh VEO credits through the browser extension token/balance interfaces."""
     try:
-        at = str(picked.sora_access_token or "").strip()
-        try:
-            row = await db.get_task_type_window_context(picked.mapping_id)
-            if row:
-                t2 = str(row.get("sora_access_token") or "").strip() or None
-                if t2:
-                    at = t2
-                    picked.sora_access_token = t2
-                    picked.sora_access_expires = str(row.get("sora_access_expires") or "").strip() or None
-        except Exception:
-            pass
-        if not at:
-            return None
-
         veo_target = str(picked.default_target_url or "").strip() or "https://labs.google/fx"
-        short_info = await fetch_short_access_token_by_proxy(
-            session_token=at,
-            target_url=veo_target,
-            db=db,
-            picked=picked,
-            log_file=MONITOR_LOG_FILE,
+        veo_sess = get_or_create_veo_session(
+            vendor=picked.browser_vendor,
+            base_url=picked.browser_base_url,
+            access_key=picked.browser_access_key,
+            space_id=picked.space_id,
+            window_key=picked.window_key,
         )
+        veo_sess.browser_headless = bool(getattr(picked, "headless", False))
+        veo_sess.browser_pure_mode = bool(getattr(picked, "pure_mode", True))
+        token_info = await veo_fetch_access_tokens_via_extension(
+            sess=veo_sess,
+            target_url=veo_target,
+            space_id=picked.space_id,
+            window_key=picked.window_key,
+            connect_wait_seconds=8.0,
+            token_timeout_seconds=min(45.0, max(10.0, float(refresh_timeout_seconds or 45.0))),
+            log_file=MONITOR_LOG_FILE,
+            auto_triger_connection = auto_triger_connection,
+        )
+        
+        short_at = str((token_info or {}).get("short_access_token") or "").strip()
+        if not short_at:
+            return None
         result = await asyncio.wait_for(
-            veo_fetch_credits_in_window(
-                sess=None,
-                target_url=veo_target,
-                access_token=str((short_info or {}).get("access_token") or ""),
-                db=db,
-                picked=picked,
-                log_file=MONITOR_LOG_FILE,
+            submit_extension_task(
+                space_id=picked.space_id,
+                window_key=picked.window_key,
+                provider="veo",
+                payload={
+                    "action": "refresh_balance",
+                    "workflow_kind": "balance_refresh",
+                    "project_page": veo_target,
+                    "access_token": short_at,
+                    "access_expires": str((token_info or {}).get("short_expires") or "").strip() or None,
+                    "fetch_cooldown": False,
+                },
+                progress_cb=_noop_progress_cb,
+                timeout_seconds=max(1.0, float(refresh_timeout_seconds or 45.0)),
             ),
-            timeout=max(1.0, float(refresh_timeout_seconds or 45.0)),
+            timeout=max(1.0, float(refresh_timeout_seconds or 45.0)) + 5.0,
         )
         if result is not None and result.get("credits") is not None:
             _kw: Dict[str, Any] = {
                 "mapping_id": picked.mapping_id,
                 "remaining_quota": int(result.get("credits") or 0),
                 "sora_remaining_count": int(result.get("credits") or 0),
+                "sora_access_token": str((token_info or {}).get("session_token") or (token_info or {}).get("access_token") or "").strip() or None,
+                "sora_access_expires": str((token_info or {}).get("expires") or "").strip() or None,
             }
             _kw["cooldown_until"] = str(result.get("cooldown_until") or _veo_local_next_0105_cooldown_str())
             await db.update_task_type_window(**_kw)
@@ -242,6 +252,36 @@ def _veo_is_unsafe_generation_error(tx: Optional[Dict[str, Any]]) -> bool:
     return "PUBLIC_ERROR_UNSAFE_GENERATION" in body_text
 
 
+def _veo_is_unsafe_generation_message(err: Any) -> bool:
+    try:
+        s = str(err or "").strip()
+    except Exception:
+        s = ""
+    return "PUBLIC_ERROR_UNSAFE_GENERATION" in s
+
+
+def _veo_is_auth_credentials_error(err: Any) -> bool:
+    """VEO 上游/插件返回的 401 凭证失效错误。
+
+    插件模式下图片/视频提交都可能因为 short access_token 过期或长效
+    session-token 轮换而返回 UNAUTHENTICATED。命中后需要强制开窗刷新长短 token。
+    """
+    try:
+        s = str(err or "").strip()
+    except Exception:
+        s = ""
+    if not s:
+        return False
+    low = s.lower()
+    return (
+        "unauthenticated" in low
+        or "invalid authentication credentials" in low
+        or "expected oauth 2 access token" in low
+        or "http 401" in low
+        or " 401 " in f" {low} "
+    )
+
+
 def _veo_raise_if_unsafe_generation(tx: Optional[Dict[str, Any]], *, status_code: Optional[int] = None) -> None:
     """命中 VEO 内容安全拦截时抛出不计罚异常。"""
     if not _veo_is_unsafe_generation_error(tx):
@@ -251,7 +291,7 @@ def _veo_raise_if_unsafe_generation(tx: Optional[Dict[str, Any]], *, status_code
     raise NonPenalizedTaskError(
         f"VEO生成失败，内容包含（PUBLIC_ERROR_UNSAFE_GENERATION）：{body}",
         status_code=code,
-        content_violation=False,
+        content_violation=True,
     )
 
 
@@ -324,116 +364,6 @@ def _veo_should_fetch_next_update_cooldown(cooldown_until_val: Any) -> bool:
         return datetime.now(timezone.utc) > until.astimezone(timezone.utc)
     except ValueError:
         return True
-
-
-async def refresh_veo_balance(
-    *,
-    db: Database,
-    picked: Any,
-    refresh_timeout_seconds: float,
-    signal_window_pool_replenish: Optional[Callable[[], None]] = None,
-) -> Optional[Dict[str, Any]]:
-    """VEO：在指纹窗口内 fetch aisandbox credits，与 admin 刷新额度一致。"""
-    if str(picked.create_task_handler or "").strip().lower() != "veo_workflow":
-        return None
-
-    at = str(picked.sora_access_token or "").strip()
-    try:
-        row = await db.get_task_type_window_context(picked.mapping_id)
-        if row:
-            t2 = str(row.get("sora_access_token") or "").strip() or None
-            if t2:
-                at = t2
-                picked.sora_access_token = t2
-                picked.sora_access_expires = str(row.get("sora_access_expires") or "").strip() or None
-    except Exception:
-        pass
-    if not at:
-        return None
-
-    try:
-        veo_sess = get_or_create_veo_session(
-            vendor=picked.browser_vendor,
-            base_url=picked.browser_base_url,
-            access_key=picked.browser_access_key,
-            space_id=picked.space_id,
-            window_key=picked.window_key,
-        )
-        veo_sess.browser_headless = picked.headless
-    except Exception:
-        return None
-
-    veo_target = str(picked.default_target_url or "").strip() or "https://labs.google/fx"
-    veo_info: Optional[Dict[str, Any]] = None
-    try:
-        short_info = await fetch_short_access_token_by_proxy(
-            session_token=at,
-            target_url=veo_target,
-            db=db,
-            picked=picked,
-            log_file=MONITOR_LOG_FILE,
-        )
-        veo_info = await veo_fetch_credits_in_window(
-            sess=veo_sess,
-            target_url=veo_target,
-            access_token=str((short_info or {}).get("access_token") or ""),
-            db=db,
-            picked=picked,
-        )
-    except Exception as e:
-        logger.warning("refresh_veo_balance failed: mapping=%s err=%s", picked.mapping_id, e)
-        return None
-
-    try:
-        if veo_info is not None and veo_info.get("credits") is not None:
-            new_cu: Optional[str] = str(veo_info.get("cooldown_until") or "").strip() or _veo_local_next_0105_cooldown_str()
-
-            _kw: Dict[str, Any] = {
-                "mapping_id": picked.mapping_id,
-                "remaining_quota": int(veo_info.get("credits") or 0),
-                "sora_remaining_count": int(veo_info.get("credits") or 0),
-            }
-            if new_cu:
-                _kw["cooldown_until"] = str(new_cu)
-            await db.update_task_type_window(**_kw)
-            if new_cu:
-                veo_info = dict(veo_info)
-                veo_info["cooldown_until"] = str(new_cu)
-            try:
-                cur_q = int(veo_info.get("credits") or 0)
-                if cur_q < 30 and signal_window_pool_replenish is not None:
-                    hi = await db.task_type_has_mapping_remaining_quota_above(picked.task_code, 30)
-                    if hi:
-                        signal_window_pool_replenish()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return veo_info
-
-
-async def refresh_veo_balance_best_effort(
-    *,
-    db: Database,
-    picked: Any,
-    refresh_timeout_seconds: float,
-    signal_window_pool_replenish: Optional[Callable[[], None]] = None,
-    task_id: Optional[str] = None,
-) -> None:
-    try:
-        await asyncio.wait_for(
-            refresh_veo_balance(
-                db=db,
-                picked=picked,
-                refresh_timeout_seconds=refresh_timeout_seconds,
-                signal_window_pool_replenish=signal_window_pool_replenish,
-            ),
-            timeout=refresh_timeout_seconds,
-        )
-    except Exception as e:
-        logger.warning("refresh_veo_balance skipped: task=%s mapping=%s err=%s", task_id, picked.mapping_id, e)
-
-
 
 # ---------------------------------------------------------------------------
 # 反风控注入（仅对 labs.google/fx/tools/flow 目标页生效）
@@ -3863,7 +3793,7 @@ async def veo_fetch_next_update_cooldown_from_one_google_activity(
 ) -> Optional[str]:
     """在指纹浏览器中另开标签页打开 Google AI 活动页，从正文匹配「Next update: Apr 22」等文案，解析为额度重置时间字符串（与 sora nf_check 的 cooldown_until 格式一致：本地日期 0 点）。
 
-    需已能正常使用该窗口（与 veo_fetch_credits_in_window 相同的前置：开窗、labs 目标页上下文）；失败返回 None，不抛错。
+    需已能正常使用该窗口（与 veo_fetch_credits_by_proxy 相同的前置：开窗、labs 目标页上下文）；失败返回 None，不抛错。
     """
     try:
         sess._cancel_idle_close()
@@ -3891,7 +3821,7 @@ async def veo_fetch_next_update_cooldown_from_one_google_activity(
         return None
 
 
-async def veo_fetch_credits_in_window(
+async def veo_fetch_credits_by_proxy(
     *,
     sess: Optional["VeoSession"] = None,
     target_url: str,
@@ -4016,82 +3946,126 @@ async def veo_fetch_credits_in_window(
 # ---------------------------------------------------------------------------
 # 获取 token：长 token（浏览器 Cookie ST）与短 token（auth/session AT）
 # ---------------------------------------------------------------------------
+def _veo_extension_labs_url(target_url: str) -> str:
+    """插件 content-script 只注入 labs.google；触发 WS 时统一落到 labs.google。"""
+    raw = (target_url or "").strip() or "https://labs.google/fx"
+    try:
+        p = urlparse(raw)
+        host = (p.netloc or "").lower()
+        if p.scheme in ("http", "https") and (host == "labs.google" or host.endswith(".labs.google")):
+            return raw
+    except Exception:
+        pass
+    return "https://labs.google/fx"
+
+
+def _veo_extension_ids_from_session(
+    sess: "VeoSession",
+    *,
+    space_id: Optional[str] = None,
+    window_key: Optional[str] = None,
+) -> tuple[str, str]:
+    sid = str(space_id or getattr(getattr(sess, "pw_ctx", None), "space_id", "") or "").strip()
+    wkey = str(window_key or getattr(getattr(sess, "pw_ctx", None), "window_key", "") or "").strip()
+    if not sid or not wkey:
+        raise RuntimeError("缺少插件连接标识：space_id/window_key")
+    return sid, wkey
+
+
+async def veo_fetch_access_tokens_via_extension(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+    space_id: Optional[str] = None,
+    window_key: Optional[str] = None,
+    connect_wait_seconds: float = 8.0,
+    token_timeout_seconds: float = 45.0,
+    log_file: Optional[Path] = None,
+    auto_triger_connection: Optional[bool] = True,
+) -> Dict[str, Any]:
+    """通过浏览器插件读取 VEO long session-token 与 short access_token。"""
+    sid, wkey = _veo_extension_ids_from_session(sess, space_id=space_id, window_key=window_key)
+    log_file = log_file or (Path(sess.monitor_log_path) if getattr(sess, "monitor_log_path", None) else MONITOR_LOG_FILE)
+    client = await ensure_extension_connected_via_window(
+        sess=sess,
+        target_url=target_url,
+        space_id=sid,
+        window_key=wkey,
+        wait_seconds=connect_wait_seconds,
+        log_file=log_file,
+        auto_triger_connection = auto_triger_connection,
+    )
+    if client is None:
+        raise NonPenalizedTaskError(
+            f"浏览器插件未连接：space_id={sid!r} window_key={wkey!r}",
+            status_code=503,
+        )
+
+    labs_target = _veo_extension_labs_url(target_url)
+    append_log(log_file, "[veo][token] fetch long/short access_token via extension")
+    info = await submit_extension_task(
+        space_id=sid,
+        window_key=wkey,
+        provider="veo",
+        payload={
+            "action": "fetch_tokens",
+            "workflow_kind": "fetch_tokens",
+            "target_url": labs_target,
+            "project_page": labs_target,
+        },
+        progress_cb=_noop_progress_cb,
+        timeout_seconds=max(5.0, float(token_timeout_seconds or 45.0)),
+    )
+    if not isinstance(info, dict):
+        raise RuntimeError(f"插件返回 token 格式异常：{info!r}")
+    session_token = str(info.get("session_token") or info.get("access_token") or "").strip()
+    short_at = str(info.get("short_access_token") or "").strip()
+    if not session_token:
+        raise NonPenalizedTaskError("插件未返回 VEO long session_token", status_code=401)
+    if not short_at:
+        raise NonPenalizedTaskError("插件未返回 VEO short access_token", status_code=401)
+
+    try:
+        sess.veo_short_access_token = short_at
+        sess.veo_short_access_expires = str(info.get("short_expires") or "").strip() or None
+        sess.veo_short_session_token = session_token
+        sess.veo_short_email = str(info.get("email") or "").strip() or None
+    except Exception:
+        pass
+    out = dict(info)
+    out["access_token"] = session_token
+    out["session_token"] = session_token
+    out["short_access_token"] = short_at
+    append_log(
+        log_file,
+        f"[veo][token] extension returned long_len={len(session_token)} short_len={len(short_at)}",
+    )
+    return out
+
+
 async def fetch_long_access_token_in_window(
     *,
     sess: "VeoSession",
     target_url: str,
 ) -> Dict[str, Any]:
-    """只打开指纹浏览器读取长效 Cookie：__Secure-next-auth.session-token 及其 Cookie 过期时间。"""
+    """通过浏览器插件读取长效 Cookie token；必要时先用带 fpb_* URL 触发 WS。"""
     sess._cancel_idle_close()
-
-    async with sess._bring_drafts_lock:
-        await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=sess.browser_headless, acquire_bring_lock=False)
-        await sess._bring_target_page_to_front(refresh_target=True, drafts_url=target_url, acquire_bring_lock=False)
-        if sess.pw_ctx.page is None:
-            raise RuntimeError("page 未初始化")
-
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
-
-        # ── Step 1：从浏览器 cookie 中读取 __Secure-next-auth.session-token ──
-        session_token = None
-        session_expires = None
-        try:
-            context = sess.pw_ctx.context
-            if context:
-                try:
-                    parsed = urlparse(target_url)
-                    cookie_url = f"{parsed.scheme}://{parsed.netloc}"
-                except Exception:
-                    cookie_url = target_url
-                cookies = await context.cookies(cookie_url)
-                for cookie in (cookies or []):
-                    if cookie.get("name") == "__Secure-next-auth.session-token":
-                        session_token = str(cookie.get("value") or "").strip() or None
-                        try:
-                            exp_num = float(cookie.get("expires") or 0)
-                            if exp_num > 0:
-                                session_expires = datetime.fromtimestamp(exp_num).strftime("%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            session_expires = None
-                        break
-        except Exception as e:
-            append_log(log_file, f"[veo][token] context.cookies() failed: {e}")
-
-        if not session_token:
-            # HttpOnly cookie 无法通过 document.cookie 读取，但仍尝试兜底
-            try:
-                session_token = await sess.pw_ctx.page.evaluate("""
-                    () => {
-                        try {
-                            for (const part of document.cookie.split(';')) {
-                                const p = part.trim();
-                                if (p.startsWith('__Secure-next-auth.session-token=')) {
-                                    return p.split('=').slice(1).join('=');
-                                }
-                            }
-                        } catch(e) {}
-                        return null;
-                    }
-                """)
-                if session_token:
-                    session_token = str(session_token).strip() or None
-            except Exception as e:
-                append_log(log_file, f"[veo][token] document.cookie fallback failed: {e}")
-
-        if not session_token:
-            await sess.pw_ctx.disconnect_playwright_only()
-            raise RuntimeError(
-                "未找到 __Secure-next-auth.session-token cookie（请确认窗口已登录 Google/VEO）"
-            )
-
-        append_log(log_file, f"[veo][token] session_token found, length={len(session_token)}")
-        await sess.pw_ctx.disconnect_playwright_only()
-        return {
-            "access_token": session_token,
-            "session_token": session_token,
-            "expires": session_expires,
-            "email": None,
-        }
+    info = await veo_fetch_access_tokens_via_extension(
+        sess=sess,
+        target_url=target_url,
+        connect_wait_seconds=8.0,
+        token_timeout_seconds=45.0,
+        log_file=Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE,
+    )
+    return {
+        "access_token": str((info or {}).get("session_token") or (info or {}).get("access_token") or "").strip() or None,
+        "session_token": str((info or {}).get("session_token") or (info or {}).get("access_token") or "").strip() or None,
+        "expires": str((info or {}).get("expires") or "").strip() or None,
+        "email": str((info or {}).get("email") or "").strip() or None,
+        "short_access_token": str((info or {}).get("short_access_token") or "").strip() or None,
+        "short_expires": str((info or {}).get("short_expires") or "").strip() or None,
+        "source": str((info or {}).get("source") or "extension").strip() or "extension",
+    }
 
 
 async def _veo_resolve_system_proxy(db: Any) -> str:
@@ -4161,7 +4135,7 @@ async def get_cached_short_access_token_for_session(
     log_file: Optional[Path] = None,
     margin_seconds: float = 120.0,
 ) -> Dict[str, Any]:
-    """VeoSession ? short access_token ????????????? auth/session?"""
+    """Cache short access_token per VeoSession; refresh from auth/session when needed."""
     st = str(session_token or "").strip()
     if not st:
         raise RuntimeError("?? __Secure-next-auth.session-token")
@@ -4263,16 +4237,58 @@ async def veo_fetch_access_token_in_window(
     db: Any = None,
     picked: Any = None,
 ) -> Dict[str, Any]:
-    """兼容旧入口：先从窗口读取长效 session-token，再经代理换短效 access_token。"""
-    long_info = await fetch_long_access_token_in_window(sess=sess, target_url=target_url)
-    return await get_cached_short_access_token_for_session(
-        sess,
-        session_token=str(long_info.get("session_token") or long_info.get("access_token") or ""),
+    """兼容旧入口：通过浏览器插件一次性读取 long session-token 与 short access_token。"""
+    return await veo_fetch_access_tokens_via_extension(
+        sess=sess,
         target_url=target_url,
-        db=db,
-        picked=picked,
+        connect_wait_seconds=8.0,
+        token_timeout_seconds=45.0,
         log_file=Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE,
     )
+
+
+async def _veo_force_refresh_access_tokens_for_mapping(
+    *,
+    sess: "VeoSession",
+    target_url: str,
+    db: Any = None,
+    task_type_window_id: Optional[Any] = None,
+    picked: Any = None,
+    log_file: Optional[Path] = None,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """强制刷新 long session-token + short access_token。
+
+    - long session-token：通过 veo_fetch_access_token_in_window 开窗读取，并持久化到 DB
+    - short access_token：由 veo_fetch_access_token_in_window 内部换取，并保存到 sess cache
+    """
+    log_file = log_file or (Path(sess.monitor_log_path) if getattr(sess, "monitor_log_path", None) else MONITOR_LOG_FILE)
+    append_log(log_file, f"[veo][token] force refresh long/short access_token start reason={safe_trim(reason, 160)!r}")
+    info = await veo_fetch_access_token_in_window(sess=sess, target_url=target_url, db=db, picked=picked)
+    long_session_token = str((info or {}).get("session_token") or (info or {}).get("access_token") or "").strip()
+    exp = str((info or {}).get("expires") or "").strip() or None
+    short_at = str((info or {}).get("short_access_token") or getattr(sess, "veo_short_access_token", "") or "").strip()
+    if not long_session_token or not short_at:
+        raise NonPenalizedTaskError("强制刷新 VEO token 失败：未取得 long 或 short access_token", status_code=401)
+    if db is not None and task_type_window_id:
+        try:
+            mid = int(task_type_window_id)
+            if mid > 0:
+                await db.update_task_type_window(
+                    mapping_id=mid,
+                    sora_access_token=long_session_token,
+                    sora_access_expires=exp,
+                )
+                append_log(log_file, f"[veo][token] force refreshed long access_token persisted to task_type_window id={mid}")
+        except Exception as e:
+            append_log(log_file, f"[veo][token] force refresh persist long access_token failed (non-fatal): {e}")
+    append_log(log_file, "[veo][token] force refresh long/short access_token done")
+    return {
+        "session_token": long_session_token,
+        "expires": exp,
+        "short_access_token": short_at,
+        "short_expires": str((info or {}).get("short_expires") or getattr(sess, "veo_short_access_expires", "") or "").strip() or None,
+    }
 
 def _veo_trpc_create_project_url(target_url: str) -> str:
     raw = (target_url or "").strip() or "https://labs.google/fx"
@@ -4933,466 +4949,6 @@ async def _veo_archive_uploaded_image_workflows_in_window(
         )
     return stats
 
-
-async def _veo_ui_fill_prompt_textbox(page, *, prompt: Any, log_file: Path) -> bool:
-    """在 `role="textbox"` 的可编辑区填入 prompt（仅输入；提交由后续 `page_fetch_json` 完成）。"""
-    try:
-        prompt_s = str(prompt or "")
-    except Exception:
-        prompt_s = ""
-    prompt_s = prompt_s.strip()
-    if not prompt_s:
-        return False
-
-    selectors = [
-        'div[role="textbox"]',
-        '[role="textbox"]',
-    ]
-    for sel in selectors:
-        try:
-            loc = page.locator(sel)
-            await loc.first.wait_for(state="visible", timeout=2500)
-            try:
-                await loc.first.click(timeout=1500)
-            except Exception:
-                pass
-            await loc.first.fill(prompt_s, timeout=5000)
-            ok = False
-            try:
-                v = await loc.first.inner_text()
-                if str(v or "").strip():
-                    ok = True
-            except Exception:
-                ok = False
-            if ok:
-                append_log(
-                    log_file,
-                    f"[veo][ui] prompt filled into textbox selector={sel!r} len={len(prompt_s)}",
-                )
-                return True
-        except Exception:
-            continue
-
-    append_log(log_file, "[veo][ui] prompt fill skipped: role=textbox not found/visible")
-    return False
-
-
-async def _veo_execute_image_mode(
-    *,
-    payload: Dict[str, Any],
-    progress_cb: ProgressCB,
-    prompt: str,
-    project_id: str,
-    access_token: str,
-    log_file: Path,
-    started_at: float,
-    max_submit_retries: int,
-    download_timeout: float,
-    sess: "VeoSession",
-    bring_prefix: str,
-    user_paygate_tier: str,
-) -> Dict[str, Any]:
-    """n_frames==1：页面内调用 `flowMedia:batchGenerateImages`（对齐 flow2api `FlowClient.generate_image`）。
-
-    payload：`use_gem_pix_2` / `veo_use_gem_pix_2` 为真或 `image_model_name`/`veo_image_model` 为 GEM_PIX_2 时使用 GEM_PIX_2，否则 NARWHAL。
-    `images` 支持多张参考图输入；若未提供 `images`，仍兼容 `first_image_url` / `image_url` 单图输入。
-    `resolution` / `image_resolution` / `veo_image_resolution` 为 2k 时在生成成功后调用 `flow/upsampleImage`，最终 `share_url` 为 data URL（与 flow2api 无缓存时一致）；`origin_image_url` 仍为 1K 的 fife 直链。
-    """
-    image_aspect = _veo_resolve_image_aspect_ratio(payload)
-    model_name = _veo_resolve_image_model_name(payload)
-    res_label, want_2k = _veo_resolve_image_output_resolution(payload)
-    want_i2i = _veo_payload_has_image_generation_references(payload)
-    image_inputs: List[Dict[str, Any]] = []
-    i2i_urls: List[str] = []
-    raw_i2i_batches: List[bytes] = []
-    uploaded_image_workflows: List[Dict[str, str]] = []
-    i2i_image_count = 0
-    page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
-
-    if want_i2i:
-        i2i_urls = _veo_collect_image_generation_reference_urls(payload)
-        if len(i2i_urls) < 1:
-            raise NonPenalizedTaskError(
-                "图生图需要提供至少一张参考图（first_image_url / image_url / images 等）",
-                status_code=400,
-            )
-        i2i_image_count = len(i2i_urls)
-        await progress_cb(
-            8,
-            {"stage": "download_images", "count": i2i_image_count, "workflow_kind": "image"},
-        )
-        for i, ref_url in enumerate(i2i_urls):
-            label = "参考图" if i2i_image_count == 1 else f"参考图 {i + 1}"
-            raw_i2i_batches.append(
-                await _veo_download_image_bytes_for_i2v(
-                    ref_url,
-                    label=label,
-                    timeout_seconds=download_timeout,
-                    user_agent=None,
-                )
-            )
-            _veo_raise_if_image_exceeds_4k_limit(raw_i2i_batches[-1], label=label)
-    else:
-        await progress_cb(8, {"stage": "text_to_image", "workflow_kind": "image"})
-        append_log(log_file, "[veo][image] t2i (no reference images)")
-
-    recaptcha_override = str(
-        payload.get("recaptcha_token")
-        or payload.get("veo_recaptcha_token")
-        or payload.get("recaptchaContextToken")
-        or ""
-    ).strip() or None
-
-    async def _do_veo_image_page_work() -> Dict[str, Any]:
-        nonlocal res_label, recaptcha_override
-
-        await sess.ensure_open(
-            args=sess.browser_open_args,
-            force_open=sess.browser_force_open,
-            headless=sess.browser_headless,
-            acquire_bring_lock=False,
-        )
-        await sess._bring_target_page_to_front(
-            refresh_target=True,
-            drafts_url=bring_prefix,
-            acquire_bring_lock=False,
-        )
-        page = sess.pw_ctx.page
-        if page is None:
-            raise RuntimeError("page 未初始化")
-
-        if want_i2i:
-            if not raw_i2i_batches:
-                raise RuntimeError("图生图参考图数据缺失")
-            for i, rb in enumerate(raw_i2i_batches):
-                await progress_cb(
-                    8,
-                    {
-                        "stage": "upload_image",
-                        "index": i + 1,
-                        "total": len(raw_i2i_batches),
-                        "workflow_kind": "image",
-                    },
-                )
-                mid = await _veo_flow_upload_image_in_window(
-                    page=page,
-                    access_token=str(access_token),
-                    project_id=project_id,
-                    image_bytes=rb,
-                    log_file=log_file,
-                    uploaded_workflows=uploaded_image_workflows,
-                )
-                image_inputs.append({"name": mid, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"})
-                append_log(
-                    log_file,
-                    f"[veo][image] i2i uploaded reference {i + 1}/{len(raw_i2i_batches)} "
-                    f"mediaId={safe_trim(mid, 80)!r}",
-                )
-
-        submit_url = _veo_flow_media_batch_generate_images_url(project_id)
-        last_submit_err: Optional[str] = None
-
-        for attempt in range(max_submit_retries):
-            sess._cancel_idle_close()
-            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
-            recaptcha_token = recaptcha_override
-            if not recaptcha_token:
-                print(f"project_id: {project_id}")
-                recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
-                    page.context,
-                    project_id=project_id,
-                    action="IMAGE_GENERATION",
-                    log_file=log_file,
-                )
-                print(f"recaptcha_token: {recaptcha_token}")
-            if not recaptcha_token:
-                last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
-                append_log(log_file, f"[veo][image] submit attempt {attempt + 1}: no recaptcha token")
-                if attempt + 1 < max_submit_retries:
-                    await asyncio.sleep(2.0)
-                    try:
-                        await sess._bring_target_page_to_front(
-                            refresh_target=True,
-                            drafts_url=bring_prefix,
-                            acquire_bring_lock=False,
-                        )
-                    except Exception:
-                        pass
-                continue
-            session_id = _veo_generate_session_id()
-            client_context: Dict[str, Any] = {
-                "recaptchaContext": {
-                    "token": recaptcha_token,
-                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-                },
-                "sessionId": session_id,
-                "projectId": str(project_id),
-                "tool": "PINHOLE",
-            }
-            request_data: Dict[str, Any] = {
-                "clientContext": client_context,
-                "seed": random.randint(1, 999999),
-                "imageModelName": model_name,
-                "imageAspectRatio": image_aspect,
-                "structuredPrompt": {"parts": [{"text": prompt}]},
-                "imageInputs": image_inputs,
-            }
-            json_data: Dict[str, Any] = {
-                "clientContext": client_context,
-                "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-                "useNewMedia": True,
-                "requests": [request_data],
-            }
-    
-            await progress_cb(
-                10,
-                {
-                    "stage": "submit_image_task",
-                    "attempt": attempt + 1,
-                    "workflow_kind": "image",
-                    "image_mode": "multi_i2i" if i2i_image_count > 1 else ("i2i" if want_i2i else "t2i"),
-                },
-            )
-
-            try:
-                print(f"submit_url: {submit_url}")
-                tx = await page_fetch_json(
-                    page,
-                    url=submit_url,
-                    method="POST",
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {access_token}",
-                    },
-                    json_data=json_data,
-                    log_file=log_file,
-                )
-            except Exception as e:
-                last_submit_err = f"submit fetch error: {_short_err_msg(e, max_len=200)}"
-                print(f"last_submit_err: {last_submit_err}")
-                append_log(log_file, f"[veo][image] submit fetch error: {e}")
-                try:
-                    await sess._bring_target_page_to_front(
-                        refresh_target=True,
-                        drafts_url=bring_prefix,
-                        acquire_bring_lock=False,
-                    )
-                except Exception:
-                    pass
-                continue
-    
-            st = tx.get("status")
-            if st is not None and int(st) >= 400:
-                _veo_raise_if_unsafe_generation(tx, status_code=int(st))
-                body = safe_trim(str(tx.get("response_body") or ""), 500)
-                last_submit_err = f"HTTP {st} {body}"
-                print(f"last_submit_err: {last_submit_err}")
-                append_log(log_file, f"[veo][image] submit rejected: {last_submit_err}")
-                recaptcha_override = None
-                try:
-                    await sess._bring_target_page_to_front(
-                        refresh_target=True,
-                        drafts_url=bring_prefix,
-                        acquire_bring_lock=False,
-                    )
-                except Exception:
-                    pass
-                continue
-    
-            resp = tx.get("_json")
-            try:
-                fife_url, media_name = _veo_parse_batch_generate_images_fife_url(resp)
-            except NonPenalizedTaskError as e:
-                last_submit_err = f"bad response: {str(e)}"
-                print(f"last_submit_err: {last_submit_err}")
-                append_log(log_file, f"[veo][image] bad response: {last_submit_err}")
-                recaptcha_override = None
-                continue
-            workflow_id, workflow_project_id = _veo_parse_batch_generate_images_workflow_info(
-                resp,
-                fallback_project_id=str(project_id),
-            )
-    
-            append_log(
-                log_file,
-                f"[veo][image] submit ok fifeUrl={safe_trim(fife_url, 120)!r} "
-                f"media={safe_trim(str(media_name or ''), 60)!r} "
-                f"workflowId={safe_trim(str(workflow_id or ''), 80)!r}",
-            )
-    
-            share_url = fife_url
-            origin_image_url = fife_url
-            upsample_ok = False
-            upsample_err: Optional[str] = None
-    
-            if want_2k:
-                sess._cancel_idle_close()
-                if not media_name:
-                    upsample_err = "上游未返回 media name，无法放大，已返回 1K 原图"
-                    append_log(log_file, f"[veo][image] 2K requested but no mediaId: {upsample_err}")
-                    res_label = "1K"
-                else:
-                    await progress_cb(
-                        72,
-                        {
-                            "stage": "upsample_image",
-                            "workflow_kind": "image",
-                            "target_resolution": "2K",
-                            "origin_image_url": fife_url,
-                        },
-                    )
-                    upsample_retries = max(1, min(5, int(payload.get("veo_image_upsample_max_retries") or 3)))
-                    try:
-                        b64 = await _veo_flow_upsample_image_in_window(
-                            page=page,
-                            access_token=str(access_token),
-                            project_id=str(project_id),
-                            media_id=str(media_name),
-                            user_paygate_tier=user_paygate_tier,
-                            generation_session_id=str(session_id),
-                            log_file=log_file,
-                            max_retries=upsample_retries,
-                            bring_prefix=bring_prefix,
-                            sess=sess,
-                            target_bring_acquire_lock=False,
-                        )
-                        sess._cancel_idle_close()
-                        if b64:
-                            oss_cfg = oss_config_from_setting_section(
-                                (app_config.get_raw_config() or {}).get("oss")
-                            )
-                            if oss_cfg.enabled:
-                                try:
-                                    raw_jpeg = base64.b64decode(b64, validate=False)
-                                    if not raw_jpeg:
-                                        raise ValueError("base64 解码后为空")
-                                    object_key = build_veo_upsample_object_key(
-                                        project_id=str(project_id),
-                                        media_name=str(media_name) if media_name else None,
-                                    )
-                                    share_url = await asyncio.to_thread(
-                                        upload_bytes_to_oss,
-                                        cfg=oss_cfg,
-                                        data=raw_jpeg,
-                                        object_key=object_key,
-                                        content_type="image/jpeg",
-                                    )
-                                    upsample_ok = True
-                                    res_label = "2K"
-                                    append_log(
-                                        log_file,
-                                        f"[veo][image] upsample done, uploaded to oss object_key={object_key!r}",
-                                    )
-                                except Exception as e:
-                                    upsample_err = _short_err_msg(e, max_len=240)
-                                    append_log(
-                                        log_file,
-                                        f"[veo][image] upsample ok but oss upload failed, fallback 1K: {e}",
-                                    )
-                                    share_url = fife_url
-                                    res_label = "1K"
-                                    upsample_ok = False
-                            else:
-                                share_url = f"data:image/jpeg;base64,{b64}"
-                                upsample_ok = True
-                                res_label = "2K"
-                                append_log(
-                                    log_file,
-                                    "[veo][image] upsample done, share_url is data:image/jpeg;base64,... (oss disabled)",
-                                )
-                        else:
-                            upsample_err = "放大返回空数据，已返回 1K 原图"
-                    except Exception as e:
-                        upsample_err = _short_err_msg(e, max_len=240)
-                        append_log(log_file, f"[veo][image] upsample failed, fallback 1K: {e}")
-                        share_url = fife_url
-                        res_label = "1K"
-
-            # 获取 1K fifeUrl 后需归档远端 Flow workflow；若请求了 2K，必须等放大流程
-            # 用完 mediaId/fifeUrl 后再归档，避免影响 upsampleImage。
-            archived_workflow = await _veo_archive_flow_workflow_in_window(
-                page=page,
-                access_token=str(access_token),
-                workflow_id=workflow_id,
-                project_id=workflow_project_id,
-                log_file=log_file,
-            )
-            sess._cancel_idle_close()
-            elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
-            await progress_cb(
-                100,
-                {
-                    "stage": "done",
-                    "elapsed_ms": elapsed_ms,
-                    "image_url": share_url,
-                    "workflow_kind": "image",
-                    "image_resolution": res_label,
-                    "origin_image_url": origin_image_url,
-                },
-            )
-            append_log(
-                log_file,
-                f"[veo][image] workflow "
-                f"{'MULTI_I2I' if i2i_image_count > 1 else ('I2I' if want_i2i else 'T2I')} "
-                f"done elapsed_ms={elapsed_ms} resolution={res_label}",
-            )
-            image_mode = "multi_i2i" if i2i_image_count > 1 else ("i2i" if want_i2i else "t2i")
-            message = (
-                "Nana Banana 多图生图完成"
-                if i2i_image_count > 1
-                else ("Nana Banana图生图完成" if want_i2i else "Nana Banana 文生图完成")
-            )
-            out: Dict[str, Any] = {
-                "type": "veo_workflow_image",
-                "message": message,
-                "share_url": share_url,
-                "workflow_kind": "image",
-                "image_mode": image_mode,
-                "model_name": model_name,
-                "image_aspect_ratio": image_aspect,
-                "image_resolution": res_label,
-                "project_id": str(project_id),
-                "elapsed_ms": elapsed_ms,
-                "n_frames": 1,
-            }
-            if want_i2i:
-                out["reference_image_count"] = i2i_image_count
-            if want_2k or upsample_ok:
-                out["upsample_url"] = share_url
-            if upsample_err:
-                out["upsample_error"] = upsample_err
-            if media_name:
-                out["generated_media_id"] = media_name
-            if workflow_id:
-                out["generated_workflow_id"] = workflow_id
-                out["workflow_archived"] = bool(archived_workflow)
-            return out
-
-        raise RuntimeError(last_submit_err or "图片生成提交失败")
-
-    async with sess._bring_drafts_lock:
-        try:
-            return await _do_veo_image_page_work()
-        finally:
-            if uploaded_image_workflows:
-                try:
-                    await _veo_archive_uploaded_image_workflows_in_window(
-                        page=sess.pw_ctx.page,
-                        access_token=str(access_token),
-                        uploaded_workflows=uploaded_image_workflows,
-                        log_file=log_file,
-                        workflow_kind="upload_image",
-                    )
-                except Exception as e:
-                    append_log(log_file, f"[veo][image] uploaded image archive finally failed: {e}")
-            try:
-                await sess.pw_ctx.disconnect_playwright_only()
-                pass;
-            except Exception:
-                pass
-
-
 # ---------------------------------------------------------------------------
 # 入口函数
 # ---------------------------------------------------------------------------
@@ -5554,9 +5110,6 @@ async def veo_workflow(
         ext_session_token = str(access_token or "").strip() or None
         ext_exp = str(access_expires or "").strip() or None
         ext_tok_info: Optional[Dict[str, Any]] = None
-        ext_fetched_token_in_window = False
-        ext_renew_margin = float(payload.get("veo_access_token_renew_margin_seconds") or 120.0)
-        ext_renew_margin = max(0.0, min(3600.0, ext_renew_margin))
         if db is not None and task_type_window_id:
             try:
                 mid = int(task_type_window_id)
@@ -5566,49 +5119,36 @@ async def veo_workflow(
                         t2 = str(row.get("sora_access_token") or "").strip() or None
                         e2 = str(row.get("sora_access_expires") or "").strip() or None
                         if t2:
-                            ext_at, ext_exp = t2, e2
-                            ext_session_token = str(row.get("sora_session_token") or "").strip() or ext_session_token
+                            ext_session_token, ext_exp = t2, e2
             except Exception as e:
                 append_log(log_file, f"[veo][extension] reload access_token from DB failed (use call args): {e}")
 
-        if _veo_cached_access_still_valid(ext_at, ext_exp, margin_seconds=ext_renew_margin):
-            ext_tok_info = {"access_token": ext_at, "expires": ext_exp or None}
-            append_log(
-                log_file,
-                f"[veo][extension] reuse mapping access_token (expires ok, margin_s={ext_renew_margin:.0f})",
-            )
-        else:
-            try:
-                append_log(log_file, "[veo][extension] access_token missing/expired; fetching in fingerprint window")
-                ext_tok_info = await fetch_long_access_token_in_window(sess=sess, target_url=project_page)
-                ext_fetched_token_in_window = True
-                ext_session_token = str((ext_tok_info or {}).get("session_token") or (ext_tok_info or {}).get("access_token") or "").strip() or None
-                ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
-                ext_at = None
-            except Exception as e:
-                append_log(log_file, f"[veo][extension] fetch access_token in window failed: {e}")
-                ext_session_token = None
-        if not ext_session_token:
-            raise NonPenalizedTaskError(
-                "缺少可用的 session_token：请确保指纹窗口已登录并可取得凭证",
-                status_code=401,
-            )
         try:
-            ext_short_info = await get_cached_short_access_token_for_session(
-                sess,
-                session_token=ext_session_token,
+            append_log(log_file, "[veo][extension] fetch long/short access_token via browser extension")
+            ext_tok_info = await veo_fetch_access_tokens_via_extension(
+                sess=sess,
                 target_url=project_page,
-                db=db,
-                picked=SimpleNamespace(window_pk=int(task_type_window_id or 0) if task_type_window_id else 0),
+                space_id=space_id,
+                window_key=window_key,
+                connect_wait_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
+                token_timeout_seconds=float(payload.get("extension_token_timeout_seconds") or 45.0),
                 log_file=log_file,
             )
-            ext_at = str((ext_short_info or {}).get("access_token") or "").strip() or None
+            ext_session_token = str((ext_tok_info or {}).get("session_token") or (ext_tok_info or {}).get("access_token") or "").strip() or None
+            ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
+            ext_at = str((ext_tok_info or {}).get("short_access_token") or "").strip() or None
         except Exception as e:
-            append_log(log_file, f"[veo][extension] fetch short access_token by proxy failed: {e}")
+            append_log(log_file, f"[veo][extension] fetch long/short access_token via extension failed: {e}")
+            ext_session_token = None
             ext_at = None
+        if not ext_session_token:
+            raise NonPenalizedTaskError(
+                "missing usable session_token: please ensure the fingerprint window is logged in",
+                status_code=401,
+            )
         if not ext_at:
-            raise NonPenalizedTaskError("缺少可用的 short access_token：auth/session 未返回 access_token", status_code=401)
-        if ext_fetched_token_in_window and db is not None and task_type_window_id:
+            raise NonPenalizedTaskError("missing usable short access_token: extension auth/session did not return access_token", status_code=401)
+        if db is not None and task_type_window_id:
             try:
                 mid = int(task_type_window_id)
                 if mid > 0:
@@ -5617,7 +5157,7 @@ async def veo_workflow(
                         sora_access_token=ext_session_token,
                         sora_access_expires=ext_exp or None,
                     )
-                    append_log(log_file, f"[veo][extension] persisted refreshed Labs session_token to task_type_window id={mid}")
+                    append_log(log_file, f"[veo][extension] persisted Labs session_token from extension to task_type_window id={mid}")
             except Exception as e:
                 append_log(log_file, f"[veo][extension] persist access_token to DB failed (non-fatal): {e}")
         if image_mode:
@@ -5674,586 +5214,73 @@ async def veo_workflow(
             }
         )
         append_log(log_file, f"[veo][extension] dispatch workflow {_mode} project_id={project_id!r}")
-        # 如插件尚未连接，只打开/唤起指纹浏览器窗口（使用干净 URL）。插件配置必须已由
-        # 管理页“AccessToken / 过期 -> 更新”写入并持久化；这里不再通过 URL hash 下发配置，
-        # 也不做 one-shot CDP 导航，避免增加 Playwright/CDP 连接风控面。
+        # 如插件在 token 获取后意外断开，仍走统一的“中转页 fpb_* URL 触发 WS”接口；
+        # Python 只短暂连接 CDP 打开中转页，随后立刻断开；目标页由插件延迟跳转打开。
         if await wait_extension_client(space_id, window_key, timeout_seconds=0.2) is None:
             try:
-                await sess.pw_ctx.open_fingerprint_window_only(
-                    args=[project_page],
-                    force_open=sess.browser_force_open,
-                    headless=headless,
-                    pure_mode=pure_mode,
+                await ensure_extension_connected_via_window(
+                    sess=sess,
+                    target_url=project_page,
+                    space_id=space_id,
+                    window_key=window_key,
+                    wait_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
+                    log_file=log_file,
                 )
-                append_log(log_file, "[veo][extension] opened fingerprint window (clean url; extension config comes from cached storage)")
             except Exception as e:
-                append_log(log_file, f"[veo][extension] open window for extension failed: {e}")
-            await wait_extension_client(
-                space_id,
-                window_key,
-                timeout_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
+                append_log(log_file, f"[veo][extension] ensure websocket for extension failed: {e}")
+        try:
+            _ext_result = await submit_extension_task(
+                space_id=space_id,
+                window_key=window_key,
+                provider="veo",
+                payload=ext_payload,
+                progress_cb=progress_cb,
+                timeout_seconds=max_wait_seconds + 120.0,
             )
-        _ext_result = await submit_extension_task(
-            space_id=space_id,
-            window_key=window_key,
-            provider="veo",
-            payload=ext_payload,
-            progress_cb=progress_cb,
-            timeout_seconds=max_wait_seconds + 120.0,
-        )
+        except Exception as e:
+            if _veo_is_unsafe_generation_message(e):
+                raise NonPenalizedTaskError(
+                    f"VEO生成失败，内容包含（PUBLIC_ERROR_UNSAFE_GENERATION）：{safe_trim(str(e), 500)}",
+                    status_code=getattr(e, "status_code", None) or 400,
+                    content_violation=True,
+                )
+            if not _veo_is_auth_credentials_error(e):
+                raise
+            append_log(log_file, f"[veo][extension] task auth failed; force refresh long/short tokens and retry once: {e}")
+            force_info = await _veo_force_refresh_access_tokens_for_mapping(
+                sess=sess,
+                target_url=project_page,
+                db=db,
+                task_type_window_id=task_type_window_id,
+                picked=SimpleNamespace(window_pk=int(task_type_window_id or 0) if task_type_window_id else 0),
+                log_file=log_file,
+                reason=str(e),
+            )
+            ext_session_token = str(force_info.get("session_token") or "").strip() or ext_session_token
+            ext_exp = str(force_info.get("expires") or "").strip() or None
+            ext_at = str(force_info.get("short_access_token") or "").strip() or None
+            if not ext_at:
+                raise NonPenalizedTaskError("VEO token 强制刷新后仍缺少 short access_token", status_code=401)
+            ext_payload["access_token"] = ext_at
+            ext_payload["access_expires"] = ext_exp
+            ext_payload["force_refreshed_access_token"] = True
+            _ext_result = await submit_extension_task(
+                space_id=space_id,
+                window_key=window_key,
+                provider="veo",
+                payload=ext_payload,
+                progress_cb=progress_cb,
+                timeout_seconds=max_wait_seconds + 120.0,
+            )
         if image_mode:
             _ext_result = await _veo_extension_upload_upsample_data_url_to_oss(
                 _ext_result,
                 project_id=str(project_id),
                 log_file=log_file,
             )
-        return _ext_result
+        return _ext_result, project_page
 
-    await sess.ensure_open(headless=headless, pure_mode=pure_mode)
-    append_log(log_file, "[veo] browser open / CDP connected")
-
-    await sess._bring_target_page_to_front(refresh_target=True, drafts_url=bring_prefix)
-    sess._cancel_idle_close()
-    await progress_cb(5, {"stage": "navigate", "url": project_page})
-    append_log(log_file, f"[veo] navigated project page {safe_trim(project_page, 200)!r}")
-
-    # --- reload 后深度拟人行为：给 reCAPTCHA 足够的行为信号积累 ---
-    try:
-        _ha_page = getattr(sess.pw_ctx, "page", None)
-        if _ha_page and not _ha_page.is_closed():
-            from .window_human_activity import perform_deep_human_activity
-            _deep_result = await perform_deep_human_activity(
-                _ha_page, min_seconds=10.0, max_seconds=15.0,
-            )
-            append_log(log_file, f"[veo] post-inject deep human activity done: {_deep_result}")
-    except Exception as _e_post_ha:
-        append_log(log_file, f"[veo] post-inject human activity error: {_e_post_ha}")
-
-    renew_margin = float(payload.get("veo_access_token_renew_margin_seconds") or 120.0)
-    renew_margin = max(0.0, min(3600.0, renew_margin))
-
-    at = str(access_token or "").strip() or None
-    exp_db = str(access_expires or "").strip() or None
-    window_pk_for_proxy = 0
-    if db is not None and task_type_window_id:
-        try:
-            mid = int(task_type_window_id)
-            if mid > 0:
-                row = await db.get_task_type_window_context(mid)
-                if row:
-                    window_pk_for_proxy = int(row.get("window_pk") or 0)
-                    t2 = str(row.get("sora_access_token") or "").strip() or None
-                    e2 = str(row.get("sora_access_expires") or "").strip() or None
-                    if t2:
-                        at, exp_db = t2, e2
-        except Exception as e:
-            append_log(log_file, f"[veo] reload access_token from DB failed (use call args): {e}")
-
-    tok_info: Optional[Dict[str, Any]] = None
-    fetched_token_in_window = False
-    long_session_token = at
-    if not _veo_cached_access_still_valid(long_session_token, exp_db, margin_seconds=renew_margin):
-        try:
-            long_tok = await fetch_long_access_token_in_window(sess=sess, target_url=project_page)
-            fetched_token_in_window = True
-            long_session_token = str((long_tok or {}).get("session_token") or (long_tok or {}).get("access_token") or "").strip() or None
-            exp_db = str((long_tok or {}).get("expires") or "").strip() or None
-        except Exception as e:
-            append_log(log_file, f"[veo] fetch session_token in window failed: {e}")
-            long_session_token = None
-    if not long_session_token:
-        raise NonPenalizedTaskError(
-            "缺少可用的 session_token：请在任务窗口映射中配置 Labs session-token，或确保指纹窗口已登录并可取得凭证",
-            status_code=401,
-        )
-    try:
-        tok_info = await get_cached_short_access_token_for_session(
-            sess,
-            session_token=long_session_token,
-            target_url=project_page,
-            db=db,
-            picked=SimpleNamespace(window_pk=window_pk_for_proxy),
-            log_file=log_file,
-        )
-        at = str((tok_info or {}).get("access_token") or "").strip() or None
-    except Exception as e:
-        append_log(log_file, f"[veo] fetch short access_token by proxy failed: {e}")
-        at = None
-    if not at:
-        raise NonPenalizedTaskError("缺少可用的 short access_token：auth/session 未返回 access_token", status_code=401)
-    if fetched_token_in_window and db is not None and task_type_window_id:
-        try:
-            mid = int(task_type_window_id)
-            if mid > 0:
-                await db.update_task_type_window(
-                    mapping_id=mid,
-                    sora_access_token=long_session_token,
-                    sora_access_expires=exp_db or None,
-                )
-                append_log(log_file, f"[veo] persisted Labs session_token to task_type_window id={mid}")
-        except Exception as e:
-            append_log(log_file, f"[veo] persist access_token to DB failed (non-fatal): {e}")
-
-    user_tier = _veo_normalize_user_paygate_tier(
-        str(payload.get("user_paygate_tier") or payload.get("userPaygateTier") or "").strip() or None
+    raise NonPenalizedTaskError(
+        "VEO only supports extension/plugin mode: enable extension_executor or set payload.executor to extension/plugin",
+        status_code=400,
     )
-    auto_tier_v = payload.get("veo_auto_user_paygate_tier", True)
-    do_credits_tier = True
-    if auto_tier_v is False:
-        do_credits_tier = False
-    elif isinstance(auto_tier_v, str) and auto_tier_v.strip().lower() in ("0", "false", "no", "off"):
-        do_credits_tier = False
-    try:
-        if do_credits_tier:
-            cred = await veo_fetch_credits_in_window(sess=sess, target_url=project_page, access_token=at)
-            t2 = (cred or {}).get("user_paygate_tier")
-            if t2:
-                user_tier = _veo_normalize_user_paygate_tier(str(t2))
-                append_log(log_file, f"[veo] user_paygate_tier from credits: {user_tier}")
-    except Exception as e:
-        append_log(log_file, f"[veo] credits tier probe skipped: {e}")
-
-    recaptcha_override = str(
-        payload.get("recaptcha_token")
-        or payload.get("veo_recaptcha_token")
-        or payload.get("recaptchaContextToken")
-        or ""
-    ).strip() or None
-
-    await asyncio.sleep(max(0.5, float(payload.get("veo_recaptcha_pre_wait_seconds") or 2.0)))
-
-    download_timeout = float(
-        payload.get("i2v_image_download_timeout_seconds")
-        or payload.get("veo_image_download_timeout_seconds")
-        or 60.0
-    )
-
-    if image_mode:
-        return await _veo_execute_image_mode(
-            payload=payload,
-            progress_cb=progress_cb,
-            prompt=prompt,
-            project_id=project_id,
-            access_token=str(at),
-            log_file=log_file,
-            started_at=started_at,
-            max_submit_retries=max_submit_retries,
-            download_timeout=download_timeout,
-            sess=sess,
-            bring_prefix=bring_prefix,
-            user_paygate_tier=user_tier,
-        )
-
-    if want_ingredients:
-        base_model_key, aspect_ratio = _veo_resolve_r2v_model(payload)
-    elif want_i2v:
-        aspect_ratio = _veo_resolve_i2v_aspect_ratio(payload)
-        base_model_key = (
-            VEO_I2V_MODEL_PORTRAIT_FL
-            if aspect_ratio == VIDEO_ASPECT_RATIO_PORTRAIT
-            else VEO_I2V_MODEL_LANDSCAPE_FL
-        )
-    else:
-        base_model_key, aspect_ratio = _veo_resolve_t2v_model(payload)
-    model_key = _veo_adjust_model_key_for_tier(base_model_key, user_tier)
-    if model_key != base_model_key:
-        append_log(log_file, f"[veo] model_key adjusted for tier: {base_model_key!r} -> {model_key!r}")
-
-    ingredients_raw_batches: List[bytes] = []
-    if want_ingredients:
-        await progress_cb(6, {"stage": "download_images", "count": len(ingredients_urls)})
-        for i, u in enumerate(ingredients_urls):
-            raw_b = await _veo_download_image_bytes_for_i2v(
-                u,
-                label=f"Ingredients 参考图 {i + 1}",
-                timeout_seconds=download_timeout,
-                user_agent=None,
-            )
-            ingredients_raw_batches.append(raw_b)
-
-    i2v_raw_batches: List[bytes] = []
-    if want_i2v:
-        await progress_cb(6, {"stage": "download_images", "count": len(i2v_urls)})
-        for i, u in enumerate(i2v_urls):
-            label = "首帧图片" if i == 0 else "尾帧图片"
-            raw_b = await _veo_download_image_bytes_for_i2v(
-                u,
-                label=label,
-                timeout_seconds=download_timeout,
-                user_agent=None,
-            )
-            i2v_raw_batches.append(raw_b)
-
-    uploaded_image_workflows: List[Dict[str, str]] = []
-
-    async def _do_veo_video_page_work() -> Dict[str, Any]:
-        nonlocal recaptcha_override
-
-        await sess.ensure_open(
-            args=sess.browser_open_args,
-            force_open=sess.browser_force_open,
-            headless=sess.browser_headless,
-            acquire_bring_lock=False,
-        )
-        await sess._bring_target_page_to_front(
-            refresh_target=True,
-            drafts_url=bring_prefix,
-            acquire_bring_lock=False,
-        )
-        sess._cancel_idle_close()
-
-        page = sess.pw_ctx.page
-        if page is None:
-            raise RuntimeError("page 未初始化")
-
-        start_media_id: Optional[str] = None
-        end_media_id: Optional[str] = None
-        r2v_reference_images: List[Dict[str, Any]] = []
-        if want_ingredients:
-            for i, raw_b in enumerate(ingredients_raw_batches):
-                await progress_cb(
-                    7 + i,
-                    {
-                        "stage": "upload_image",
-                        "index": i + 1,
-                        "total": len(ingredients_urls),
-                        "video_mode": "r2v",
-                    },
-                )
-                mid = await _veo_flow_upload_image_in_window(
-                    page=page,
-                    access_token=str(at),
-                    project_id=project_id,
-                    image_bytes=raw_b,
-                    log_file=log_file,
-                    uploaded_workflows=uploaded_image_workflows,
-                )
-                r2v_reference_images.append(
-                    {"imageUsageType": "IMAGE_USAGE_TYPE_ASSET", "mediaId": mid}
-                )
-                append_log(
-                    log_file,
-                    f"[veo][r2v] uploaded Ingredients 参考图 {i + 1} mediaId={safe_trim(mid, 80)!r}",
-                )
-        if want_i2v:
-            media_ids: List[str] = []
-            for i, raw_b in enumerate(i2v_raw_batches):
-                label = "首帧图片" if i == 0 else "尾帧图片"
-                await progress_cb(7 + i, {"stage": "upload_image", "index": i + 1, "total": len(i2v_urls)})
-                mid = await _veo_flow_upload_image_in_window(
-                    page=page,
-                    access_token=str(at),
-                    project_id=project_id,
-                    image_bytes=raw_b,
-                    log_file=log_file,
-                    uploaded_workflows=uploaded_image_workflows,
-                )
-                media_ids.append(mid)
-                append_log(log_file, f"[veo][i2v] uploaded {label} mediaId={safe_trim(mid, 80)!r}")
-            start_media_id = media_ids[0]
-            end_media_id = media_ids[1] if len(media_ids) > 1 else None
-
-        operations: List[Dict[str, Any]] = []
-        t2v_thumb_media_name: Optional[str] = None
-        last_submit_err: Optional[str] = None
-
-        for attempt in range(max_submit_retries):
-            await _veo_ui_fill_prompt_textbox(page, prompt=prompt, log_file=log_file)
-            recaptcha_token = recaptcha_override
-            if not recaptcha_token:
-                recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
-                    page.context,
-                    project_id=project_id,
-                    action="VIDEO_GENERATION",
-                    log_file=log_file,
-                )
-            if not recaptcha_token:
-                last_submit_err = "无法获取 reCAPTCHA token（可在 payload 传入 recaptcha_token / veo_recaptcha_token 覆盖）"
-                append_log(log_file, f"[veo] submit attempt {attempt + 1}: no recaptcha token")
-                if attempt + 1 < max_submit_retries:
-                    await asyncio.sleep(2.0)
-                    try:
-                        await sess._bring_target_page_to_front(
-                            refresh_target=True,
-                            drafts_url=bring_prefix,
-                            acquire_bring_lock=False,
-                        )
-                    except Exception:
-                        pass
-                    sess._cancel_idle_close()
-                continue
-
-            session_id = _veo_generate_session_id()
-            scene_id = str(uuid.uuid4())
-
-            submit_url: str
-            req_item: Dict[str, Any]
-            if want_ingredients:
-                submit_url = FLOW_VIDEO_SUBMIT_R2V_URL
-                req_item = {
-                    "aspectRatio": aspect_ratio,
-                    "seed": random.randint(1, 99999),
-                    "textInput": {
-                        "structuredPrompt": {
-                            "parts": [{"text": prompt}],
-                        },
-                    },
-                    "videoModelKey": model_key,
-                    "referenceImages": r2v_reference_images,
-                    "metadata": {"sceneId": scene_id},
-                }
-            elif want_i2v:
-                assert start_media_id is not None
-                if end_media_id:
-                    submit_url = FLOW_VIDEO_SUBMIT_I2V_START_END_URL
-                    req_item = {
-                        "aspectRatio": aspect_ratio,
-                        "seed": random.randint(1, 99999),
-                        "textInput": {"prompt": prompt},
-                        "videoModelKey": model_key,
-                        "startImage": {"mediaId": start_media_id},
-                        "endImage": {"mediaId": end_media_id},
-                        "metadata": {"sceneId": scene_id},
-                    }
-                else:
-                    submit_url = FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL
-                    single_mk = _veo_strip_i2v_fl_for_single_frame(model_key)
-                    append_log(
-                        log_file,
-                        f"[veo][i2v] single-frame model_key: {model_key!r} -> {single_mk!r}",
-                    )
-                    req_item = {
-                        "aspectRatio": aspect_ratio,
-                        "seed": random.randint(1, 99999),
-                        "textInput": {"prompt": prompt},
-                        "videoModelKey": single_mk,
-                        "startImage": {"mediaId": start_media_id},
-                        "metadata": {"sceneId": scene_id},
-                    }
-            else:
-                submit_url = FLOW_VIDEO_SUBMIT_T2V_URL
-                req_item = {
-                    "aspectRatio": aspect_ratio,
-                    "seed": random.randint(1, 99999),
-                    "textInput": {"prompt": prompt},
-                    "videoModelKey": model_key,
-                    "metadata": {"sceneId": scene_id},
-                }
-
-            client_ctx: Dict[str, Any] = {
-                "recaptchaContext": {
-                    "token": recaptcha_token,
-                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-                },
-                "sessionId": session_id,
-                "projectId": project_id,
-                "tool": "PINHOLE",
-                "userPaygateTier": user_tier,
-            }
-            if want_ingredients:
-                json_data = {
-                    "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-                    "clientContext": client_ctx,
-                    "requests": [req_item],
-                    "useV2ModelConfig": True,
-                }
-            else:
-                json_data = {
-                    "clientContext": client_ctx,
-                    "requests": [req_item],
-                }
-
-            await progress_cb(
-                10,
-                {
-                    "stage": "submit_task",
-                    "attempt": attempt + 1,
-                    "video_mode": (
-                        "r2v"
-                        if want_ingredients
-                        else ("i2v" if want_i2v else "t2v")
-                    ),
-                },
-            )
-
-            try:
-                tx = await page_fetch_json(
-                    page,
-                    url=submit_url,
-                    method="POST",
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {at}",
-                    },
-                    json_data=json_data,
-                    log_file=log_file,
-                )
-            except Exception as e:
-                last_submit_err = _short_err_msg(e, max_len=200)
-                append_log(log_file, f"[veo] submit fetch error: {e}")
-                try:
-                    await sess._bring_target_page_to_front(
-                        refresh_target=True,
-                        drafts_url=bring_prefix,
-                        acquire_bring_lock=False,
-                    )
-                except Exception:
-                    pass
-                continue
-
-            st = tx.get("status")
-            if st is not None and int(st) >= 400:
-                #_veo_raise_if_unsafe_generation(tx, status_code=int(st))
-                body = safe_trim(str(tx.get("response_body") or ""), 500)
-                last_submit_err = f"HTTP {st} {body}"
-                append_log(log_file, f"[veo] submit rejected: {last_submit_err}")
-                recaptcha_override = None
-                try:
-                    await sess._bring_target_page_to_front(
-                        refresh_target=True,
-                        drafts_url=bring_prefix,
-                        acquire_bring_lock=False,
-                    )
-                except Exception:
-                    pass
-                continue
-
-            resp = tx.get("_json")
-            ops = resp.get("media") if isinstance(resp, dict) else None
-            if not isinstance(ops, list) or len(ops) == 0:
-                last_submit_err = f"提交返回无 operations: {safe_trim(str(resp), 300)}"
-                append_log(log_file, f"[veo] submit bad response: {last_submit_err}")
-                continue
-
-            operations = ops
-            if not want_i2v and not want_ingredients:
-                op0 = ops[0] if isinstance(ops[0], dict) else {}
-                raw_name = (op0.get("operation") or {}).get("name")
-                t2v_thumb_media_name = str(raw_name or "").strip() or None
-            append_log(log_file, f"[veo] submit ok operations[0].status={ops[0].get('status')!r}")
-            break
-        else:
-            if want_ingredients:
-                _submit_fail = "Ingredients 多图视频提交失败"
-            elif want_i2v:
-                _submit_fail = "图生视频提交失败"
-            else:
-                _submit_fail = "文生视频提交失败"
-            raise RuntimeError(last_submit_err or _submit_fail)
-
-        await progress_cb(25, {"stage": "polling", "operations": len(operations)})
-        sess._cancel_idle_close()
-        video_url, video_workflow_id, video_workflow_project_id = await _veo_poll_operations_until_video_url(
-            page=page,
-            access_token=str(at),
-            log_file=log_file,
-            progress_cb=progress_cb,
-            operations=operations,
-            max_wait_seconds=max_wait_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            project_id=str(project_id),
-            sess=sess,
-        )
-
-        if want_i2v:
-            thumb_url = i2v_urls[0]
-        elif want_ingredients:
-            thumb_url = ingredients_urls[0]
-        else:
-            thumb_url = ""
-            if t2v_thumb_media_name:
-                qs = urlencode(
-                    {
-                        "name": t2v_thumb_media_name,
-                        "mediaUrlType": "MEDIA_URL_TYPE_THUMBNAIL",
-                    }
-                )
-                redirect_thumb = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?{qs}"
-                thumb_url = redirect_thumb
-                resolved = await page_resolve_redirect_url(page, url=redirect_thumb, log_file=log_file)
-                if resolved:
-                    thumb_url = resolved
-                else:
-                    append_log(
-                        log_file,
-                        "[veo] thumb redirect 解析失败，保留 labs 跳转链 URL（仅带 Cookie 的浏览器内可用）",
-                    )
-
-        archived_workflow = await _veo_archive_flow_workflow_in_window(
-            page=page,
-            access_token=str(at),
-            workflow_id=video_workflow_id,
-            project_id=video_workflow_project_id or str(project_id),
-            log_file=log_file,
-            workflow_kind="video",
-        )
-
-        elapsed_ms = int(max(0.0, (time.time() - started_at) * 1000.0))
-        await progress_cb(
-            100,
-            {
-                "stage": "done",
-                "elapsed_ms": elapsed_ms,
-                "video_url": video_url,
-                "workflow_id": video_workflow_id,
-                "workflow_archived": archived_workflow,
-            },
-        )
-        append_log(
-            log_file,
-            f"[veo] workflow {_mode} done elapsed_ms={elapsed_ms} "
-            f"video_url={safe_trim(video_url or '', 120)!r} "
-            f"workflowId={safe_trim(str(video_workflow_id or ''), 80)!r} "
-            f"archived={archived_workflow}",
-        )
-
-        if want_ingredients:
-            _done_msg = "VEO Ingredients（多图参考）视频完成"
-            _vtype = "r2v"
-        elif want_i2v:
-            _done_msg = "VEO 图生视频完成"
-            _vtype = "i2v"
-        else:
-            _done_msg = "VEO 文生视频完成"
-            _vtype = "t2v"
-        out: Dict[str, Any] = {
-            "type": "veo_workflow_video",
-            "message": _done_msg,
-            "share_url": video_url,
-            "thumb_url": thumb_url,
-            "video_type": _vtype,
-            "model_key": model_key,
-            "aspect_ratio": aspect_ratio,
-            "project_id": project_id,
-            "elapsed_ms": elapsed_ms,
-        }
-        if want_i2v:
-            out["i2v_image_count"] = len(i2v_urls)
-        if want_ingredients:
-            out["ingredients_image_count"] = len(ingredients_urls)
-        if video_workflow_id:
-            out["generated_workflow_id"] = video_workflow_id
-            out["workflow_archived"] = bool(archived_workflow)
-        return out
-
-    async with sess._bring_drafts_lock:
-        try:
-            return await _do_veo_video_page_work()
-        finally:
-            if uploaded_image_workflows:
-                try:
-                    await _veo_archive_uploaded_image_workflows_in_window(
-                        page=sess.pw_ctx.page,
-                        access_token=str(at),
-                        uploaded_workflows=uploaded_image_workflows,
-                        log_file=log_file,
-                        workflow_kind="upload_image",
-                    )
-                except Exception as e:
-                    append_log(log_file, f"[veo][video] uploaded image archive finally failed: {e}")
-            try:
-                await sess.pw_ctx.disconnect_playwright_only()
-                pass
-            except Exception:
-                pass

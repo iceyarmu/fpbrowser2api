@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FPBrowser2API Task Executor",
-  "version": "0.2.8",
+  "version": "0.3.2",
   "description": "Execute VEO/Dreamina tasks from inside the fingerprint browser.",
   "icons": {
     "16": "icons/icon16.png",
@@ -35,13 +35,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://labs.google/*"],
-      "js": ["content/veo_content.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://dreamina.capcut.com/*"],
-      "js": ["content/dreamina_content.js"],
+      "matches": [
+        "http://*/*",
+        "https://labs.google/*",
+        "https://dreamina.capcut.com/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": ["content/fpb_config_content.js"],
       "run_at": "document_idle"
     }
   ]

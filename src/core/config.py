@@ -166,7 +166,26 @@ class Config:
         raw = os.getenv("FPB_EXTENSION_BRIDGE_URL", "")
         if raw.strip():
             return raw.strip()
-        return str(self._config.get("extension_executor", {}).get("bridge_url", "") or "").strip()
+        base_url = str(self._config.get("extension_executor", {}).get("base_url", "") or "").strip();
+        bridge_url = f"ws://{base_url}/api/extension/ws"
+        return bridge_url
+
+    @property
+    def extension_launcher_url(self) -> str:
+        """浏览器插件配置中转页地址。
+
+        ``trigger_veo_extension_ws_connection_via_window`` 会先打开此地址，并在
+        URL hash 中附加 fpb_* 与 redirect_url，由插件读取配置、连接 WebSocket，
+        再跳转到 redirect_url。建议配置为你自己控制的局域网页面，例如：
+        http://192.168.1.9:8000/
+        """
+        import os
+        raw = os.getenv("FPB_EXTENSION_LAUNCHER_URL", "")
+        if raw.strip():
+            return raw.strip()
+        base_url = str(self._config.get("extension_executor", {}).get("base_url", "") or "").strip();
+        launcher_url = f"http://{base_url}/"
+        return launcher_url
 
     @property
     def extension_task_timeout_seconds(self) -> float:

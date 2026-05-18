@@ -96,6 +96,7 @@ CREATE_TASK_HANDLERS: Dict[str, Tuple[str, CreateTaskHandler]] = {
     "sora_wm_remove": ("Sora：视频去水印（输入 soraUrl 返回 videoUrl）", create_task__sora_gen_video),
     "sora_plus_register": ("Sora注册Plus）", create_task__sora_gen_video),
     "veo_workflow": ("veo生成视频", create_task__sora_gen_video),
+    "gpt_workflow": ("GPT/ChatGPT 图片/视频生成（浏览器插件；长 access_token）", create_task__sora_gen_video),
     "grok_workflow": ("Grok Imagine 视频（指纹浏览器：文生/多图参考；可选 mapping SSO 或 payload grok_access_token）", create_task__sora_gen_video),
     "dreamina_workflow": ("Dreamina Seedance 视频生成（指纹浏览器：文生/图生；Cookie 鉴权）", create_task__sora_gen_video),
 }
@@ -169,12 +170,8 @@ async def refresh_quota__sora_nf_check(ctx: RefreshQuotaContext) -> int:
 
 
 async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
-    """VEO / Google Labs：本地经两层代理 fetch aisandbox /v1/credits（需已保存 AT）。"""
+    """VEO / Google Labs：优先通过浏览器插件刷新余额，失败后回退两层代理。"""
     row = ctx.mapping_row or {}
-    at = str(row.get("sora_access_token") or "").strip()
-    if not at:
-        raise RuntimeError("缺少 access_token（请先获取并保存 access_token）")
-
     space_id = str(row.get("space_id") or "")
     window_key = str(row.get("window_key") or "")
     if not space_id or not window_key:
@@ -185,21 +182,64 @@ async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
 
     from types import SimpleNamespace
 
-    from .veo_workflow_executor import fetch_short_access_token_by_proxy, veo_fetch_credits_in_window  # type: ignore
+    from .veo_workflow_executor import (  # type: ignore
+        fetch_short_access_token_by_proxy,
+        refresh_veo_balance_via_extension,
+        veo_fetch_credits_by_proxy,
+    )
+
+    def _row_bool(key: str, default: bool = False) -> bool:
+        v = row.get(key)
+        if v is None:
+            return bool(default)
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        s = str(v).strip().lower()
+        if s in {"1", "true", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "no", "n", "off", ""}:
+            return False
+        return bool(v)
 
     picked = SimpleNamespace(
         window_pk=int(row.get("window_pk") or 0),
         mapping_id=int(row.get("id") or row.get("mapping_id") or 0),
+        task_code=str(row.get("task_code") or getattr(ctx.task_type, "code", "") or ""),
+        default_target_url=target_url,
+        browser_vendor=str(row.get("vendor") or "roxy"),
+        browser_base_url=str(row.get("lan_addr") or ""),
+        browser_access_key=row.get("access_key"),
         space_id=space_id,
         window_key=window_key,
+        headless=_row_bool("_headless", _row_bool("headless", False)),
+        pure_mode=_row_bool("pure_mode", True),
     )
+
+    # 快路径：浏览器插件直接读取 short token + credits，避免本地两层代理反复换 token/查余额。
+    # refresh_veo_balance_via_extension 内部会捕获异常并返回 None；只要没有 credits 就走旧逻辑兜底。
+    ext_info = await refresh_veo_balance_via_extension(
+        db=ctx.db,
+        picked=picked,
+        refresh_timeout_seconds=30.0,
+        auto_triger_connection = False,
+    )
+    if isinstance(ext_info, dict) and ext_info.get("credits") is not None:
+        return int(ext_info.get("credits") or 0)
+
+    # 兜底：沿用旧的两层代理流程（长 session-token -> short access_token -> credits）。
+    at = str(row.get("sora_access_token") or "").strip()
+    if not at:
+        raise RuntimeError("缺少 access_token（插件未读取到余额，且未保存 access_token，无法回退两层代理）")
+
     short_info = await fetch_short_access_token_by_proxy(
         session_token=at,
         target_url=target_url,
         db=ctx.db,
         picked=picked,
     )
-    info = await veo_fetch_credits_in_window(
+    info = await veo_fetch_credits_by_proxy(
         sess=None,
         target_url=target_url,
         access_token=str((short_info or {}).get("access_token") or ""),
@@ -276,12 +316,20 @@ async def refresh_quota__dreamina_credits(ctx: RefreshQuotaContext) -> int:
     return total_credit
 
 
+async def refresh_quota__gpt_balance(ctx: RefreshQuotaContext) -> int:
+    """GPT/ChatGPT：两层代理刷新余额框架（长 access_token）。"""
+    from .gpt_task_executor import refresh_gpt_balance  # type: ignore
+
+    return await refresh_gpt_balance(ctx)
+
+
 REFRESH_QUOTA_HANDLERS: Dict[str, Tuple[str, RefreshQuotaHandler]] = {
     "noop": ("默认：不刷新（保持当前值）", refresh_quota__noop),
     "reset_to_daily": ("示例：重置为 daily_quota", refresh_quota__reset_to_daily),
     "sora_nf_check": ("Sora：读取余额 backend/nf/check", refresh_quota__sora_nf_check),
-    "veo_flow_credits": ("VEO/Labs：两层代理读取 credits（aisandbox，需 AT）", refresh_quota__veo_flow_credits),
+    "veo_flow_credits": ("VEO/Labs：优先插件读取 credits，失败回退两层代理", refresh_quota__veo_flow_credits),
     "dreamina_credits": ("Dreamina：指纹窗口内读取余额（commerce API，total_credit）", refresh_quota__dreamina_credits),
+    "gpt_balance": ("GPT/ChatGPT：两层代理刷新余额/账号信息（需长 AT）", refresh_quota__gpt_balance),
 }
 
 

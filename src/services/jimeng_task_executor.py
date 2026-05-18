@@ -50,7 +50,8 @@ from .playwright_broswer_context import (
     safe_trim,
 )
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
-from .browser_extension_bridge import should_use_extension_executor, submit_extension_task
+from .browser_extension_bridge import should_use_extension_executor
+from .browser_extension_interaction import submit_extension_task
 from .browser_automation_base import FingerprintBrowserAutomationBase
 from .veo_workflow_executor import (
     _build_debug_progress_panel_script,

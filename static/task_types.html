@@ -228,7 +228,7 @@
                     <input class="form-check-input" type="checkbox" id="typeWindowPoolEnabled" />
                     <label class="form-check-label" for="typeWindowPoolEnabled">开启窗口池</label>
                   </div>
-                  <div class="text-muted small">开启后服务会按每个指纹浏览器的窗口池上限预热窗口（不占任务 inflight），并按下方周期与 DB 对齐及做 Cloudflare 巡检；派单时优先从池内 mapping 预占槽位。若多个任务类型同时开启窗口池，服务取各类型配置的最小周期。</div>
+                  <div class="text-muted small">开启后服务会按每个指纹浏览器的窗口池上限预热窗口（不占任务 inflight），并按下方周期与 DB 对齐及做 Cloudflare 巡检；派单时优先从池内 mapping 预占槽位。关闭窗口池只停止该类型的窗口池管理，不会关闭已经打开的指纹浏览器窗口。若多个任务类型同时开启窗口池，服务取各类型配置的最小周期。</div>
                 </div>
                 <div class="col-6 col-md-4">
                   <label class="form-label form-label-tight" for="typeWindowPoolReconcileSec">池对齐周期（秒）</label>
@@ -329,6 +329,7 @@
                   <thead>
                     <tr class="small2">
                       <th style="width: 36px;"></th>
+                      <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>备注</th>
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
@@ -344,7 +345,6 @@
                       <th id="thMappingInviteOrVeo">邀请码</th>
                       <th class="sort-head" id="thCooling" title="点击按冷却中排序">冷却中 <span class="text-muted" id="coolingSortHint">↕</span></th>
                       <th class="sort-head" id="thInflight" title="点击按占用排序">占用 <span class="text-muted" id="inflightSortHint">↕</span></th>
-                      <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th class="sort-head" id="thHeadless" title="点击按无头排序">无头 <span class="text-muted" id="headlessSortHint">↕</span></th>
                       <th class="sort-head" id="thPureMode" title="点击按纯净模式排序">纯净 <span class="text-muted" id="pureModeSortHint">↕</span></th>
                       <th>操作</th>
@@ -2906,10 +2906,11 @@
           const _isSora = !_handler || _handler.startsWith("sora");
           const _isVeo = _handler === "veo_workflow";
           const _isGrok = _handler === "grok_workflow";
+          const _isGpt = _handler === "gpt_workflow";
           const _isDreamina = _handler === "dreamina_workflow";
-          const _targetPageHandler = _isVeo || _isGrok || _isDreamina;
-          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow" || _handler === "dreamina_workflow";
-          const _openTitle = "会先清空该窗口本地缓存，再打开/唤起指纹窗口；若窗口内没有目标页或其子页面，则新建 page 打开目标页（禁止自动关闭）";
+          const _targetPageHandler = _isVeo || _isGrok || _isDreamina || _isGpt;
+          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow" || _handler === "dreamina_workflow" || _handler === "gpt_workflow";
+          const _openTitle = "仅打开/唤起指纹浏览器窗口；不判断或打开目标页，不连接 CDP（禁止自动关闭）";
           const _startTitle = _targetPageHandler ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
           const _openAccountTitle = _isVeo
             ? "开号/连接：连接后自动判断是否为 Google 登录页；若页面可见 @gmail.com（选账号列表）则走「连接置前」自动点选；否则走完整 Google 登录并打开 Flow（完成后断开 CDP）"
@@ -2917,12 +2918,19 @@
               ? "开号/连接：打开 Dreamina 目标页并断开 CDP；默认使用窗口 Cookie，可用「access_token」列获取/保存 sessionid"
               : _isGrok
                 ? "连接：打开 Grok 默认页并断开 CDP；默认用窗口 Cookie，可选在「access_token」列保存 Grok SSO（与 grok2api 同源）"
+                : _isGpt
+                  ? "连接：打开 ChatGPT 页面并断开 CDP；点击「access_token」列的更新可读取 ChatGPT 长 access_token"
                 : "开号：Sora 走 Plus 注册自动化；Veo/Dreamina 为打开目标页并断开 CDP";
-          const _openAccountLabel = (_isVeo || _isDreamina) ? "开号/连接" : (_isGrok ? "连接" : "开号");
+          const _openAccountLabel = (_isVeo || _isDreamina) ? "开号/连接" : ((_isGrok || _isGpt) ? "连接" : "开号");
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
               <input type="checkbox" class="form-check-input chkMap" value="${m.id}" ${state.mapSelected.has(m.id) ? "checked" : ""} />
+            </td>
+            <td class="text-center">
+              <div class="form-check form-switch d-inline-block mb-0">
+                <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
+              </div>
             </td>
             <td style="width: 80px; min-width: 80px;">
               <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -3087,11 +3095,6 @@
             </td>
             <td class="mono">
               <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
-            </td>
-            <td class="text-center">
-              <div class="form-check form-switch d-inline-block mb-0">
-                <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
-              </div>
             </td>
             <td class="text-center">
               <div class="form-check form-switch d-inline-block mb-0">
@@ -3531,8 +3534,8 @@
             sora_subscription_end: d?.subscription_end != null ? d.subscription_end : "",
           };
           const _subHandler = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          // veo_workflow / grok_workflow：刷新会员信息只更新套餐名，不刷新余额（与后端 refresh-subscription-info 一致）
-          if (_subHandler !== "veo_workflow" && _subHandler !== "grok_workflow" && d && typeof d.credits === "number") {
+          // veo_workflow / grok_workflow / gpt_workflow：刷新会员信息只更新套餐名，不刷新余额（与后端 refresh-subscription-info 一致）
+          if (_subHandler !== "veo_workflow" && _subHandler !== "grok_workflow" && _subHandler !== "gpt_workflow" && d && typeof d.credits === "number") {
             patch.remaining_quota = d.credits;
           }
           updateMappingRowUI(mappingId, patch);
@@ -4204,6 +4207,8 @@
         let hint = `窗口：${m?.window_name || "-"} · 账号：${m?.platform_account || "-"} · mapping_id=${String(mappingId)}`;
         if (gh === "grok_workflow") {
           hint += " · Grok：此处保存 xAI SSO（可选，与 grok2api 池化 token 同源）；留空则任务仅用指纹窗口已登录 Cookie。任务 payload 也可用 grok_access_token / access_token 覆盖。";
+        } else if (gh === "gpt_workflow") {
+          hint += " · GPT：此处保存 ChatGPT 长 access_token；点击「更新」会打开/连接 ChatGPT 页面并通过插件读取 /api/auth/session。";
         } else if (gh === "dreamina_workflow") {
           hint += " · Dreamina：此处保存 Cookies 中的 sessionid；点击「更新」会打开目标页后自动读取。";
         }
@@ -4214,6 +4219,9 @@
           if (gh === "grok_workflow") {
             helpEl.innerHTML =
               "Grok 任务类型：<strong>不支持</strong>「更新」自动拉取。请「保存」手工粘贴 SSO，或保持为空仅用窗口 Cookie。过期时间字段可为空。";
+          } else if (gh === "gpt_workflow") {
+            helpEl.innerHTML =
+              "GPT 任务类型：点击「更新」会通过浏览器插件读取 ChatGPT <span class=\"mono\">/api/auth/session</span> 的长 <span class=\"mono\">access_token</span> 并保存；没有 short token。";
           } else if (gh === "dreamina_workflow") {
             helpEl.innerHTML =
               "Dreamina 任务类型：点击「更新」会连接指纹浏览器窗口打开目标页面，然后读取 Cookies 中 <span class=\"mono\">sessionid</span> 的值并保存到此列。";
@@ -4229,7 +4237,7 @@
         }
         const _tokLabels = document.querySelectorAll("#tokenModal .modal-body .form-label.mono");
         if (_tokLabels.length > 0) {
-          _tokLabels[0].textContent = gh === "grok_workflow" ? "access_token（Grok SSO，可选）" : (gh === "dreamina_workflow" ? "access_token（Dreamina sessionid）" : "access_token");
+          _tokLabels[0].textContent = gh === "grok_workflow" ? "access_token（Grok SSO，可选）" : (gh === "dreamina_workflow" ? "access_token（Dreamina sessionid）" : (gh === "gpt_workflow" ? "access_token（ChatGPT 长 AT）" : "access_token"));
         }
         document.getElementById("tokenAccessToken").value = String(m?.sora_access_token || "");
         document.getElementById("tokenExpires").value = String(m?.sora_access_expires || "");
@@ -4321,20 +4329,17 @@
           // 如果刚刚触发了“关闭窗口倒计时提示”，这里顺手清掉提示，避免界面残留
           cancelCloseHintCountdown({ hideModal: true });
           const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
-          // 防止重复点击：打开/关闭同时锁住
-          setBtnBusy(openBtn, true, { loadingText: "清本地缓存" });
+          // 防止重复点击：打开/关闭同时锁住。这里只做 browser_open，不清缓存、不判断/打开目标页。
+          setBtnBusy(openBtn, true, { loadingText: "打开中" });
           if (startBtn) startBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
           if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
-          await clearMappingBrowserLocalCache(mappingId);
-
-          setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
-          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
+          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}&browser_only=true`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
-          toast(d?.page_url ? "已打开指纹窗口并确保目标页存在，已禁止自动关闭" : "已打开指纹窗口，已禁止自动关闭", "success");
+          toast("已打开指纹窗口，未连接 CDP，已禁止自动关闭", "success");
           flashBtnText(openBtn, "已打开");
         } catch (e) {
           toast(e.message, "error");
@@ -4385,7 +4390,7 @@
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
           const _h2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(_h2 === "veo_workflow" || _h2 === "grok_workflow" || _h2 === "dreamina_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
+          toast(_h2 === "veo_workflow" || _h2 === "grok_workflow" || _h2 === "dreamina_workflow" || _h2 === "gpt_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
           flashBtnText(startBtn, "已重启");
         } catch (e) {
           toast(e.message, "error");
@@ -4418,7 +4423,7 @@
         try {
           cancelCloseHintCountdown({ hideModal: true });
           const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          const loadingText = (_h === "veo_workflow" || _h === "dreamina_workflow" || _h === "grok_workflow") ? "连接中" : "开号中";
+          const loadingText = (_h === "veo_workflow" || _h === "dreamina_workflow" || _h === "grok_workflow" || _h === "gpt_workflow") ? "连接中" : "开号中";
           setBtnBusy(btn, true, { loadingText });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
@@ -4435,6 +4440,8 @@
                 ? "已打开 Dreamina 页面，已断开自动化连接（请在本窗口完成登录/确认 Cookie）"
                 : _h === "grok_workflow"
                   ? "已打开 Grok 页面，已断开自动化连接（请在本窗口完成登录）"
+                  : _h === "gpt_workflow"
+                    ? "已打开 ChatGPT 页面，已断开自动化连接（请在本窗口完成登录）"
                   : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
           toast(line, "success");
           flashBtnText(btn, "完成");

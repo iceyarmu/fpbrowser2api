@@ -45,6 +45,7 @@ class ExtensionClient:
 _clients: Dict[str, ExtensionClient] = {}
 _clients_by_id: Dict[str, ExtensionClient] = {}
 _clients_lock = asyncio.Lock()
+_PING_INTERVAL_SECONDS = 20.0
 
 
 def _client_key(space_id: str, window_key: str) -> str:
@@ -164,39 +165,17 @@ async def submit_extension_task(
     progress_cb: ProgressCB,
     timeout_seconds: float,
 ) -> Dict[str, Any]:
-    client = await get_extension_client(space_id, window_key)
-    if client is None:
-        raise NonPenalizedTaskError(
-            f"浏览器插件未连接：space_id={space_id!r} window_key={window_key!r}",
-            status_code=503,
-        )
+    """兼容旧导入路径；实际实现已迁移到 browser_extension_interaction.py。"""
+    from .browser_extension_interaction import submit_extension_task as _submit_extension_task
 
-    task_id = str((payload or {}).get("task_id") or uuid.uuid4())
-    loop = asyncio.get_running_loop()
-    fut: asyncio.Future = loop.create_future()
-    client.pending[task_id] = fut
-    client.progress_cbs[task_id] = progress_cb
-    msg = {
-        "type": "task.start",
-        "task_id": task_id,
-        "provider": provider,
-        "payload": dict(payload or {}),
-    }
-    msg["payload"]["_bridge_task_id"] = task_id
-    try:
-        async with client.send_lock:
-            await client.websocket.send_json(msg)
-        await progress_cb(1, {"stage": "extension_dispatched", "provider": provider})
-        result = await asyncio.wait_for(
-            fut,
-            timeout=max(1.0, float(timeout_seconds or config.extension_task_timeout_seconds)),
-        )
-        if not isinstance(result, dict):
-            raise RuntimeError(f"extension returned invalid result: {result!r}")
-        return result
-    finally:
-        client.pending.pop(task_id, None)
-        client.progress_cbs.pop(task_id, None)
+    return await _submit_extension_task(
+        space_id=space_id,
+        window_key=window_key,
+        provider=provider,
+        payload=payload,
+        progress_cb=progress_cb,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def _handle_client_message(client: ExtensionClient, msg: Dict[str, Any]) -> None:
@@ -218,6 +197,14 @@ async def _handle_client_message(client: ExtensionClient, msg: Dict[str, Any]) -
         return
 
     if typ == "pong":
+        return
+
+    if typ == "heartbeat":
+        try:
+            async with client.send_lock:
+                await client.websocket.send_json({"type": "heartbeat.ok", "ts": int(time.time() * 1000)})
+        except Exception:
+            logger.debug("extension heartbeat ack failed client=%s", client.client_id, exc_info=True)
         return
 
     task_id = str(msg.get("task_id") or "").strip()
@@ -249,6 +236,18 @@ async def _handle_client_message(client: ExtensionClient, msg: Dict[str, Any]) -
             fut.set_exception(NonPenalizedTaskError(message, status_code=status_code))
 
 
+async def _ping_client_loop(client: ExtensionClient) -> None:
+    while True:
+        await asyncio.sleep(_PING_INTERVAL_SECONDS)
+        try:
+            async with client.send_lock:
+                await client.websocket.send_json({"type": "ping", "ts": int(time.time() * 1000)})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            break
+
+
 @router.websocket("/api/extension/ws")
 async def extension_ws(websocket: WebSocket):
     token = websocket.query_params.get("token") or websocket.headers.get("x-extension-token") or ""
@@ -258,6 +257,7 @@ async def extension_ws(websocket: WebSocket):
         return
     await websocket.accept()
     client = ExtensionClient(client_id=str(uuid.uuid4()), websocket=websocket)
+    ping_task = asyncio.create_task(_ping_client_loop(client))
     try:
         await websocket.send_json({"type": "welcome", "client_id": client.client_id})
         while True:
@@ -269,6 +269,13 @@ async def extension_ws(websocket: WebSocket):
     except Exception:
         logger.exception("extension websocket error")
     finally:
+        ping_task.cancel()
+        try:
+            await ping_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
         await _unregister_client(client)
 
 

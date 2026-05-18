@@ -1,10 +1,13 @@
 import { runVeoTask } from "./providers/veo_provider.js";
 import { runDreaminaTask } from "./providers/dreamina_provider.js";
+import { runGptTask } from "./providers/gpt_provider.js";
 
 let ws = null;
 let reconnectTimer = null;
+let heartbeatTimer = null;
 let currentConnectKey = "";
 let connectSeq = 0;
+const HEARTBEAT_INTERVAL_MS = 15000;
 let status = {
   bridgeUrl: "",
   spaceId: "",
@@ -65,6 +68,52 @@ async function getConfig() {
 async function send(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("bridge websocket is not open");
   ws.send(JSON.stringify(obj));
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function startHeartbeat(socket, seq) {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    try {
+      if (ws !== socket || seq !== connectSeq || !socket || socket.readyState !== WebSocket.OPEN) {
+        stopHeartbeat();
+        return;
+      }
+      socket.send(JSON.stringify({ type: "heartbeat", ts: Date.now() }));
+    } catch (e) {
+      stopHeartbeat();
+      try { socket.close(); } catch (_) {}
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function normalizeRedirectUrl(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+  } catch (_) {}
+  return "";
+}
+
+async function waitForBridgeReady(timeoutMs = 5000) {
+  const end = Date.now() + Math.max(0, Number(timeoutMs || 0));
+  while (Date.now() < end) {
+    if (status.wsState === "open" && status.helloOk) return true;
+    await sleep(120);
+  }
+  return status.wsState === "open" && status.helloOk;
 }
 
 function scheduleReconnect() {
@@ -147,8 +196,9 @@ async function connectBridge(options = {}) {
       version: chrome.runtime.getManifest().version,
       space_id: cfg.spaceId,
       window_key: cfg.windowKey,
-      capabilities: ["veo", "dreamina"]
+      capabilities: ["veo", "veo_tokens", "dreamina", "gpt"]
     }));
+    startHeartbeat(socket, mySeq);
   };
   socket.onmessage = async (ev) => {
     if (ws !== socket || mySeq !== connectSeq) return;
@@ -178,9 +228,12 @@ async function connectBridge(options = {}) {
       });
     } else if (msg.type === "ping") {
       await send({ type: "pong" });
+    } else if (msg.type === "heartbeat.ok") {
+      await setStatus({ lastError: "" });
     }
   };
   socket.onclose = (ev) => {
+    if (ws === socket && mySeq === connectSeq) stopHeartbeat();
     if (socket.__fpb_intentional_close || ws !== socket || mySeq !== connectSeq) {
       return;
     }
@@ -190,6 +243,7 @@ async function connectBridge(options = {}) {
   };
   socket.onerror = () => {
     if (ws !== socket || mySeq !== connectSeq) return;
+    stopHeartbeat();
     setStatus({ wsState: "error", helloOk: false, lastError: "websocket error" }).catch(() => {});
     pushLog("error", "websocket error").catch(() => {});
     try { socket.close(); } catch (_) {}
@@ -210,6 +264,8 @@ async function runTask(msg) {
     result = await runVeoTask(msg, runtime);
   } else if (msg.provider === "dreamina") {
     result = await runDreaminaTask(msg, runtime);
+  } else if (msg.provider === "gpt") {
+    result = await runGptTask(msg, runtime);
   } else {
     throw new Error(`unsupported provider: ${msg.provider}`);
   }
@@ -223,6 +279,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const type = message && message.type;
     if (type === "content.fpbConfig") {
       const cfg = message.config || {};
+      const redirectUrl = normalizeRedirectUrl(message.redirect_url || cfg.redirect_url || "");
       const patch = {};
       if (cfg.bridge_url) patch.bridge_url = cfg.bridge_url;
       if (cfg.bridge_token) patch.bridge_token = cfg.bridge_token;
@@ -233,7 +290,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await pushLog("info", "config received from content script", patch);
       }
       await connectBridge({ force: true, reason: "content.fpbConfig" });
-      sendResponse({ ok: true });
+      let bridgeReady = false;
+      let redirected = false;
+      if (redirectUrl && sender && sender.tab && sender.tab.id) {
+        bridgeReady = await waitForBridgeReady(5000);
+        // 给 Python 侧 trigger 函数留出时间断开 Playwright/CDP，再由插件跳转目标站点。
+        await sleep(3000);
+        await pushLog("info", "redirecting tab after fpb config and cdp grace delay", { redirect_url: redirectUrl, bridge_ready: bridgeReady, delay_ms: 3000 });
+        try {
+          await chrome.tabs.update(sender.tab.id, { url: redirectUrl, active: true });
+          redirected = true;
+        } catch (e) {
+          await pushLog("warn", "redirect tab failed", { redirect_url: redirectUrl, error: String(e && e.message || e) });
+        }
+      }
+      sendResponse({ ok: true, redirected, bridge_ready: bridgeReady });
       return;
     }
     if (type === "popup.getState") {
