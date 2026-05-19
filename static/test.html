@@ -81,15 +81,15 @@
               <div class="mb-3">
                 <label class="form-label">时长 duration（可选）</label>
                 <input class="form-control mono" id="duration" placeholder="5" />
-                <div class="text-muted small">上次填写会保存在本机浏览器。</div>
+                <div class="text-muted small">输入为1的时候生成图片</div>
               </div>
               <div class="mb-3">
                 <label class="form-label">图片输出分辨率（可选）</label>
                 <select class="form-select" id="imageResolution">
-                  <option value="">1K（默认）</option>
+                  <option value="1k">1K（默认）</option>
                   <option value="2k">2K</option>
+                  <option value="4k">4K</option>
                 </select>
-                <div class="text-muted small">对应任务 JSON 中的 <span class="mono">resolution</span>；选 2K 时后端将走放大流程（与 veo 图片工作流一致）。选择会保存在本机浏览器。</div>
               </div>
               <div class="mb-3 form-check">
                 <input class="form-check-input" type="checkbox" id="headlessMode" />
@@ -333,7 +333,16 @@
           }
           if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
           const imageResRaw = (document.getElementById("imageResolution")?.value || "").trim().toLowerCase();
-          if (imageResRaw === "2k") payload.resolution = "2k";
+          const imageResolution = (imageResRaw === "2k" || imageResRaw === "4k") ? imageResRaw : "1k";
+          payload.resolution = imageResolution;
+          payload.size_tier = imageResolution.toUpperCase();
+          if (type === "gpt_workflow" && duration === 1) {
+            payload.workflow_kind = "image";
+            payload.model = `gpt-image2-${imageResolution}`;
+            payload.model_code = "gpt-image-2";
+            payload.image_model_name = "gpt-image-2";
+            payload.gpt_image2_model = payload.model;
+          }
           const headlessChecked = document.getElementById("headlessMode")?.checked === true;
           if (headlessChecked) payload.headless = true;
 
@@ -447,17 +456,17 @@
           durationEl.addEventListener("input", (e) => lsSet(LS_KEYS.testDuration, e.target.value));
         }
 
-        // 图片输出分辨率回填与缓存（供 _veo_resolve_image_output_resolution 等读取 payload.resolution）
+        // 图片输出分辨率回填与缓存（供 GPT image2 / VEO 图片流程读取 payload.resolution）
         const imageResolutionEl = document.getElementById("imageResolution");
         const savedImageRes = (lsGet(LS_KEYS.testImageResolution) || "").trim().toLowerCase();
-        if (imageResolutionEl && (savedImageRes === "2k" || savedImageRes === "")) {
-          imageResolutionEl.value = savedImageRes === "2k" ? "2k" : "";
+        if (imageResolutionEl && (savedImageRes === "1k" || savedImageRes === "2k" || savedImageRes === "4k" || savedImageRes === "")) {
+          imageResolutionEl.value = savedImageRes || "1k";
         }
         if (imageResolutionEl) {
           imageResolutionEl.addEventListener("change", (e) => {
             const v = (e.target.value || "").trim().toLowerCase();
-            if (v === "2k") lsSet(LS_KEYS.testImageResolution, "2k");
-            else lsDel(LS_KEYS.testImageResolution);
+            if (v === "1k" || v === "2k" || v === "4k") lsSet(LS_KEYS.testImageResolution, v);
+            else lsSet(LS_KEYS.testImageResolution, "1k");
           });
         }
 
@@ -538,4 +547,3 @@
     </script>
   </body>
 </html>
-

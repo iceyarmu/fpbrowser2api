@@ -28,6 +28,56 @@ function randSeed(max = 99999) { return 1 + Math.floor(Math.random() * max); }
 // navigation/refresh with frame-dependent executeScript calls, without locking
 // the whole workflow, so video polling and separate jobs can still overlap.
 const veoTabOpLocks = new Map();
+const VEO_RUN_ID = Symbol("veoRunId");
+const activeVeoTaskRuns = new Map();
+let veoTaskRunSeq = 0;
+
+function beginVeoTaskRun(msg, runtime) {
+  const taskId = String((runtime && runtime.taskId) || (msg && msg.task_id) || "unknown");
+  const runId = `${taskId}:${Date.now()}:${++veoTaskRunSeq}`;
+  activeVeoTaskRuns.set(runId, {
+    task_id: taskId,
+    provider: "veo",
+    started_at: Date.now()
+  });
+  if (runtime) {
+    try { runtime[VEO_RUN_ID] = runId; } catch (_) {}
+  }
+  return runId;
+}
+
+function endVeoTaskRun(runId, runtime) {
+  if (runId) activeVeoTaskRuns.delete(runId);
+  if (runtime) {
+    try {
+      if (runtime[VEO_RUN_ID] === runId) delete runtime[VEO_RUN_ID];
+    } catch (_) {}
+  }
+}
+
+function countOtherActiveVeoTaskRuns(runtime) {
+  const currentRunId = runtime && runtime[VEO_RUN_ID];
+  let n = 0;
+  for (const runId of activeVeoTaskRuns.keys()) {
+    if (runId !== currentRunId) n++;
+  }
+  return n;
+}
+
+async function shouldSkipProjectPageRefresh(progress, runtime, stage, url) {
+  const otherActiveTasks = countOtherActiveVeoTaskRuns(runtime);
+  if (!otherActiveTasks) return false;
+  try {
+    await runtime.progress(progress, {
+      stage: `${stage}_skipped`,
+      url,
+      reason: "other_tasks_running",
+      active_veo_tasks: activeVeoTaskRuns.size,
+      other_active_veo_tasks: otherActiveTasks
+    });
+  } catch (_) {}
+  return true;
+}
 
 async function withVeoTabOpLock(tabId, label, fn) {
   const key = `veo-tab:${String(tabId || "unknown")}`;
@@ -52,6 +102,50 @@ function isTransientPageFetchError(e) {
 function archiveEnabled(p, key = "archive_workflow") {
   const v = p && Object.prototype.hasOwnProperty.call(p, key) ? p[key] : true;
   return v !== false;
+}
+
+function isVeoFlowPageUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:" && u.hostname === "labs.google" && u.pathname.startsWith("/fx/tools/flow");
+  } catch (_) {
+    return false;
+  }
+}
+
+async function getCurrentWindowActiveTab() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (Array.isArray(tabs) && tabs[0]) return tabs[0];
+  } catch (_) {}
+  try {
+    const win = await chrome.windows.getLastFocused({ populate: true, windowTypes: ["normal"] });
+    const tabs = Array.isArray(win && win.tabs) ? win.tabs : [];
+    return tabs.find(t => t && t.active) || tabs[0] || null;
+  } catch (_) {}
+  try {
+    const tabs = await chrome.tabs.query({});
+    return (tabs || []).find(t => t && t.active) || (tabs || [])[0] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchVeoCurrentPageTask(msg, runtime) {
+  const tab = await getCurrentWindowActiveTab();
+  const url = String((tab && tab.url) || "");
+  try {
+    await runtime.progress(100, { stage: "current_page", url, is_flow_page: isVeoFlowPageUrl(url) });
+  } catch (_) {}
+  return {
+    type: "veo_current_page",
+    tab_id: tab && tab.id ? tab.id : null,
+    window_id: tab && tab.windowId ? tab.windowId : null,
+    url,
+    title: String((tab && tab.title) || ""),
+    is_flow_page: isVeoFlowPageUrl(url),
+    required_url_prefix: "https://labs.google/fx/tools/flow"
+  };
 }
 
 async function waitTabComplete(tabId, timeoutMs = 45000) {
@@ -117,22 +211,24 @@ async function simulateHumanActivity(tabId, runtime, minMs = 3000, maxMs = 10000
   } catch (_) {}
 }
 
-async function reloadProjectPage(tabId, projectPage, runtime) {
+async function reloadProjectPage(progress, tabId, projectPage, runtime) {
   return await withVeoTabOpLock(tabId, "reload_project_page", async () => {
-    await runtime.progress(3, { stage: "reload_project_page", url: projectPage });
+    if (await shouldSkipProjectPageRefresh(progress, runtime, "reload_project_page", projectPage)) return false;
+    await runtime.progress(progress, { stage: "reload_project_page", url: projectPage });
     try {
-      // 插件收到普通 VEO 任务后，必须对 project_page 做一次真实刷新。
-      // 多任务并发时刷新必须与 pageFetchJson 串行，否则 executeScript 所在
-      // frame 被销毁会返回空 result。
+      // 单任务时对 project_page 做一次真实刷新；如果还有其它 VEO
+      // 任务在跑，上面的检查会跳过刷新，避免销毁其它任务正在使用的 frame。
       await chrome.tabs.update(tabId, { active: true });
       await chrome.tabs.reload(tabId, { bypassCache: false });
       await waitTabComplete(tabId, 45000);
       await sleep(1200);
+      return true;
     } catch (e) {
       // reload 失败时兜底导航到项目页，仍保证插件任务从 projectPage 开始。
       await chrome.tabs.update(tabId, { url: projectPage, active: true });
       await waitTabComplete(tabId, 45000);
       await sleep(1200);
+      return true;
     }
   });
 }
@@ -230,11 +326,11 @@ function cookieExpiresToIso(cookie) {
 
 function veoCookieUrl(targetUrl) {
   try {
-    const u = new URL(targetUrl || "https://labs.google/fx");
-    if (!/(\.|^)labs\.google$/i.test(u.hostname)) return "https://labs.google/fx";
-    return `${u.origin}/fx`;
+    const u = new URL(targetUrl || "https://labs.google");
+    if (!/(\.|^)labs\.google$/i.test(u.hostname)) return "https://labs.google";
+    return `${u.origin}`;
   } catch (_) {
-    return "https://labs.google/fx";
+    return "https://labs.google";
   }
 }
 
@@ -321,6 +417,10 @@ async function fetchShortAccessTokenByExtensionFetch(targetUrl) {
   throw new Error(last || "auth/session 未返回 access_token");
 }
 
+function cleanTokenValue(v) {
+  return String(v || "").trim();
+}
+
 async function fetchVeoLongAccessTokenTask(msg, runtime) {
   const p = msg.payload || {};
   const targetUrl = p.target_url || p.project_page || "https://labs.google/fx";
@@ -358,12 +458,21 @@ async function fetchVeoShortAccessTokenTask(msg, runtime) {
 async function fetchVeoAccessTokensTask(msg, runtime) {
   const p = msg.payload || {};
   const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  const extSessionToken = cleanTokenValue(p.ext_session_token || p.expected_session_token || p.current_session_token);
+  const extShortAccessToken = cleanTokenValue(p.ext_short_access_token || p.short_access_token);
+  const extShortExpires = cleanTokenValue(p.ext_short_expires || p.short_expires) || null;
   await runtime.progress(3, { stage: "long_access_token" });
   const longInfo = await getLongAccessTokenFromCookies(projectPage);
+  const longSessionToken = cleanTokenValue(longInfo && longInfo.session_token);
+  if (!longSessionToken) throw new Error("VEO long session_token not found");
 
-  await runtime.progress(15, { stage: "short_access_token" });
+  await runtime.progress(15, {
+    stage: "short_access_token",
+    session_token_matches_ext: !!(extSessionToken && longSessionToken === extSessionToken)
+  });
   let shortInfo = null;
   let shortSource = "extension.fetch";
+
   try {
     shortInfo = await fetchShortAccessTokenByExtensionFetch(projectPage);
   } catch (e) {
@@ -372,21 +481,23 @@ async function fetchVeoAccessTokensTask(msg, runtime) {
     const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
     shortInfo = await getAccessTokenFromPage(tabId);
   }
-  if (!longInfo.session_token) throw new Error("VEO long session_token not found");
   if (!shortInfo || !shortInfo.access_token) throw new Error("VEO short access_token not found");
   await runtime.progress(100, { stage: "done", token_kind: "long_short" });
+
   return {
     type: "veo_access_tokens",
-    access_token: longInfo.session_token,
-    session_token: longInfo.session_token,
-    expires: longInfo.expires || null,
+    access_token: shortInfo && shortInfo.access_token ? shortInfo.access_token : null,
+    session_token: shortInfo && shortInfo.access_token ? shortInfo.access_token : null,
+    expires: shortInfo && shortInfo.expires ? shortInfo.expires : null,
     cookie_name: longInfo.cookie_name || null,
     cookie_parts: longInfo.cookie_parts || 1,
-    short_access_token: shortInfo.access_token,
-    short_expires: shortInfo.expires || null,
-    email: shortInfo.email || null,
+    short_access_token: shortInfo && shortInfo.access_token ? shortInfo.access_token : null,
+    short_expires: shortInfo && shortInfo.expires ? shortInfo.expires : null,
+    email: shortInfo && shortInfo.email ? shortInfo.email : null,
     source: "extension",
-    short_source: shortSource
+    short_source: shortSource,
+    ext_session_token_matched: !!(extSessionToken && longSessionToken === extSessionToken),
+    ext_session_token_changed: !!(extSessionToken && longSessionToken !== extSessionToken)
   };
 }
 
@@ -636,12 +747,13 @@ async function archiveUploadedWorkflows(tabId, at, uploaded, runtime, reason = "
   return { archived, total };
 }
 
-async function refreshProjectPageAfterArchive(tabId, projectPage, runtime, reason = "refresh_project_page_after_archive") {
+async function refreshProjectPageAfterArchive(progress, tabId, projectPage, runtime, reason = "refresh_project_page_after_archive") {
   const url = String(projectPage || "").trim();
   if (!url) return false;
   return await withVeoTabOpLock(tabId, reason, async () => {
+    if (await shouldSkipProjectPageRefresh(progress, runtime, reason, url)) return false;
     try {
-      await runtime.progress(98, { stage: reason, url });
+      await runtime.progress(progress, { stage: reason, url });
     } catch (_) {}
     try {
       await chrome.tabs.update(tabId, { url, active: true });
@@ -795,7 +907,7 @@ async function runImageWorkflow(tabId, p, at, runtime) {
   let tx = null;
   let parsed = null;
   let submitErr = "";
-  const maxImageSubmitAttempts = 3; // 首次提交 + 失败后连续重试 2 次
+  const maxImageSubmitAttempts = 2; // 首次提交 + 失败后连续重试 2 次
   for (let attempt = 0; attempt < maxImageSubmitAttempts; attempt++) {
     try {
       const recaptcha = await getRecaptchaToken(tabId, "IMAGE_GENERATION");
@@ -855,7 +967,7 @@ async function runImageWorkflow(tabId, p, at, runtime) {
   }
   if (!parsed) {
     if (archiveEnabled(p, "archive_uploaded_workflows")) await archiveUploadedWorkflows(tabId, at, uploaded, runtime, "cleanup_uploaded_workflows_submit_failed");
-    await refreshProjectPageAfterArchive(tabId, p.project_page, runtime);
+    await refreshProjectPageAfterArchive(98, tabId, p.project_page, runtime);
     throw new Error(submitErr || "VEO image submit failed");
   }
   let shareUrl = parsed.fifeUrl;
@@ -876,7 +988,7 @@ async function runImageWorkflow(tabId, p, at, runtime) {
   }
   const archived = archiveEnabled(p, "archive_workflow") ? await archiveWorkflow(tabId, at, parsed.workflowId, parsed.projectId || projectId) : false;
   if (archiveEnabled(p, "archive_uploaded_workflows")) await archiveUploadedWorkflows(tabId, at, uploaded, runtime, "cleanup_uploaded_workflows_done");
-  await refreshProjectPageAfterArchive(tabId, p.project_page, runtime);
+  await refreshProjectPageAfterArchive(98, tabId, p.project_page, runtime);
   await runtime.progress(100, { stage: "done", image_url: shareUrl, workflow_id: parsed.workflowId });
   return {
     type: "veo_workflow_image",
@@ -972,7 +1084,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   await runtime.progress(10, { stage: "submit_task", video_mode: mode });
   let operations = [];
   let submitErr = "";
-  const maxVideoSubmitAttempts = 3; // 首次提交 + 失败后连续重试 2 次
+  const maxVideoSubmitAttempts = 2; // 首次提交 + 失败后连续重试 2 次
   for (let attempt = 0; attempt < maxVideoSubmitAttempts; attempt++) {
     try {
       const recaptcha = await getRecaptchaToken(tabId, "VIDEO_GENERATION");
@@ -1014,7 +1126,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   const done = await pollVideo(tabId, at, operations, runtime, p);
   const archived = archiveEnabled(p, "archive_workflow") ? await archiveWorkflow(tabId, at, done.workflowId, done.projectId || projectId) : false;
   if (archiveEnabled(p, "archive_uploaded_workflows")) await archiveUploadedWorkflows(tabId, at, uploaded, runtime, "cleanup_uploaded_workflows_done");
-  await refreshProjectPageAfterArchive(tabId, p.project_page, runtime);
+  await refreshProjectPageAfterArchive(98, tabId, p.project_page, runtime);
   await runtime.progress(100, { stage: "done", video_url: done.videoUrl, workflow_id: done.workflowId });
   return {
     type: "veo_workflow_video",
@@ -1030,48 +1142,50 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   };
   } catch (e) {
     if (archiveEnabled(p, "archive_uploaded_workflows")) await archiveUploadedWorkflows(tabId, at, uploaded, runtime, "cleanup_uploaded_workflows_video_failed");
-    await refreshProjectPageAfterArchive(tabId, p.project_page, runtime);
+    await refreshProjectPageAfterArchive(98, tabId, p.project_page, runtime);
     throw e;
   }
 }
 
 export async function runVeoTask(msg, runtime) {
-  const p = msg.payload || {};
-  const action = String(p.action || p.workflow_kind || "").trim();
-  if (action === "fetch_long_access_token") {
-    return await fetchVeoLongAccessTokenTask(msg, runtime);
-  }
-  if (action === "fetch_short_access_token") {
-    return await fetchVeoShortAccessTokenTask(msg, runtime);
-  }
-  if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
-    return await fetchVeoAccessTokensTask(msg, runtime);
-  }
+  const veoRunId = beginVeoTaskRun(msg, runtime);
   try {
-    const got = await chrome.storage.local.get(["veo_archive_enabled"]);
-    const enabled = got.veo_archive_enabled !== false; // default enabled
-    p.archive_workflow = enabled;
-    p.archive_uploaded_workflows = enabled;
-    await runtime.progress(1, { stage: "archive_setting", archive_enabled: enabled });
-  } catch (_) {
-    p.archive_workflow = true;
-    p.archive_uploaded_workflows = true;
+    const p = msg.payload || {};
+    const action = String(p.action || p.workflow_kind || "").trim();
+    if (action === "current_page" || action === "get_current_page" || action === "current_url" || action === "get_current_url") {
+      return await fetchVeoCurrentPageTask(msg, runtime);
+    }
+    if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
+      return await fetchVeoAccessTokensTask(msg, runtime);
+    }
+    try {
+      const got = await chrome.storage.local.get(["veo_archive_enabled"]);
+      const enabled = got.veo_archive_enabled !== false; // default enabled
+      p.archive_workflow = enabled;
+      p.archive_uploaded_workflows = enabled;
+      await runtime.progress(1, { stage: "archive_setting", archive_enabled: enabled });
+    } catch (_) {
+      p.archive_workflow = true;
+      p.archive_uploaded_workflows = true;
+    }
+    if (p.workflow_kind === "balance_refresh" || p.action === "refresh_balance") {
+      return await refreshVeoBalanceTask(msg, runtime);
+    }
+    const projectPage = p.project_page || "https://labs.google/fx";
+    await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
+    // 普通生成任务必须保持在 project_page；如果余额刷新打开了 one.google 标签，
+    // 这里会重新选中/导航回精确项目页，避免停留到 /tools/flow 列表页。
+    const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+    await reloadProjectPage(3, tabId, projectPage, runtime);
+    await simulateHumanActivity(tabId, runtime, 3000, 10000);
+    await runtime.progress(5, { stage: "access_token" });
+    const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);
+    const at = tokenInfo.access_token;
+    if (p.workflow_kind === "image" || p.image_mode) {
+      return await runImageWorkflow(tabId, p, at, runtime);
+    }
+    return await runVideoWorkflow(tabId, p, at, runtime);
+  } finally {
+    endVeoTaskRun(veoRunId, runtime);
   }
-  if (p.workflow_kind === "balance_refresh" || p.action === "refresh_balance") {
-    return await refreshVeoBalanceTask(msg, runtime);
-  }
-  const projectPage = p.project_page || "https://labs.google/fx";
-  await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
-  // 普通生成任务必须保持在 project_page；如果余额刷新打开了 one.google 标签，
-  // 这里会重新选中/导航回精确项目页，避免停留到 /tools/flow 列表页。
-  const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
-  await reloadProjectPage(tabId, projectPage, runtime);
-  await simulateHumanActivity(tabId, runtime, 3000, 10000);
-  await runtime.progress(5, { stage: "access_token" });
-  const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);
-  const at = tokenInfo.access_token;
-  if (p.workflow_kind === "image" || p.image_mode) {
-    return await runImageWorkflow(tabId, p, at, runtime);
-  }
-  return await runVideoWorkflow(tabId, p, at, runtime);
 }

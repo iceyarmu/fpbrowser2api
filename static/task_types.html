@@ -91,6 +91,23 @@
       .quota-click:hover { text-decoration: underline; }
       .invite-click { cursor: pointer; user-select: none; }
       .invite-click:hover { text-decoration: underline; }
+      .mapping-table td.switch-cell {
+        vertical-align: middle;
+        text-align: center;
+      }
+      .mapping-table td.switch-cell .form-switch {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 0;
+        padding-left: 0;
+        margin-bottom: 0;
+        line-height: 1;
+      }
+      .mapping-table td.switch-cell .form-switch .form-check-input {
+        float: none;
+        margin: 0;
+      }
       .enabled-switch { transform: scale(0.85); margin: 0; cursor: pointer; }
       .enabled-switch:disabled { opacity: 0.5; cursor: wait; }
       .token-click { cursor: pointer; user-select: none; }
@@ -277,8 +294,8 @@
                     <button class="btn btn-outline-success" id="btnBulkEnableOn" title="将勾选窗口的「启用」列设为开启">批量开启用</button>
                     <button class="btn btn-outline-secondary" id="btnBulkEnableOff" title="将勾选窗口的「启用」列设为关闭">批量关启用</button>
                     <button class="btn btn-outline-warning" id="btnBulkResetConsecutiveErrors" title="将勾选窗口的连续错误清零，并清空错误重置时间">批量重置错误</button>
-                    <button class="btn btn-outline-primary" id="btnBulkPureModeOn" title="将勾选窗口的「纯净」列设为开启">批量开纯净</button>
-                    <button class="btn btn-outline-secondary" id="btnBulkPureModeOff" title="将勾选窗口的「纯净」列设为关闭">批量关纯净</button>
+                    <button class="btn btn-outline-primary" id="btnBulkPureModeOn" title="将勾选窗口的「纯净」列设为开启，并同步账号/工作台设置">批量开纯净</button>
+                    <button class="btn btn-outline-secondary" id="btnBulkPureModeOff" title="将勾选窗口的「纯净」列设为关闭，并同步账号/工作台设置">批量关纯净</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
                     <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
@@ -2927,7 +2944,7 @@
             <td>
               <input type="checkbox" class="form-check-input chkMap" value="${m.id}" ${state.mapSelected.has(m.id) ? "checked" : ""} />
             </td>
-            <td class="text-center">
+            <td class="text-center switch-cell">
               <div class="form-check form-switch d-inline-block mb-0">
                 <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
               </div>
@@ -3096,14 +3113,14 @@
             <td class="mono">
               <div class="fw-semibold">${m.inflight_slots ?? 0}</div>
             </td>
-            <td class="text-center">
+            <td class="text-center switch-cell">
               <div class="form-check form-switch d-inline-block mb-0">
                 <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="headlessSwitch" data-mid="${m.id}" ${m.headless ? 'checked' : ''} title="切换无头模式">
               </div>
             </td>
-            <td class="text-center">
+            <td class="text-center switch-cell">
               <div class="form-check form-switch d-inline-block mb-0">
-                <input class="form-check-input" type="checkbox" role="switch" data-role="pureModeSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.pure_mode ? 'checked' : ''} title="切换纯净模式">
+                <input class="form-check-input" type="checkbox" role="switch" data-role="pureModeSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.pure_mode ? 'checked' : ''} title="切换纯净模式，并同步账号/工作台设置">
               </div>
             </td>
             <td>
@@ -4335,6 +4352,8 @@
           if (closeBtn) closeBtn.disabled = true;
           if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
+          //await clearMappingBrowserLocalCache(mappingId);
+          setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
           await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}&browser_only=true`, { method: "POST" });
@@ -4982,12 +5001,6 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "切换失败");
             updateMappingRowUI(mid, { enabled: newEnabled });
-            await applyMappingPureModeBrowserSettings({
-              mappingId: mid,
-              spacePk: parseInt(el.dataset.space_pk || "", 10),
-              windowKey: String(el.dataset.window_key || "").trim(),
-              pureMode: !!newEnabled,
-            });
             toast(newEnabled ? "已启用" : "已禁用", "success");
           } catch (e) {
             el.checked = !newEnabled;
@@ -5031,6 +5044,12 @@
           const newPureMode = el.checked;
           el.disabled = true;
           try {
+            await applyMappingPureModeBrowserSettings({
+              mappingId: mid,
+              spacePk,
+              windowKey: wk,
+              pureMode: newPureMode,
+            });
             const r = await adminFetch(`/api/admin/task-type-windows/${mid}`, {
               method: "PATCH",
               body: JSON.stringify({ pure_mode: newPureMode }),
@@ -5039,7 +5058,7 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "切换纯净模式失败");
             updateMappingRowUI(mid, { pure_mode: newPureMode });
-            toast(newPureMode ? "已开启纯净模式" : "已关闭纯净模式", "success");
+            toast(newPureMode ? "已开启纯净模式，并已同步账号/工作台设置" : "已关闭纯净模式，并已同步账号/工作台设置", "success");
           } catch (e) {
             el.checked = !newPureMode;
             toast(e.message || "切换纯净模式失败", "error");
@@ -5233,14 +5252,6 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "启用失败");
             updateMappingRowUI(mappingId, { enabled: true });
-            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-            if (!m) throw new Error("找不到绑定记录");
-            await applyMappingPureModeBrowserSettings({
-              mappingId,
-              spacePk: parseInt(String(m.space_pk || ""), 10),
-              windowKey: String(m.window_key || "").trim(),
-              pureMode: true,
-            });
           },
         });
       }
@@ -5272,14 +5283,6 @@
             const d = await r.json();
             if (!r.ok) throw new Error(d.detail || "禁用失败");
             updateMappingRowUI(mappingId, { enabled: false });
-            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
-            if (!m) throw new Error("找不到绑定记录");
-            await applyMappingPureModeBrowserSettings({
-              mappingId,
-              spacePk: parseInt(String(m.space_pk || ""), 10),
-              windowKey: String(m.window_key || "").trim(),
-              pureMode: false,
-            });
           },
         });
       }
@@ -5325,6 +5328,14 @@
           label: "批量开启纯净模式",
           ids,
           runner: async (mappingId) => {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            await applyMappingPureModeBrowserSettings({
+              mappingId,
+              spacePk: parseInt(String(m.space_pk || ""), 10),
+              windowKey: String(m.window_key || "").trim(),
+              pureMode: true,
+            });
             const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
               method: "PATCH",
               body: JSON.stringify({ pure_mode: true }),
@@ -5343,6 +5354,14 @@
           label: "批量关闭纯净模式",
           ids,
           runner: async (mappingId) => {
+            const m = (state.mappings || []).find(x => String(x.id || "") === String(mappingId));
+            if (!m) throw new Error("找不到绑定记录");
+            await applyMappingPureModeBrowserSettings({
+              mappingId,
+              spacePk: parseInt(String(m.space_pk || ""), 10),
+              windowKey: String(m.window_key || "").trim(),
+              pureMode: false,
+            });
             const r = await adminFetch(`/api/admin/task-type-windows/${mappingId}`, {
               method: "PATCH",
               body: JSON.stringify({ pure_mode: false }),

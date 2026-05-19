@@ -4127,32 +4127,40 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         }
 
     if handler == "gpt_workflow":
-        from ..services.gpt_task_executor import DEFAULT_GPT_TARGET, gpt_fetch_membership_by_proxy  # type: ignore
+        from ..services.gpt_task_executor import DEFAULT_GPT_TARGET, gpt_fetch_membership_in_window  # type: ignore
 
         access_token = str(ctx_row.get("sora_access_token") or "").strip()
-        if not access_token:
-            raise HTTPException(status_code=400, detail="缺少 GPT access_token，请先获取并保存")
+        access_expires = str(ctx_row.get("sora_access_expires") or "").strip() or None
         try:
-            info = await gpt_fetch_membership_by_proxy(
-                access_token=access_token,
+            info = await gpt_fetch_membership_in_window(
+                browser_vendor=vendor,
+                browser_base_url=base_url,
+                browser_access_key=access_key,
+                space_id=space_id,
+                window_key=window_key,
                 target_url=str(ctx_row.get("default_target_url") or "").strip() or DEFAULT_GPT_TARGET,
-                db=db,
-                picked=SimpleNamespace(
-                    window_pk=int(ctx_row.get("window_pk") or 0),
-                    mapping_id=int(mapping_id),
-                    space_id=space_id,
-                    window_key=window_key,
-                ),
+                access_token=access_token,
+                access_expires=access_expires,
+                headless=headless,
+                pure_mode=bool(ctx_row.get("pure_mode")) if ctx_row.get("pure_mode") is not None else True,
+                timeout_seconds=60.0,
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
-        plan_title = str((info or {}).get("membership") or "").strip() or "ChatGPT（Web 账号）"
-        await db.update_task_type_window(mapping_id=mapping_id, sora_plan_title=plan_title)
+        plan_title = str((info or {}).get("plan_title") or (info or {}).get("membership") or "").strip() or "ChatGPT（Web 账号）"
+        new_access_token = str((info or {}).get("access_token") or "").strip()
+        new_expires = str((info or {}).get("expires") or "").strip() or None
+        update_kwargs: Dict[str, Any] = {"mapping_id": mapping_id, "sora_plan_title": plan_title}
+        if new_access_token:
+            update_kwargs["sora_access_token"] = new_access_token
+            update_kwargs["sora_access_expires"] = new_expires
+        await db.update_task_type_window(**update_kwargs)
         return {
             "success": True,
             "mapping_id": mapping_id,
             "plan_title": plan_title,
             "subscription_end": None,
+            "source": (info or {}).get("source") or "extension.membership",
             "raw": (info or {}).get("raw"),
         }
 
@@ -4462,7 +4470,7 @@ async def convert_sora_session_token_to_access_token(
 
         try:
             from ..services.veo_workflow_executor import (  # type: ignore
-                fetch_long_access_token_in_window,
+                force_fetch_access_token_in_window,
                 get_or_create_veo_session,
             )
             from ..services.browser_extension_bridge import annotate_url_with_extension_config  # type: ignore
@@ -4471,17 +4479,15 @@ async def convert_sora_session_token_to_access_token(
             veo_ctx.browser_headless = headless
             # “更新 AccessToken / 过期”是唯一主动向插件下发 space_id/window_key/bridge_url 的入口。
             # content script 收到 fpb_* 后会写入 chrome.storage.local，之后窗口关闭/重启仍沿用缓存。
-            long_info = await fetch_long_access_token_in_window(
+            access_info = await force_fetch_access_token_in_window(
                 sess=veo_ctx,
                 target_url=target_url,
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
 
-        access_token = str((long_info or {}).get("session_token") or (long_info or {}).get("access_token") or "").strip() or None
-        expires = str((long_info or {}).get("expires") or "").strip() or None
-        if not access_token:
-            raise HTTPException(status_code=400, detail="自动获取失败：返回缺少 session_token")
+        access_token = str((access_info or {}).get("session_token") or (access_info or {}).get("access_token") or "").strip() or None
+        expires = str((access_info or {}).get("expires") or "").strip() or None
 
         await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
         try:
@@ -4493,8 +4499,8 @@ async def convert_sora_session_token_to_access_token(
             "mapping_id": mapping_id,
             "access_token": access_token,
             "expires": expires,
-            "session_token": str((long_info or {}).get("session_token") or "").strip() or None,
-            "source": str((long_info or {}).get("source") or "extension").strip() or "extension",
+            "session_token": str((access_info or {}).get("session_token") or "").strip() or None,
+            "source": str((access_info or {}).get("source") or "extension").strip() or "extension",
         }
     else:
         try:
@@ -4566,6 +4572,10 @@ async def manual_open_mapping_window(
         veo_ctx.browser_headless = headless
         veo_ctx.browser_pure_mode = effective_pure
         veo_ctx.idle_close_disabled = True
+        try:
+            await veo_ctx.close_and_drop()
+        except Exception:
+            pass
         try:
             veo_ctx._cancel_idle_close()
         except Exception:
@@ -4729,7 +4739,7 @@ async def clear_mapping_browser_cache(
     client = FPBrowserClient()
     keys = [window_key]
     local_rsp = None
-    """
+    
     try:
         local_rsp = await client.browser_clear_local_cache(
             vendor=vendor,
@@ -4745,7 +4755,7 @@ async def clear_mapping_browser_cache(
             status_code=400,
             detail=f"清空本地缓存失败：{local_rsp.get('msg') or local_rsp}",
         )
-    """
+    
     if local_only:
         return {
             "success": True,

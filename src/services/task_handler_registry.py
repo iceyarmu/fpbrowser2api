@@ -224,6 +224,7 @@ async def refresh_quota__veo_flow_credits(ctx: RefreshQuotaContext) -> int:
         picked=picked,
         refresh_timeout_seconds=30.0,
         auto_triger_connection = False,
+        force_refresh_token=True,
     )
     if isinstance(ext_info, dict) and ext_info.get("credits") is not None:
         return int(ext_info.get("credits") or 0)

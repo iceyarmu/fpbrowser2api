@@ -80,6 +80,7 @@ from .veo_workflow_executor import (
     refresh_veo_balance_via_extension,
     veo_fetch_access_tokens_via_extension,
     veo_workflow,
+    _veo_project_page_url,
 )
 from .jimeng_task_executor import (
     DEFAULT_DREAMINA_TARGET,
@@ -90,7 +91,7 @@ from .jimeng_task_executor import (
     _DREAMINA_MIN_CREDIT,
     _DREAMINA_GIFT_CREDIT,
 )
-from .gpt_task_executor import gpt_workflow, gpt_fetch_access_token_in_window, DEFAULT_GPT_TARGET
+from .gpt_task_executor import gpt_workflow, refresh_gpt_balance_via_extension, DEFAULT_GPT_TARGET
 
 
 @dataclass
@@ -115,6 +116,7 @@ class PickedWindow:
     headless: bool = False
     pure_mode: bool = True
     error_retry_count: int = 0
+    project_id: Optional[str] = None
 
 @dataclass
 class QueuedTask:
@@ -1366,6 +1368,7 @@ class TaskService:
             headless=bool(r.get("headless")),
             pure_mode=_effective_browser_pure_mode_from_context(r),
             error_retry_count=int(r.get("error_retry_count") or 0),
+            project_id=str(r.get("current_project_id") or 0)
         )
         if not picked.window_key:
             try:
@@ -1461,6 +1464,7 @@ class TaskService:
             headless=bool(r.get("headless")),
             pure_mode=_effective_browser_pure_mode_from_context(r),
             error_retry_count=int(r.get("error_retry_count") or 0),
+            project_id=str(r.get("current_project_id") or 0),
         )
         if not picked.window_key:
             try:
@@ -1502,6 +1506,7 @@ class TaskService:
             headless=bool(r.get("headless")),
             pure_mode=_effective_browser_pure_mode_from_context(r),
             error_retry_count=int(r.get("error_retry_count") or 0),
+            project_id=str(r.get("current_project_id") or 0),
         )
         if not picked.window_key:
             try:
@@ -1727,15 +1732,6 @@ class TaskService:
             except Exception:
                 refresh_timeout_seconds = 60.0
 
-            async def _refresh_veo_balance_after_task() -> None:
-                if app_config.extension_executor_enabled:
-                    await refresh_veo_balance_via_extension(
-                        db=self.db,
-                        picked=picked,
-                        refresh_timeout_seconds=refresh_timeout_seconds,
-                        signal_window_pool_replenish=self._signal_window_pool_replenish,
-                    )
-
             try:
                 # 执行分发：优先按 task_type 配置的 create_task_handler 决定执行器
                 if picked.create_task_handler == "sora_gen_video":
@@ -1761,6 +1757,9 @@ class TaskService:
                         veo_payload.get("veo_url") or veo_payload.get("target_url") or ""
                     ).strip():
                         veo_payload["veo_url"] = picked.default_target_url
+                    project_id = picked.project_id
+                    project_page = _veo_project_page_url(project_id=project_id, hint_url=picked.default_target_url)
+                    picked.default_target_url = project_page;
                     result,project_page = await asyncio.wait_for(
                         veo_workflow(
                             veo_payload,
@@ -1781,6 +1780,7 @@ class TaskService:
                         timeout=float(picked.timeout_seconds),
                     )
                     picked.default_target_url = project_page;
+                    print(f"default_target_url:{project_page}");
                 elif picked.create_task_handler == "grok_workflow":
                     grok_payload = dict(payload or {})
                     result = await asyncio.wait_for(
@@ -1892,7 +1892,21 @@ class TaskService:
                     pass
 
                 if picked.create_task_handler == "veo_workflow":
-                    await _refresh_veo_balance_after_task()
+                    await refresh_veo_balance_via_extension(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                        force_refresh_token=False,
+                    )
+                elif picked.create_task_handler == "gpt_workflow":
+                    await refresh_gpt_balance_via_extension(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                        force_refresh_token=False,
+                    )
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
                         db=self.db,
@@ -1929,7 +1943,13 @@ class TaskService:
                 logger.info("task completed: %s", task_id)
             except Exception as e:
                 if picked.create_task_handler == "veo_workflow":
-                    await _refresh_veo_balance_after_task()
+                    await refresh_veo_balance_via_extension(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                        force_refresh_token=False,
+                    )
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
                         db=self.db,

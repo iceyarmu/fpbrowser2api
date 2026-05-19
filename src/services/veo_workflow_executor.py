@@ -42,9 +42,7 @@ from .playwright_broswer_context import (
     safe_trim,
 )
 from .sora_task_executor import (
-    _download_remote_image_bytes_with_limit_async,
     _pick_n_frames,
-    _prepare_first_frame_image_for_upload_async,
 )
 from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
@@ -67,6 +65,7 @@ async def refresh_veo_balance_via_extension(
     refresh_timeout_seconds: float,
     signal_window_pool_replenish: Optional[Callable[[], None]] = None,
     auto_triger_connection: Optional[bool] = True,
+    force_refresh_token: Optional[bool] = False,
 ) -> Optional[Dict[str, Any]]:
     """Refresh VEO credits through the browser extension token/balance interfaces."""
     try:
@@ -80,20 +79,41 @@ async def refresh_veo_balance_via_extension(
         )
         veo_sess.browser_headless = bool(getattr(picked, "headless", False))
         veo_sess.browser_pure_mode = bool(getattr(picked, "pure_mode", True))
-        token_info = await veo_fetch_access_tokens_via_extension(
-            sess=veo_sess,
-            target_url=veo_target,
-            space_id=picked.space_id,
-            window_key=picked.window_key,
-            connect_wait_seconds=8.0,
-            token_timeout_seconds=min(45.0, max(10.0, float(refresh_timeout_seconds or 45.0))),
-            log_file=MONITOR_LOG_FILE,
-            auto_triger_connection = auto_triger_connection,
-        )
-        
-        short_at = str((token_info or {}).get("short_access_token") or "").strip()
-        if not short_at:
+
+        access_token = ""
+        access_expires = ""
+
+        try:
+            mid = int(picked.mapping_id)
+            if mid > 0:
+                row = await db.get_task_type_window_context(mid)
+                if row:
+                    access_token = str(row.get("sora_access_token") or "").strip() or None
+                    access_expires = str(row.get("sora_access_expires") or "").strip() or None
+        except Exception as e:
+            pass
+
+        if force_refresh_token or not _veo_cached_access_still_valid(access_token, access_expires, margin_seconds=10):
+            token_info = await veo_fetch_access_tokens_via_extension(
+                sess=veo_sess,
+                target_url=veo_target,
+                space_id=picked.space_id,
+                window_key=picked.window_key,
+                connect_wait_seconds=8.0,
+                token_timeout_seconds=min(45.0, max(10.0, float(refresh_timeout_seconds or 45.0))),
+                log_file=MONITOR_LOG_FILE,
+                auto_triger_connection = auto_triger_connection,
+                access_token=access_token,
+                access_expires=access_expires,
+                short_access_token=access_token,
+                short_expires=access_expires,
+            )
+            
+            access_token = str((token_info or {}).get("short_access_token") or "").strip()
+            access_expires = str((token_info or {}).get("short_expires") or "").strip() or None
+        if not access_token:
             return None
+        print(f"veo_target:{veo_target}");
         result = await asyncio.wait_for(
             submit_extension_task(
                 space_id=picked.space_id,
@@ -103,8 +123,8 @@ async def refresh_veo_balance_via_extension(
                     "action": "refresh_balance",
                     "workflow_kind": "balance_refresh",
                     "project_page": veo_target,
-                    "access_token": short_at,
-                    "access_expires": str((token_info or {}).get("short_expires") or "").strip() or None,
+                    "access_token": access_token,
+                    "access_expires": access_expires,
                     "fetch_cooldown": False,
                 },
                 progress_cb=_noop_progress_cb,
@@ -117,8 +137,8 @@ async def refresh_veo_balance_via_extension(
                 "mapping_id": picked.mapping_id,
                 "remaining_quota": int(result.get("credits") or 0),
                 "sora_remaining_count": int(result.get("credits") or 0),
-                "sora_access_token": str((token_info or {}).get("session_token") or (token_info or {}).get("access_token") or "").strip() or None,
-                "sora_access_expires": str((token_info or {}).get("expires") or "").strip() or None,
+                "sora_access_token": access_token,
+                "sora_access_expires": access_expires,
             }
             _kw["cooldown_until"] = str(result.get("cooldown_until") or _veo_local_next_0105_cooldown_str())
             await db.update_task_type_window(**_kw)
@@ -194,18 +214,6 @@ async def _veo_extension_upload_upsample_data_url_to_oss(
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
-
-
-def _veo_payload_bool(payload: Dict[str, Any], key: str, default: bool) -> bool:
-    v = (payload or {}).get(key)
-    if v is None:
-        return bool(default)
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return bool(v)
-    return str(v).strip().lower() not in {"0", "false", "no", "off", "none", "null"}
-
 def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
     try:
         s = str(err or "").strip()
@@ -216,41 +224,6 @@ def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
     if len(s) <= max_len:
         return s
     return s[: max(10, max_len - 3)] + "..."
-
-
-def _veo_is_unsafe_generation_error(tx: Optional[Dict[str, Any]]) -> bool:
-    """判断上游响应是否为内容违规类拦截（不应计入窗口连续错误）。"""
-    if not isinstance(tx, dict):
-        return False
-
-    try:
-        body_text = str(tx.get("response_body") or "").strip()
-    except Exception:
-        body_text = ""
-
-    payload: Any = tx.get("_json")
-    if payload is None and body_text:
-        try:
-            payload = json.loads(body_text)
-        except Exception:
-            payload = None
-
-    details = None
-    if isinstance(payload, dict):
-        err = payload.get("error")
-        if isinstance(err, dict):
-            details = err.get("details")
-
-    if isinstance(details, list):
-        for item in details:
-            if not isinstance(item, dict):
-                continue
-            reason = str(item.get("reason") or "").strip()
-            if reason == "PUBLIC_ERROR_UNSAFE_GENERATION":
-                return True
-
-    return "PUBLIC_ERROR_UNSAFE_GENERATION" in body_text
-
 
 def _veo_is_unsafe_generation_message(err: Any) -> bool:
     try:
@@ -279,19 +252,6 @@ def _veo_is_auth_credentials_error(err: Any) -> bool:
         or "expected oauth 2 access token" in low
         or "http 401" in low
         or " 401 " in f" {low} "
-    )
-
-
-def _veo_raise_if_unsafe_generation(tx: Optional[Dict[str, Any]], *, status_code: Optional[int] = None) -> None:
-    """命中 VEO 内容安全拦截时抛出不计罚异常。"""
-    if not _veo_is_unsafe_generation_error(tx):
-        return
-    body = safe_trim(str((tx or {}).get("response_body") or ""), 500)
-    code = int(status_code or (tx or {}).get("status") or 400)
-    raise NonPenalizedTaskError(
-        f"VEO生成失败，内容包含（PUBLIC_ERROR_UNSAFE_GENERATION）：{body}",
-        status_code=code,
-        content_violation=True,
     )
 
 
@@ -339,245 +299,6 @@ def _veo_cached_access_still_valid(
     if dt.tzinfo is None:
         return datetime.now() + margin < dt
     return datetime.now(timezone.utc) + margin < dt.astimezone(timezone.utc)
-
-
-def _veo_should_fetch_next_update_cooldown(cooldown_until_val: Any) -> bool:
-    """无记录、不可解析或当前时间已超过 cooldown_until 时，需要重新抓取 one.google 活动页上的重置时间。"""
-    raw = str(cooldown_until_val or "").strip()
-    if not raw:
-        return True
-    try:
-        if len(raw) >= 19:
-            until = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
-            return datetime.now() > until
-    except ValueError:
-        pass
-    try:
-        until = datetime.strptime(raw[:10], "%Y-%m-%d")
-        return datetime.now() > until
-    except ValueError:
-        pass
-    try:
-        until = datetime.fromisoformat(raw.replace(" ", "T", 1))
-        if until.tzinfo is None:
-            return datetime.now() > until
-        return datetime.now(timezone.utc) > until.astimezone(timezone.utc)
-    except ValueError:
-        return True
-
-# ---------------------------------------------------------------------------
-# 反风控注入（仅对 labs.google/fx/tools/flow 目标页生效）
-#
-# 设计原则：
-# - 精准打击：只拦截「纯遥测/行为采集」端点，业务接口与 reCAPTCHA 一律放行
-# - 自动化痕迹清理：navigator.webdriver、cdc_* 等 CDP/ChromeDriver 残留
-# - Hook 三大出口：navigator.sendBeacon / window.fetch / XMLHttpRequest
-# - 放行白名单优先于拦截黑名单，避免误伤业务
-# ---------------------------------------------------------------------------
-def _build_veo_anti_detection_bootstrap_script() -> str:
-    """返回反风控 bootstrap 脚本（幂等，重复注入不会叠加）。"""
-    return r"""
-(() => {
-  try {
-    const W = window;
-    if (W.__veo_anti_detect_installed__) return;
-    try {
-      Object.defineProperty(W, '__veo_anti_detect_installed__', {
-        value: true, writable: false, configurable: false,
-      });
-    } catch (_e) { W.__veo_anti_detect_installed__ = true; }
-
-    const NOOP = function () {};
-    const log = (...args) => { try { console.debug('[veo-anti-detect]', ...args); } catch (_e) {} };
-
-    // ---------- 1. 清理自动化/CDP 指纹 ----------
-    try {
-      Object.defineProperty(Navigator.prototype, 'webdriver', {
-        get: () => undefined, configurable: true,
-      });
-    } catch (_e) {}
-    try {
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined, configurable: true,
-      });
-    } catch (_e) {}
-    try {
-      // 清除 ChromeDriver / Selenium 注入的 cdc_ / $cdc_ / $chrome_asyncScriptInfo 等变量
-      const names = Object.getOwnPropertyNames(W);
-      for (const k of names) {
-        if (/^\$?cdc_[a-zA-Z0-9]+_/.test(k) || /^\$chrome_asyncScriptInfo$/.test(k)) {
-          try { delete W[k]; } catch (_e) {}
-        }
-      }
-      // 文档对象上也可能有 $cdc_ 痕迹
-      try {
-        const dnames = Object.getOwnPropertyNames(document);
-        for (const k of dnames) {
-          if (/^\$?cdc_[a-zA-Z0-9]+_/.test(k)) {
-            try { delete document[k]; } catch (_e) {}
-          }
-        }
-      } catch (_e) {}
-    } catch (_e) {}
-
-    // 常见指纹探测点做一次"看起来正常"的兜底（不覆盖已存在的真实值）
-    try {
-      if (!('plugins' in navigator) || navigator.plugins.length === 0) {
-        // 不做伪造，避免与真实指纹浏览器底层冲突，只在为空时回填一个空数组避免直接抛异常
-      }
-    } catch (_e) {}
-
-    // ---------- 2. 端点黑/白名单 ----------
-    // 核心策略：Google 自有域名全部放行（reCAPTCHA 评分依赖 Google 遥测信号）
-    // 只拦截明确的第三方追踪
-    const GOOGLE_DOMAIN_RE = /\.(google\.com|googleapis\.com|gstatic\.com|google\.[a-z]{2,}|googleusercontent\.com|googlesyndication\.com|googletagmanager\.com|google-analytics\.com|recaptcha\.net)(:\d+)?(\/|$)/i;
-
-    // 拦截：仅第三方非 Google 的追踪/遥测
-    const BLOCK_PATTERNS = [
-      /hotjar\.com/i,
-      /clarity\.ms/i,
-      /facebook\.net.*\/tr/i,
-      /connect\.facebook\.net/i,
-      /bat\.bing\.com/i,
-      /datadoghq\.com/i,
-      /sentry\.io/i,
-      /newrelic\.com/i,
-      /segment\.io/i,
-      /segment\.com\/v1/i,
-      /mixpanel\.com/i,
-      /amplitude\.com/i,
-      /heapanalytics\.com/i,
-      /fullstory\.com/i,
-    ];
-
-    const shouldBlock = (url) => {
-      try {
-        const s = String(url || '');
-        if (!s) return false;
-        // Google 自有域名全部放行 — reCAPTCHA 需要这些信号来评分
-        if (GOOGLE_DOMAIN_RE.test(s)) return false;
-        for (const re of BLOCK_PATTERNS) { if (re.test(s)) return true; }
-      } catch (_e) {}
-      return false;
-    };
-
-    // ---------- 3. Hook navigator.sendBeacon ----------
-    try {
-      const origBeacon = navigator.sendBeacon ? navigator.sendBeacon.bind(navigator) : null;
-      navigator.sendBeacon = function (url, data) {
-        try {
-          if (shouldBlock(url)) { log('block beacon', url); return true; }
-        } catch (_e) {}
-        return origBeacon ? origBeacon(url, data) : true;
-      };
-    } catch (_e) {}
-
-    // ---------- 4. Hook window.fetch ----------
-    try {
-      const origFetch = W.fetch ? W.fetch.bind(W) : null;
-      if (origFetch) {
-        W.fetch = function (input, init) {
-          try {
-            let url = '';
-            if (typeof input === 'string') url = input;
-            else if (input && typeof input.url === 'string') url = input.url;
-            if (shouldBlock(url)) {
-              log('block fetch', url);
-              return Promise.resolve(new Response('', {
-                status: 204, statusText: 'No Content',
-              }));
-            }
-          } catch (_e) {}
-          return origFetch(input, init);
-        };
-      }
-    } catch (_e) {}
-
-    // ---------- 5. Hook XMLHttpRequest ----------
-    try {
-      const OrigOpen = XMLHttpRequest.prototype.open;
-      const OrigSend = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function (method, url) {
-        try { this.__veo_url__ = url; } catch (_e) {}
-        return OrigOpen.apply(this, arguments);
-      };
-      XMLHttpRequest.prototype.send = function () {
-        try {
-          if (shouldBlock(this.__veo_url__)) {
-            log('block xhr', this.__veo_url__);
-            const self = this;
-            setTimeout(() => {
-              try {
-                Object.defineProperty(self, 'readyState', { value: 4, configurable: true });
-                Object.defineProperty(self, 'status', { value: 204, configurable: true });
-                Object.defineProperty(self, 'responseText', { value: '', configurable: true });
-                Object.defineProperty(self, 'response', { value: '', configurable: true });
-              } catch (_e) {}
-              try { if (typeof self.onreadystatechange === 'function') self.onreadystatechange(); } catch (_e) {}
-              try { self.dispatchEvent(new Event('readystatechange')); } catch (_e) {}
-              try { self.dispatchEvent(new Event('load')); } catch (_e) {}
-              try { self.dispatchEvent(new Event('loadend')); } catch (_e) {}
-            }, 0);
-            return;
-          }
-        } catch (_e) {}
-        return OrigSend.apply(this, arguments);
-      };
-    } catch (_e) {}
-
-    // ---------- 6. 不再覆盖 ga/gtag/dataLayer — Google 产品页需要这些来正常评分 ----------
-    // 仅禁用非 Google 的风控 SDK
-    try {
-      // DataDome
-      try {
-        W.DD_RUM = Object.assign({}, W.DD_RUM, {
-          init: NOOP, addAction: NOOP, addError: NOOP,
-          addTiming: NOOP, startView: NOOP, setUser: NOOP,
-        });
-      } catch (_e) {}
-      // Akamai BMP / bot manager
-      W.bmak = W.bmak || {
-        pd: NOOP, startTracking: NOOP, stopTracking: NOOP, get_cf: () => '',
-      };
-    } catch (_e) {}
-
-    log('installed');
-  } catch (e) {
-    try { console.warn('[veo-anti-detect] bootstrap failed', e); } catch (_e) {}
-  }
-})();
-""".strip()
-
-
-async def _veo_apply_anti_detection_bootstrap(sess: "VeoSession", *, log_file: Path) -> None:
-    """对当前目标页及其后续导航注入反风控 bootstrap。
-
-    双保险：
-    - ``context.add_init_script``：后续任何导航/iframe 在页面脚本之前生效
-    - ``page.evaluate``：立即覆盖当前已加载的页面上下文
-    """
-    page = getattr(sess.pw_ctx, "page", None)
-    if page is None:
-        append_log(log_file, "[veo][anti_detect] skip: page is None")
-        return
-    script = _build_veo_anti_detection_bootstrap_script()
-
-    # 1) init_script：保证刷新 / iframe / 子页面都能前置执行
-    try:
-        ctx = getattr(page, "context", None)
-        if ctx is not None:
-            await ctx.add_init_script(script)
-            append_log(log_file, "[veo][anti_detect] add_init_script ok")
-    except Exception as e:
-        append_log(log_file, f"[veo][anti_detect] add_init_script failed: {e}")
-
-    # 2) 立即 evaluate：覆盖当前运行态
-    try:
-        await page.evaluate(script)
-        append_log(log_file, "[veo][anti_detect] bootstrap injected (current page)")
-    except Exception as e:
-        append_log(log_file, f"[veo][anti_detect] inject current page failed: {e}")
-
 
 
 def _build_debug_progress_panel_script() -> str:
@@ -2324,28 +2045,7 @@ VEO_GOOG_API_KEY = "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY"
 FLOW_LABS_CREDITS_URL = f"https://aisandbox-pa.googleapis.com/v1/credits?key={VEO_GOOG_API_KEY}"
 # 刷新 VEO 额度时：新开标签页读取「Next update: Apr 22」或「Next update: Tomorrow」作为额度重置日
 VEO_ONE_GOOGLE_AI_ACTIVITY_URL = "https://one.google.com/ai/activity?g1_landing_page=0"
-_VEO_NEXT_UPDATE_TOMORROW_RE = re.compile(
-    r"Next\s+update\s*:\s*tomorrow\b",
-    re.IGNORECASE,
-)
-_VEO_NEXT_UPDATE_RE = re.compile(
-    r"Next\s+update\s*:\s*([A-Za-z]{3,9})\s+(\d{1,2})(?:\s*,\s*(\d{4}))?",
-    re.IGNORECASE,
-)
-_VEO_MONTH_PREFIX_TO_NUM = {
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "may": 5,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
-}
+
 FLOW_VIDEO_SUBMIT_T2V_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText"
 FLOW_FLOW_UPLOAD_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/flow/uploadImage"
 FLOW_VIDEO_SUBMIT_I2V_START_IMAGE_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartImage"
@@ -2374,49 +2074,11 @@ PAYGATE_TIER_NOT_PAID = "PAYGATE_TIER_NOT_PAID"
 PAYGATE_TIER_ONE = "PAYGATE_TIER_ONE"
 PAYGATE_TIER_TWO = "PAYGATE_TIER_TWO"
 
-
-def _veo_normalize_user_paygate_tier(user_paygate_tier: Optional[str]) -> str:
-    normalized = (user_paygate_tier or "").strip()
-    if normalized in {PAYGATE_TIER_NOT_PAID, PAYGATE_TIER_ONE, PAYGATE_TIER_TWO}:
-        return normalized
-    return PAYGATE_TIER_NOT_PAID
-
-
-def _veo_adjust_model_key_for_tier(model_key: str, tier: str) -> str:
-    """与 flow2api generation_handler._handle_video_generation 中 tier/ultra 规则对齐。"""
-    mk = (model_key or "").strip()
-    if not mk:
-        return mk
-    if tier == PAYGATE_TIER_TWO:
-        if "ultra" not in mk:
-            if "_fl" in mk:
-                mk = mk.replace("_fl", "_ultra_fl")
-            else:
-                mk = mk + "_ultra"
-    elif tier in (PAYGATE_TIER_ONE, PAYGATE_TIER_NOT_PAID):
-        if "ultra" in mk:
-            mk = mk.replace("_ultra_fl", "_fl").replace("_ultra", "")
-    return mk
-
-
 def _veo_extract_project_id_from_url(url: str) -> Optional[str]:
     if not url:
         return None
     m = re.search(r"/tools/flow/project/([a-zA-Z0-9_-]+)", url)
     return m.group(1) if m else None
-
-
-def _veo_labs_fx_prefix_url(hint_url: str) -> str:
-    """用于 _bring_target_page_to_front：任意 labs 子路径均以 {origin}/fx 为前缀。"""
-    h = (hint_url or "").strip() or "https://labs.google/fx/tools/flow"
-    try:
-        p = urlparse(h)
-        if p.scheme and p.netloc:
-            return f"{p.scheme}://{p.netloc}/fx"
-    except Exception:
-        pass
-    return "https://labs.google/fx/tools/flow"
-
 
 def _veo_project_page_url(*, project_id: str, hint_url: str) -> str:
     """构建 Flow 项目页 URL（保留 hint 中的语言前缀，如 /fx/zh/tools/flow/...）。"""
@@ -2713,499 +2375,6 @@ def _veo_collect_image_generation_reference_urls(payload: Dict[str, Any]) -> Lis
         return [first]
     return []
 
-
-def _veo_strip_i2v_fl_for_single_frame(model_key: str) -> str:
-    """与 flow2api generation_handler 单首帧分支一致：去掉 model_key 中的 _fl 后缀（含 _fl_ 在中间的情况）。"""
-    mk = str(model_key or "")
-    actual = mk.replace("_fl_", "_")
-    if actual.endswith("_fl"):
-        actual = actual[:-3]
-    return actual
-
-
-def _veo_detect_image_mime_type(image_bytes: bytes) -> str:
-    if len(image_bytes) < 12:
-        return "image/jpeg"
-    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
-        return "image/webp"
-    if image_bytes[:4] == b"\x89PNG":
-        return "image/png"
-    if image_bytes[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    if image_bytes[:6] in (b"GIF87a", b"GIF89a"):
-        return "image/gif"
-    if image_bytes[:2] == b"BM":
-        return "image/bmp"
-    if image_bytes[:6] == b"\x00\x00\x00\x0cjP":
-        return "image/jp2"
-    return "image/jpeg"
-
-
-def _veo_raise_if_image_exceeds_4k_limit(image_bytes: bytes, *, label: str) -> None:
-    """限制参考图分辨率不超过 4K（按 3840x2160 等效像素总量校验）。"""
-    try:
-        from PIL import Image  # type: ignore[import-not-found]
-    except Exception as e:
-        raise NonPenalizedTaskError(f"图片处理依赖缺失：请安装 Pillow。err={e}") from e
-
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            w, h = img.size
-    except Exception as e:
-        raise NonPenalizedTaskError(f"{label} 不是有效图片或无法解析尺寸：{e}", status_code=400) from e
-
-    try:
-        pixels = int(w) * int(h)
-    except Exception:
-        pixels = 0
-    if w <= 0 or h <= 0 or pixels <= 0:
-        raise NonPenalizedTaskError(f"{label} 尺寸无效", status_code=400)
-    if pixels > VEO_IMAGE_REFERENCE_MAX_PIXELS_4K:
-        raise NonPenalizedTaskError(
-            f"{label} 分辨率过高：{w}x{h}，不能超过 4K（最大 3840x2160 等效像素）",
-            status_code=400,
-            content_violation=True,
-        )
-
-
-async def _veo_download_image_bytes_for_i2v(
-    url: str,
-    *,
-    label: str,
-    timeout_seconds: float,
-    user_agent: Optional[str],
-) -> bytes:
-    try:
-        img_bytes, img_headers = await _download_remote_image_bytes_with_limit_async(
-            url,
-            label=label,
-            timeout_seconds=timeout_seconds,
-            user_agent=user_agent,
-        )
-    except Exception as e:
-        if isinstance(e, NonPenalizedTaskError):
-            raise
-        raise NonPenalizedTaskError(
-            f"{label}下载失败（请检查地址是否可访问）：url={safe_trim(str(url), 400)!r} err={e}",
-            status_code=400,
-        ) from e
-    if not img_bytes:
-        raise NonPenalizedTaskError(
-            f"{label}下载结果为空：url={safe_trim(str(url), 400)!r}",
-            status_code=400,
-        )
-    ct = ""
-    try:
-        ct = str((img_headers or {}).get("content-type") or (img_headers or {}).get("Content-Type") or "").lower()
-    except Exception:
-        ct = ""
-    if ("text/html" in ct) or ("application/json" in ct):
-        raise NonPenalizedTaskError(
-            f"{label}响应疑似非图片（Content-Type={safe_trim(ct, 120)!r}）：url={safe_trim(str(url), 400)!r}",
-            status_code=400,
-        )
-    prepared, _fn, _mt = await _prepare_first_frame_image_for_upload_async(img_bytes)
-    return prepared
-
-
-def _veo_upload_response_has_error_reason(*, response_body: str, reason: str) -> bool:
-    """判断上游 flow/uploadImage 响应中是否包含指定 ErrorInfo.reason。"""
-    raw = str(response_body or "")
-    reason_s = str(reason or "").strip()
-    if not reason_s or reason_s not in raw:
-        return False
-    try:
-        obj = json.loads(raw)
-    except Exception:
-        return True
-    details = (obj.get("error") or {}).get("details") if isinstance(obj, dict) else None
-    if not isinstance(details, list):
-        return True
-    for item in details:
-        if isinstance(item, dict) and reason_s in str(item.get("reason") or ""):
-            return True
-    return reason_s in raw
-
-
-def _veo_upload_response_indicates_minor_upload(*, response_body: str) -> bool:
-    """上游 flow/uploadImage 对未成年人相关参考图返回 ErrorInfo.reason=PUBLIC_ERROR_MINOR_UPLOAD。"""
-    return _veo_upload_response_has_error_reason(
-        response_body=response_body,
-        reason="PUBLIC_ERROR_MINOR_UPLOAD",
-    )
-
-
-def _veo_upload_response_indicates_prominent_people_upload(*, response_body: str) -> bool:
-    """上游 flow/uploadImage 对名人/可识别人物参考图返回 ErrorInfo.reason=PUBLIC_ERROR_PROMINENT_PEOPLE_UPLOAD。"""
-    return _veo_upload_response_has_error_reason(
-        response_body=response_body,
-        reason="PUBLIC_ERROR_PROMINENT_PEOPLE_UPLOAD",
-    )
-
-
-def _veo_video_op_error_indicates_audio_filtered(*, message: str, code: str) -> bool:
-    """视频轮询失败时 operation.error 含 PUBLIC_ERROR_AUDIO_FILTERED（平台拦截疑似侵权音频）。"""
-    m = str(message or "")
-    c = str(code or "")
-    return "PUBLIC_ERROR_AUDIO_FILTERED" in m or "PUBLIC_ERROR_AUDIO_FILTERED" in c
-
-
-def _veo_video_op_error_indicates_prominent_people_filter(*, message: str, code: str) -> bool:
-    """视频轮询失败时含 PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED（平台拦截名人/肖像相关生成）。"""
-    m = str(message or "")
-    c = str(code or "")
-    return "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in m or "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED" in c
-
-
-def _veo_parse_upload_image_workflow_info(
-    resp: Any,
-    *,
-    fallback_project_id: Optional[str] = None,
-) -> Dict[str, Optional[str]]:
-    """从 flow/uploadImage 响应中提取 mediaId、media.projectId、media.workflowId。"""
-    out: Dict[str, Optional[str]] = {
-        "media_id": None,
-        "workflow_id": None,
-        "project_id": None,
-    }
-    if not isinstance(resp, dict):
-        return out
-
-    media = resp.get("media")
-    if isinstance(media, dict):
-        out["media_id"] = str(media.get("name") or "").strip() or None
-        workflow_id = str(media.get("workflowId") or "").strip() or None
-        project_id = str(media.get("projectId") or "").strip() or None
-        if workflow_id:
-            out["workflow_id"] = workflow_id
-        if project_id:
-            out["project_id"] = project_id
-
-    # 兼容旧/其他响应结构，同时仍以 media.workflowId/media.projectId 为优先。
-    if not out.get("media_id"):
-        media_generation_id = resp.get("mediaGenerationId")
-        if isinstance(media_generation_id, dict):
-            out["media_id"] = str(media_generation_id.get("mediaGenerationId") or "").strip() or None
-        elif media_generation_id is not None:
-            out["media_id"] = str(media_generation_id).strip() or None
-
-    workflow = resp.get("workflow")
-    if isinstance(workflow, dict):
-        if not out.get("workflow_id"):
-            out["workflow_id"] = str(workflow.get("name") or "").strip() or None
-        workflow_project_id = str(workflow.get("projectId") or "").strip() or None
-        if workflow_project_id and not out.get("project_id"):
-            out["project_id"] = workflow_project_id
-
-    out["project_id"] = out.get("project_id") or (str(fallback_project_id or "").strip() or None)
-    return out
-
-
-async def _veo_flow_upload_image_in_window(
-    *,
-    page: Any,
-    access_token: str,
-    project_id: str,
-    image_bytes: bytes,
-    log_file: Path,
-    uploaded_workflows: Optional[List[Dict[str, str]]] = None,
-) -> str:
-    """在指纹浏览器页面内调用 aisandbox `flow/uploadImage`（与 flow2api flow_client.upload_image 新版接口一致）。"""
-    mime_type = _veo_detect_image_mime_type(image_bytes)
-    ext = "png" if "png" in mime_type else "jpg"
-    upload_file_name = f"fpbrowser2api_veo_{int(time.time() * 1000)}.{ext}"
-    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-    json_data: Dict[str, Any] = {
-        "clientContext": {"tool": "PINHOLE", "projectId": str(project_id)},
-        "fileName": upload_file_name,
-        "imageBytes": image_base64,
-        "isHidden": False,
-        "isUserUploaded": True,
-        "mimeType": mime_type,
-    }
-    tx = await page_fetch_json(
-        page,
-        url=FLOW_FLOW_UPLOAD_IMAGE_URL,
-        method="POST",
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {access_token}",
-        },
-        json_data=json_data,
-        log_file=log_file,
-    )
-    st = tx.get("status")
-    if st is not None and int(st) >= 400:
-        raw_body = str(tx.get("response_body") or "")
-        body = safe_trim(raw_body, 500)
-        if _veo_upload_response_indicates_minor_upload(response_body=raw_body):
-            raise NonPenalizedTaskError(
-                "参考图中包含未成年，无法作为参考图上传",
-                status_code=400,
-                content_violation=True,
-            )
-        if _veo_upload_response_indicates_prominent_people_upload(response_body=raw_body):
-            raise NonPenalizedTaskError(
-                "名人/肖像限制：参考图涉及可识别人物或名人形象，无法作为参考图上传。任务已标记为违规，请更换参考图后重试。",
-                status_code=400,
-                content_violation=True,
-            )
-        raise NonPenalizedTaskError(f"上传参考图失败：HTTP {st} {body}", status_code=502)
-    resp = tx.get("_json")
-    if not isinstance(resp, dict):
-        raise NonPenalizedTaskError("上传参考图返回格式异常", status_code=502)
-    upload_info = _veo_parse_upload_image_workflow_info(resp, fallback_project_id=str(project_id))
-    media_id = upload_info.get("media_id")
-    if not media_id:
-        raise NonPenalizedTaskError(
-            f"上传参考图未返回 mediaId：{safe_trim(str(resp), 300)}",
-            status_code=502,
-        )
-    workflow_id = str(upload_info.get("workflow_id") or "").strip()
-    workflow_project_id = str(upload_info.get("project_id") or "").strip()
-    if uploaded_workflows is not None and workflow_id:
-        item = {
-            "media_id": str(media_id),
-            "workflow_id": workflow_id,
-            "project_id": workflow_project_id or str(project_id),
-        }
-        uploaded_workflows.append(item)
-        append_log(
-            log_file,
-            f"[veo][upload_image] saved workflow for later archive "
-            f"mediaId={safe_trim(str(media_id), 80)!r} "
-            f"workflowId={safe_trim(workflow_id, 80)!r} "
-            f"projectId={safe_trim(item['project_id'], 80)!r}",
-        )
-    elif not workflow_id:
-        append_log(
-            log_file,
-            f"[veo][upload_image] upload ok but response has no workflowId "
-            f"mediaId={safe_trim(str(media_id), 80)!r}",
-        )
-    return str(media_id)
-
-
-def _veo_find_first_string_by_key(obj: Any, key: str) -> Optional[str]:
-    """递归查找第一个非空字符串字段。用于兼容上游 response 结构轻微变化。"""
-    if isinstance(obj, dict):
-        v = obj.get(key)
-        if v is not None:
-            s = str(v).strip()
-            if s:
-                return s
-        for vv in obj.values():
-            found = _veo_find_first_string_by_key(vv, key)
-            if found:
-                return found
-    elif isinstance(obj, list):
-        for item in obj:
-            found = _veo_find_first_string_by_key(item, key)
-            if found:
-                return found
-    return None
-
-
-def _veo_parse_video_poll_media_info(
-    resp: Any,
-    *,
-    fallback_project_id: Optional[str] = None,
-) -> Dict[str, Optional[str]]:
-    """从 batchCheckAsyncVideoGenerationStatus response.media 中提取视频状态、workflowId、projectId 与 fifeUrl。"""
-    out: Dict[str, Optional[str]] = {
-        "status": None,
-        "workflow_id": None,
-        "project_id": str(fallback_project_id or "").strip() or None,
-        "video_url": None,
-    }
-    if not isinstance(resp, dict):
-        return out
-
-    media = resp.get("media")
-    if not isinstance(media, list):
-        return out
-
-    for item in media:
-        if not isinstance(item, dict):
-            continue
-        if not out.get("workflow_id"):
-            out["workflow_id"] = str(item.get("workflowId") or "").strip() or None
-        media_project_id = str(item.get("projectId") or "").strip() or None
-        if media_project_id:
-            out["project_id"] = media_project_id
-
-        meta = item.get("mediaMetadata")
-        if isinstance(meta, dict):
-            media_status = meta.get("mediaStatus")
-            if isinstance(media_status, dict) and not out.get("status"):
-                out["status"] = str(media_status.get("mediaGenerationStatus") or "").strip() or None
-
-        video_block = item.get("video")
-        if isinstance(video_block, dict) and not out.get("video_url"):
-            # 兼容可能出现的 video.fifeUrl / video.generatedVideo.fifeUrl 等结构。
-            out["video_url"] = _veo_find_first_string_by_key(video_block, "fifeUrl")
-        if not out.get("video_url"):
-            out["video_url"] = _veo_find_first_string_by_key(item, "fifeUrl")
-
-        if out.get("workflow_id") and out.get("project_id") and out.get("status") and out.get("video_url"):
-            break
-
-    return out
-
-
-def _veo_parse_video_url_from_successful_poll(resp: Any, op0: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """从轮询成功响应中提取视频 fifeUrl，优先使用旧 operations.metadata.video.fifeUrl，回退到 media 递归查找。"""
-    if isinstance(op0, dict):
-        meta = (op0.get("operation") or {}).get("metadata") or {}
-        if isinstance(meta, dict):
-            vinfo = meta.get("video") or {}
-            if isinstance(vinfo, dict):
-                video_url = str(vinfo.get("fifeUrl") or "").strip() or None
-                if video_url:
-                    return video_url
-            video_url = _veo_find_first_string_by_key(meta, "fifeUrl")
-            if video_url:
-                return video_url
-    if isinstance(resp, dict):
-        media_info = _veo_parse_video_poll_media_info(resp)
-        if media_info.get("video_url"):
-            return media_info.get("video_url")
-        return _veo_find_first_string_by_key(resp, "fifeUrl")
-    return None
-
-
-async def _veo_poll_operations_until_video_url(
-    *,
-    page: Any,
-    access_token: str,
-    log_file: Path,
-    progress_cb: ProgressCB,
-    operations: List[Dict[str, Any]],
-    max_wait_seconds: float,
-    poll_interval_seconds: float,
-    project_id: Optional[str] = None,
-    poll_progress_base: int = 25,
-    sess: Optional[Any] = None,
-) -> tuple[str, Optional[str], Optional[str]]:
-    """轮询 batchCheckAsyncVideoGenerationStatus，成功则返回 (fifeUrl, workflowId, projectId)。"""
-    max_attempts = max(3, int(max_wait_seconds / max(0.5, poll_interval_seconds)) + 3)
-    consecutive_poll_errors = 0
-    video_url: Optional[str] = None
-    video_workflow_id: Optional[str] = None
-    video_project_id: Optional[str] = str(project_id or "").strip() or None
-
-    for attempt in range(max_attempts):
-        sess._cancel_idle_close()
-        await asyncio.sleep(poll_interval_seconds)
-        pct = poll_progress_base + min(70, int((attempt + 1) / max(1, max_attempts) * 70))
-        try:
-            ptx = await page_fetch_json(
-                page,
-                url=FLOW_VIDEO_POLL_URL,
-                method="POST",
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {access_token}",
-                },
-                json_data={"operations": operations},
-                log_file=log_file,
-            )
-        except Exception as e:
-            consecutive_poll_errors += 1
-            append_log(log_file, f"[veo] poll error: {e}")
-            if consecutive_poll_errors >= 3:
-                raise NonPenalizedTaskError(f"视频状态轮询失败: {_short_err_msg(e)}", status_code=502) from e
-            await progress_cb(pct, {"stage": "polling", "error": _short_err_msg(e)})
-            continue
-
-        consecutive_poll_errors = 0
-        pst = ptx.get("status")
-        if pst is not None and int(pst) >= 400:
-            consecutive_poll_errors += 1
-            body = safe_trim(str(ptx.get("response_body") or ""), 400)
-            append_log(log_file, f"[veo] poll HTTP {pst} {body}")
-            if consecutive_poll_errors >= 3:
-                raise NonPenalizedTaskError(f"视频状态查询被拒绝: HTTP {pst}", status_code=502)
-            continue
-
-        checked = ptx.get("_json")
-        media_info = _veo_parse_video_poll_media_info(checked, fallback_project_id=video_project_id)
-        if media_info.get("workflow_id"):
-            video_workflow_id = media_info.get("workflow_id")
-        if media_info.get("project_id"):
-            video_project_id = media_info.get("project_id")
-
-        checked_ops = checked.get("operations") if isinstance(checked, dict) else None
-        if not isinstance(checked_ops, list) or len(checked_ops) == 0:
-            media_status = media_info.get("status")
-            await progress_cb(
-                pct,
-                {
-                    "stage": "polling",
-                    "upstream_status": media_status,
-                    "workflow_id": video_workflow_id,
-                },
-            )
-            if media_status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
-                video_url = _veo_parse_video_url_from_successful_poll(checked)
-                if not video_url:
-                    raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
-                break
-            if media_status == "MEDIA_GENERATION_STATUS_FAILED":
-                raise NonPenalizedTaskError("视频生成失败: 上游 media 状态失败", status_code=502)
-            if isinstance(media_status, str) and media_status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
-                raise NonPenalizedTaskError(f"视频生成错误状态: {media_status}", status_code=502)
-            continue
-
-        op0 = checked_ops[0]
-        status = op0.get("status")
-        await progress_cb(
-            pct,
-            {
-                "stage": "polling",
-                "upstream_status": status,
-                "workflow_id": video_workflow_id,
-            },
-        )
-
-        if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
-            video_url = _veo_parse_video_url_from_successful_poll(checked, op0=op0)
-            if not video_url:
-                raise NonPenalizedTaskError("上游返回成功但缺少视频 fifeUrl", status_code=502)
-            break
-
-        if status == "MEDIA_GENERATION_STATUS_FAILED":
-            err = ((op0.get("operation") or {}).get("error") or {})
-            msg = str(err.get("message") or "未知错误")
-            code = str(err.get("code") or "")
-            if _veo_video_op_error_indicates_audio_filtered(message=msg, code=code):
-                raise NonPenalizedTaskError(
-                    "生成音频侵权：平台判定音频涉及版权问题已拦截，无法完成视频生成。任务已标记为违规，请修改与音乐、配音或音效相关的描述后重试。",
-                    status_code=400,
-                    content_violation=False,
-                )
-            if _veo_video_op_error_indicates_prominent_people_filter(message=msg, code=code):
-                raise NonPenalizedTaskError(
-                    "名人/肖像限制：平台判定内容涉及可识别人物或名人形象已拦截，无法完成视频生成。任务已标记为违规，请避免指定真实人物、名人或易联想到特定个人的描述与参考图后重试。",
-                    status_code=400,
-                    content_violation=False,
-                )
-            raise NonPenalizedTaskError(f"视频生成失败: {msg}" + (f" ({code})" if code else ""), status_code=502)
-
-        if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_ERROR"):
-            raise NonPenalizedTaskError(f"视频生成错误状态: {status}", status_code=502)
-
-    else:
-        raise NonPenalizedTaskError(
-            f"视频生成超时（已轮询约 {max_attempts} 次，间隔 {poll_interval_seconds}s）",
-            status_code=504,
-        )
-
-    return str(video_url), video_workflow_id, video_project_id
-
-
 def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
     """返回 (videoModelKey, aspectRatio)。横竖屏与 Sora 一致：优先宽高/比例字段，再 model 显式指定。
 
@@ -3234,270 +2403,6 @@ def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
         return "veo_3_1_t2v_fast_portrait", VIDEO_ASPECT_RATIO_PORTRAIT
     return "veo_3_1_t2v_fast", VIDEO_ASPECT_RATIO_LANDSCAPE
 
-
-def _veo_generate_session_id() -> str:
-    return f";{int(time.time() * 1000)}"
-
-
-def _veo_parse_recaptcha_site_key_from_url(url: str) -> Optional[str]:
-    """从 enterprise.js 等请求 URL 的 render= 参数解析 site key。"""
-    try:
-        u = str(url or "")
-        if "enterprise.js" not in u or "render=" not in u:
-            return None
-        parsed = urlparse(u)
-        render = (parse_qs(parsed.query or "").get("render") or [None])[0]
-        if not render:
-            return None
-        s = str(render).strip()
-        if len(s) < 20:
-            return None
-        return s
-    except Exception:
-        return None
-
-
-async def _veo_resolve_recaptcha_site_key_on_page(
-    page: Any,
-    keys_seen: List[str],
-    *,
-    deadline_monotonic: float,
-) -> Optional[str]:
-    """在已打开的真实 Flow 页上，结合请求监听器写入的 keys_seen 与 DOM 轮询解析 site key。"""
-
-    def _pick_net() -> Optional[str]:
-        for x in keys_seen:
-            t = str(x or "").strip()
-            if t:
-                return t
-        return None
-
-    while time.monotonic() < deadline_monotonic:
-        k = _pick_net()
-        if k:
-            return k
-        try:
-            dom_k = await page.evaluate(
-                r"""() => {
-                    const re = /[?&]render=([^&]+)/;
-                    for (const s of document.querySelectorAll('script[src]')) {
-                        const src = s.getAttribute('src') || '';
-                        const m = re.exec(src);
-                        if (m) return decodeURIComponent(m[1]);
-                    }
-                    return null;
-                }"""
-            )
-        except Exception:
-            dom_k = None
-        if dom_k:
-            return str(dom_k).strip() or None
-        await asyncio.sleep(0.35)
-    return _pick_net()
-
-
-def _veo_page_is_target_flow_project_url(url: str, project_id: str) -> bool:
-    """判断当前页是否已是目标 Flow 项目页（与 goto 的 labs 项目 URL 一致，忽略 path 尾斜杠与 query）。"""
-    pid = str(project_id or "").strip()
-    if not pid:
-        return False
-    try:
-        cur = urlparse(str(url or "").strip())
-    except Exception:
-        return False
-    if (cur.scheme or "").lower() != "https":
-        return False
-    netloc = (cur.netloc or "").split("@")[-1].split(":")[0].lower()
-    if "labs.google" not in netloc:
-        return False
-    path = (cur.path or "").rstrip("/").lower()
-    exp = f"/fx/tools/flow/project/{pid}".rstrip("/").lower()
-    return path == exp
-
-async def _veo_fetch_recaptcha_token_enhanced(
-    browser_context: Any,
-    *,
-    project_id: str,
-    action: str,
-    log_file: Path,
-) -> Optional[str]:
-    """增强版 reCAPTCHA token 获取：强化指纹伪装与人类行为模拟，降低 403 风险。"""
-    page = None
-    page_owned = False
-    page_url = f"https://labs.google/fx/tools/flow/project/{str(project_id).strip()}"
-    keys_seen: List[str] = []
-
-    def on_request(req: Any) -> None:
-        try:
-            sk = _veo_parse_recaptcha_site_key_from_url(req.url)
-            if sk and sk not in keys_seen:
-                keys_seen.append(sk)
-        except Exception:
-            pass
-
-    try:
-        reused: Any = None
-        try:
-            for p in list(getattr(browser_context, "pages", []) or []):
-                try:
-                    if bool(getattr(p, "is_closed", lambda: False)()):
-                        continue
-                except Exception:
-                    continue
-                try:
-                    u = str(getattr(p, "url", "") or "")
-                except Exception:
-                    u = ""
-                if _veo_page_is_target_flow_project_url(u, project_id):
-                    reused = p
-                    break
-        except Exception:
-            reused = None
-
-        if reused is not None:
-            page = reused
-            append_log(log_file, "[veo][recaptcha] reuse existing page")
-        else:
-            page = await browser_context.new_page()
-            page_owned = True
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-                delete window.cdc_adoQpoasnfa76pfcZLmcfl_SymbolIterator;
-                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-                window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-                const _origQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        _origQuery(parameters)
-                );
-            """)
-            append_log(log_file, "[veo][recaptcha] new page with enhanced fingerprint")
-            try:
-                await page.goto(page_url, wait_until="networkidle", timeout=60000)
-            except Exception as e:
-                append_log(log_file, f"[veo][recaptcha] goto failed: {str(e)[:200]}")
-                return None
-
-        page.on("request", on_request)
-
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
-        except Exception:
-            pass
-        await asyncio.sleep(random.uniform(1.0, 2.0))
-
-        resolve_deadline = time.monotonic() + 20.0
-        website_key = await _veo_resolve_recaptcha_site_key_on_page(
-            page, keys_seen, deadline_monotonic=resolve_deadline
-        )
-        if website_key:
-            append_log(log_file, f"[veo][recaptcha] site key from page len={len(website_key)}")
-        else:
-            website_key = VEO_RECAPTCHA_SITE_KEY
-            append_log(log_file, "[veo][recaptcha] using fallback site key")
-
-        reload_ok_event = asyncio.Event()
-        clr_ok_event = asyncio.Event()
-
-        def handle_response(response: Any) -> None:
-            try:
-                if response.status != 200:
-                    return
-                parsed = urlparse(response.url)
-                path = parsed.path or ""
-                if "recaptcha/enterprise/reload" not in path and "recaptcha/enterprise/clr" not in path:
-                    return
-                query = parse_qs(parsed.query or "")
-                key = (query.get("k") or [None])[0]
-                if key != website_key:
-                    return
-                if "recaptcha/enterprise/reload" in path:
-                    reload_ok_event.set()
-                elif "recaptcha/enterprise/clr" in path:
-                    clr_ok_event.set()
-            except Exception:
-                pass
-
-        page.on("response", handle_response)
-
-        try:
-            await page.wait_for_function("typeof grecaptcha !== 'undefined'", timeout=25000)
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-        except Exception as e:
-            append_log(log_file, f"[veo][recaptcha] grecaptcha not ready: {str(e)[:200]}")
-            return None
-
-        try:
-            await page.wait_for_selector('iframe[src*="recaptcha"]', timeout=10000)
-            await asyncio.sleep(random.uniform(0.3, 0.8))
-        except Exception:
-            append_log(log_file, "[veo][recaptcha] recaptcha iframe not found, continuing anyway")
-
-        try:
-            token = await asyncio.wait_for(
-                page.evaluate(
-                    """
-                    ([actionName, siteKey]) => {
-                        return new Promise((resolve, reject) => {
-                            const timeout = setTimeout(() => reject(new Error('timeout')), 30000);
-                            grecaptcha.enterprise.execute(siteKey, { action: actionName })
-                                .then((t) => { clearTimeout(timeout); resolve(t); })
-                                .catch((e) => { clearTimeout(timeout); reject(e); });
-                        });
-                    }
-                    """,
-                    [action, website_key],
-                ),
-                timeout=35,
-            )
-        except Exception as e:
-            append_log(log_file, f"[veo][recaptcha] execute failed: {str(e)[:200]}")
-            return None
-
-        try:
-            await asyncio.wait_for(reload_ok_event.wait(), timeout=15)
-        except asyncio.TimeoutError:
-            append_log(log_file, "[veo][recaptcha] reload timeout (may be ok)")
-
-        try:
-            await asyncio.wait_for(clr_ok_event.wait(), timeout=15)
-        except asyncio.TimeoutError:
-            append_log(log_file, "[veo][recaptcha] clr timeout (may be ok)")
-
-        raw_cfg = app_config.get_raw_config()
-        veo_cfg = raw_cfg.get("veo") if isinstance(raw_cfg, dict) else None
-        settle = 5.0
-        if isinstance(veo_cfg, dict):
-            try:
-                settle = float(veo_cfg.get("recaptcha_settle_seconds", settle) or settle)
-            except (TypeError, ValueError):
-                settle = 5.0
-        settle_with_jitter = settle + random.uniform(-1.0, 2.0)
-        if settle_with_jitter > 0:
-            append_log(log_file, f"[veo][recaptcha] settle {settle_with_jitter:.1f}s")
-            await asyncio.sleep(settle_with_jitter)
-
-        s = str(token or "").strip()
-        if len(s) < 500:
-            append_log(log_file, f"[veo][recaptcha] token too short: {len(s)} chars")
-            return None
-        return s or None
-
-    except Exception as e:
-        append_log(log_file, f"[veo][recaptcha] fatal: {str(e)[:200]}")
-        return None
-    finally:
-        if page_owned and page:
-            try:
-                await page.close()
-            except Exception:
-                pass
-
-
 def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
     """将 userPaygateTier 转为可读套餐名（与 flow2api manage.html formatAccountType 一致）。"""
     t = str(tier or "").strip()
@@ -3523,14 +2428,6 @@ def _veo_normalize_credits_payload(data: Any) -> Dict[str, Any]:
     if tier_s == "":
         tier_s = None
     return {"credits": credits_i, "user_paygate_tier": tier_s, "raw": data}
-
-
-def _veo_month_token_to_num(month_tok: str) -> Optional[int]:
-    t = (month_tok or "").strip().lower()
-    if len(t) < 3:
-        return None
-    return _VEO_MONTH_PREFIX_TO_NUM.get(t[:3])
-
 
 def _veo_local_next_1305_datetime() -> datetime:
     """本地「下一次 01:05」：当前时刻若已过当天 01:05 则为明天 01:05，否则为今天 01:05。"""
@@ -3684,143 +2581,6 @@ def _veo_chain_http_to_socks5h_get(
             resp_body = gzip.decompress(resp_body)
         return status, resp_body.decode("utf-8", "replace")
 
-
-def _veo_next_update_text_to_cooldown_str(page_text: str) -> Optional[str]:
-    """从页面文本解析「Next update: Tomorrow」等为本地下一次 13:05（见 _veo_local_next_1305_datetime），
-    或「Next update: Apr 22」等与当年月日组合为本地该日 13:05（若解析日为今天则同样按下一次 13:05 规则）。"""
-    if not (page_text or "").strip():
-        return None
-    if _VEO_NEXT_UPDATE_TOMORROW_RE.search(page_text):
-        dt_local = _veo_local_next_1305_datetime()
-        return dt_local.strftime("%Y-%m-%d %H:%M:%S")
-    m = _VEO_NEXT_UPDATE_RE.search(page_text)
-    if not m:
-        return None
-    mon = _veo_month_token_to_num(m.group(1) or "")
-    if mon is None:
-        return None
-    try:
-        dnum = int(m.group(2))
-    except Exception:
-        return None
-    if dnum < 1 or dnum > 31:
-        return None
-
-    now = datetime.now()
-    year_s = (m.group(3) or "").strip()
-    if year_s:
-        try:
-            y = int(year_s)
-        except Exception:
-            return None
-        try:
-            final_d = date(y, mon, dnum)
-        except ValueError:
-            return None
-    else:
-        y = now.year
-        try:
-            cand = date(y, mon, dnum)
-        except ValueError:
-            return None
-        if cand < now.date():
-            y += 1
-        try:
-            final_d = date(y, mon, dnum)
-        except ValueError:
-            return None
-
-    if final_d == now.date():
-        dt_local = _veo_local_next_1305_datetime()
-    else:
-        dt_local = datetime(final_d.year, final_d.month, final_d.day, 13, 5, 0)
-    return dt_local.strftime("%Y-%m-%d %H:%M:%S")
-
-
-async def _veo_scrape_one_google_next_update_cooldown(
-    sess: "VeoSession",
-    *,
-    log_file: Path,
-    goto_timeout_ms: int = 90_000,
-    settle_seconds: float = 4.0,
-) -> Optional[str]:
-    """新开标签页打开 one.google.com AI 活动页，读取 Next update 作为 cooldown_until（与 Sora nf_check 格式一致）。"""
-    ctx = getattr(sess.pw_ctx, "context", None)
-    if ctx is None:
-        append_log(log_file, "[veo][activity] 无 browser context，跳过 Next update")
-        return None
-
-    page = None
-    try:
-        page = await ctx.new_page()
-        await page.goto(
-            VEO_ONE_GOOGLE_AI_ACTIVITY_URL,
-            wait_until="domcontentloaded",
-            timeout=int(goto_timeout_ms),
-        )
-        await asyncio.sleep(max(0.0, float(settle_seconds)))
-        text = ""
-        try:
-            text = await page.inner_text("body")
-        except Exception:
-            try:
-                text = await page.content()
-            except Exception as e2:
-                append_log(log_file, f"[veo][activity] 读取页面正文失败: {e2}")
-                return None
-
-        cu = _veo_next_update_text_to_cooldown_str(text)
-        if cu:
-            append_log(log_file, f"[veo][activity] Next update -> cooldown_until={cu}")
-        else:
-            append_log(log_file, "[veo][activity] 未匹配到 Next update（可能未登录或文案变更）")
-        return cu
-    except Exception as e:
-        append_log(log_file, f"[veo][activity] 打开活动页失败: {e}")
-        return None
-    finally:
-        if page is not None:
-            try:
-                await page.close()
-            except Exception:
-                pass
-
-
-async def veo_fetch_next_update_cooldown_from_one_google_activity(
-    *,
-    sess: "VeoSession",
-    target_url: str,
-) -> Optional[str]:
-    """在指纹浏览器中另开标签页打开 Google AI 活动页，从正文匹配「Next update: Apr 22」等文案，解析为额度重置时间字符串（与 sora nf_check 的 cooldown_until 格式一致：本地日期 0 点）。
-
-    需已能正常使用该窗口（与 veo_fetch_credits_by_proxy 相同的前置：开窗、labs 目标页上下文）；失败返回 None，不抛错。
-    """
-    try:
-        sess._cancel_idle_close()
-        log_file = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
-        async with sess._bring_drafts_lock:
-            await sess.ensure_open(
-                args=sess.browser_open_args,
-                force_open=sess.browser_force_open,
-                headless=sess.browser_headless,
-                acquire_bring_lock=False,
-            )
-            await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_url, acquire_bring_lock=False)
-            if sess.pw_ctx.page is None:
-                append_log(log_file, "[veo][activity] page 未初始化，跳过 Next update")
-                return None
-            cu = await _veo_scrape_one_google_next_update_cooldown(sess, log_file=log_file)
-            await sess.pw_ctx.disconnect_playwright_only()
-            return cu
-    except Exception as e:
-        try:
-            lf = Path(sess.monitor_log_path) if sess.monitor_log_path else (MONITOR_LOG_FILE)
-            append_log(lf, f"[veo][activity] veo_fetch_next_update_cooldown_from_one_google_activity 失败: {e}")
-        except Exception:
-            pass
-        return None
-
-
 async def veo_fetch_credits_by_proxy(
     *,
     sess: Optional["VeoSession"] = None,
@@ -3959,6 +2719,39 @@ def _veo_extension_labs_url(target_url: str) -> str:
     return "https://labs.google/fx"
 
 
+VEO_FLOW_PAGE_URL_PREFIX = "https://labs.google/fx/tools/flow"
+
+
+def _veo_input_token_params_result(
+    *,
+    access_token: Optional[str],
+    access_expires: Optional[str],
+    session_token: Optional[str],
+    short_access_token: Optional[str],
+    short_expires: Optional[str],
+    target_url: str,
+    current_url: str,
+) -> Dict[str, Any]:
+    session_tok = str(session_token or access_token or "").strip()
+    short_tok = str(short_access_token or access_token or session_tok or "").strip()
+    exp = str(access_expires or "").strip() or None
+    short_exp = str(short_expires or exp or "").strip() or None
+    return {
+        "type": "veo_access_tokens",
+        "source": "input_params",
+        "access_token": session_tok or short_tok,
+        "session_token": session_tok or short_tok,
+        "expires": exp,
+        "short_access_token": short_tok,
+        "short_expires": short_exp,
+        "target_url": target_url,
+        "current_url": current_url,
+        "required_url_prefix": VEO_FLOW_PAGE_URL_PREFIX,
+        "token_fetch_skipped": True,
+        "skip_reason": "current_page_not_flow",
+    }
+
+
 def _veo_extension_ids_from_session(
     sess: "VeoSession",
     *,
@@ -3971,6 +2764,9 @@ def _veo_extension_ids_from_session(
         raise RuntimeError("缺少插件连接标识：space_id/window_key")
     return sid, wkey
 
+def is_accounts_google(url):
+    parsed = urlparse(url)
+    return parsed.netloc == "accounts.google.com"
 
 async def veo_fetch_access_tokens_via_extension(
     *,
@@ -3982,6 +2778,11 @@ async def veo_fetch_access_tokens_via_extension(
     token_timeout_seconds: float = 45.0,
     log_file: Optional[Path] = None,
     auto_triger_connection: Optional[bool] = True,
+    access_token: Optional[str] = None,
+    access_expires: Optional[str] = None,
+    session_token: Optional[str] = None,
+    short_access_token: Optional[str] = None,
+    short_expires: Optional[str] = None,
 ) -> Dict[str, Any]:
     """通过浏览器插件读取 VEO long session-token 与 short access_token。"""
     sid, wkey = _veo_extension_ids_from_session(sess, space_id=space_id, window_key=window_key)
@@ -4002,7 +2803,38 @@ async def veo_fetch_access_tokens_via_extension(
         )
 
     labs_target = _veo_extension_labs_url(target_url)
-    append_log(log_file, "[veo][token] fetch long/short access_token via extension")
+    try:
+        page_info = await submit_extension_task(
+            space_id=sid,
+            window_key=wkey,
+            provider="veo",
+            payload={
+                "action": "get_current_page",
+                "workflow_kind": "get_current_page",
+            },
+            progress_cb=_noop_progress_cb,
+            timeout_seconds=max(3.0, min(10.0, float(connect_wait_seconds or 8.0))),
+        )
+        current_url = str((page_info or {}).get("url") or "").strip()
+        print(f"current_url:{current_url}")
+        if is_accounts_google(current_url):
+            append_log(
+                log_file,
+                "[veo][token] current page is not flow page, skip extension token fetch "
+                f"current_url={safe_trim(current_url, 300)!r} required_prefix={VEO_FLOW_PAGE_URL_PREFIX!r}",
+            )
+            return _veo_input_token_params_result(
+                access_token=access_token,
+                access_expires="1999-00-20T07:00:00.000Z",
+                session_token=session_token,
+                short_access_token=short_access_token,
+                short_expires="1999-00-20T07:00:00.000Z",
+                target_url=target_url,
+                current_url=current_url,
+            )
+    except Exception as e:
+        append_log(log_file, f"[veo][token] check current page via extension failed, continue token fetch: {e}")
+
     info = await submit_extension_task(
         space_id=sid,
         window_key=wkey,
@@ -4043,7 +2875,7 @@ async def veo_fetch_access_tokens_via_extension(
     return out
 
 
-async def fetch_long_access_token_in_window(
+async def force_fetch_access_token_in_window(
     *,
     sess: "VeoSession",
     target_url: str,
@@ -4058,9 +2890,9 @@ async def fetch_long_access_token_in_window(
         log_file=Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE,
     )
     return {
-        "access_token": str((info or {}).get("session_token") or (info or {}).get("access_token") or "").strip() or None,
-        "session_token": str((info or {}).get("session_token") or (info or {}).get("access_token") or "").strip() or None,
-        "expires": str((info or {}).get("expires") or "").strip() or None,
+        "access_token": str((info or {}).get("short_access_token") or (info or {}).get("access_token") or "").strip() or None,
+        "session_token": str((info or {}).get("short_access_token") or (info or {}).get("access_token") or "").strip() or None,
+        "expires": str((info or {}).get("short_expires") or "").strip() or None,
         "email": str((info or {}).get("email") or "").strip() or None,
         "short_access_token": str((info or {}).get("short_access_token") or "").strip() or None,
         "short_expires": str((info or {}).get("short_expires") or "").strip() or None,
@@ -4123,51 +2955,7 @@ async def _veo_resolve_window_proxy(db: Any, picked: Any, log_file: Path) -> str
     except Exception as e:
         append_log(log_file, f"[veo] resolve window proxy failed: {safe_trim(str(e), 200)}")
         return ""
-
-
-async def get_cached_short_access_token_for_session(
-    sess: "VeoSession",
-    *,
-    session_token: str,
-    target_url: str = "https://labs.google/fx",
-    db: Any = None,
-    picked: Any = None,
-    log_file: Optional[Path] = None,
-    margin_seconds: float = 120.0,
-) -> Dict[str, Any]:
-    """Cache short access_token per VeoSession; refresh from auth/session when needed."""
-    st = str(session_token or "").strip()
-    if not st:
-        raise RuntimeError("?? __Secure-next-auth.session-token")
-    log_file = log_file or (Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE)
-    async with sess.veo_short_token_lock:
-        if (
-            str(getattr(sess, "veo_short_session_token", "") or "").strip() == st
-            and _veo_cached_access_still_valid(
-                getattr(sess, "veo_short_access_token", None),
-                getattr(sess, "veo_short_access_expires", None),
-                margin_seconds=margin_seconds,
-            )
-        ):
-            append_log(log_file, "[veo][token] reuse cached short access_token from VeoSession")
-            return {
-                "access_token": str(sess.veo_short_access_token or ""),
-                "expires": sess.veo_short_access_expires,
-                "email": sess.veo_short_email,
-                "session_token": st,
-                "cached": True,
-            }
-        info = await fetch_short_access_token_by_proxy(
-            session_token=st, target_url=target_url, db=db, picked=picked, log_file=log_file
-        )
-        sess.veo_short_access_token = str(info.get("access_token") or "").strip() or None
-        sess.veo_short_access_expires = str(info.get("expires") or "").strip() or None
-        sess.veo_short_session_token = st
-        sess.veo_short_email = str(info.get("email") or "").strip() or None
-        append_log(log_file, "[veo][token] refreshed short access_token into VeoSession cache")
-        return dict(info)
-
-
+    
 async def fetch_short_access_token_by_proxy(
     *,
     session_token: str,
@@ -4229,66 +3017,6 @@ async def fetch_short_access_token_by_proxy(
         "session_token": st,
     }
 
-
-async def veo_fetch_access_token_in_window(
-    *,
-    sess: "VeoSession",
-    target_url: str,
-    db: Any = None,
-    picked: Any = None,
-) -> Dict[str, Any]:
-    """兼容旧入口：通过浏览器插件一次性读取 long session-token 与 short access_token。"""
-    return await veo_fetch_access_tokens_via_extension(
-        sess=sess,
-        target_url=target_url,
-        connect_wait_seconds=8.0,
-        token_timeout_seconds=45.0,
-        log_file=Path(sess.monitor_log_path) if sess.monitor_log_path else MONITOR_LOG_FILE,
-    )
-
-
-async def _veo_force_refresh_access_tokens_for_mapping(
-    *,
-    sess: "VeoSession",
-    target_url: str,
-    db: Any = None,
-    task_type_window_id: Optional[Any] = None,
-    picked: Any = None,
-    log_file: Optional[Path] = None,
-    reason: str = "",
-) -> Dict[str, Any]:
-    """强制刷新 long session-token + short access_token。
-
-    - long session-token：通过 veo_fetch_access_token_in_window 开窗读取，并持久化到 DB
-    - short access_token：由 veo_fetch_access_token_in_window 内部换取，并保存到 sess cache
-    """
-    log_file = log_file or (Path(sess.monitor_log_path) if getattr(sess, "monitor_log_path", None) else MONITOR_LOG_FILE)
-    append_log(log_file, f"[veo][token] force refresh long/short access_token start reason={safe_trim(reason, 160)!r}")
-    info = await veo_fetch_access_token_in_window(sess=sess, target_url=target_url, db=db, picked=picked)
-    long_session_token = str((info or {}).get("session_token") or (info or {}).get("access_token") or "").strip()
-    exp = str((info or {}).get("expires") or "").strip() or None
-    short_at = str((info or {}).get("short_access_token") or getattr(sess, "veo_short_access_token", "") or "").strip()
-    if not long_session_token or not short_at:
-        raise NonPenalizedTaskError("强制刷新 VEO token 失败：未取得 long 或 short access_token", status_code=401)
-    if db is not None and task_type_window_id:
-        try:
-            mid = int(task_type_window_id)
-            if mid > 0:
-                await db.update_task_type_window(
-                    mapping_id=mid,
-                    sora_access_token=long_session_token,
-                    sora_access_expires=exp,
-                )
-                append_log(log_file, f"[veo][token] force refreshed long access_token persisted to task_type_window id={mid}")
-        except Exception as e:
-            append_log(log_file, f"[veo][token] force refresh persist long access_token failed (non-fatal): {e}")
-    append_log(log_file, "[veo][token] force refresh long/short access_token done")
-    return {
-        "session_token": long_session_token,
-        "expires": exp,
-        "short_access_token": short_at,
-        "short_expires": str((info or {}).get("short_expires") or getattr(sess, "veo_short_access_expires", "") or "").strip() or None,
-    }
 
 def _veo_trpc_create_project_url(target_url: str) -> str:
     raw = (target_url or "").strip() or "https://labs.google/fx"
@@ -4581,10 +3309,6 @@ def _veo_resolve_image_aspect_ratio(payload: Dict[str, Any]) -> str:
     return IMAGE_ASPECT_RATIO_LANDSCAPE
 
 
-def _veo_flow_media_batch_generate_images_url(project_id: str) -> str:
-    return f"https://aisandbox-pa.googleapis.com/v1/projects/{str(project_id).strip()}/flowMedia:batchGenerateImages"
-
-
 def _veo_truthy_payload_flag(v: Any) -> bool:
     if isinstance(v, bool):
         return v
@@ -4619,335 +3343,6 @@ def _veo_resolve_image_output_resolution(payload: Dict[str, Any]) -> tuple[str, 
     if s in ("2k", "2048", "2k_output", "uhd_2k"):
         return ("2K", True)
     return ("1K", False)
-
-
-def _veo_parse_upsample_encoded_image(resp: Any) -> str:
-    if not isinstance(resp, dict):
-        raise NonPenalizedTaskError("图片放大返回格式异常", status_code=502)
-    enc = resp.get("encodedImage")
-    if enc is None:
-        enc = ""
-    out = str(enc).strip()
-    if not out:
-        raise NonPenalizedTaskError(
-            f"图片放大未返回 encodedImage：{safe_trim(str(resp), 320)}",
-            status_code=502,
-        )
-    return out
-
-
-async def _veo_flow_upsample_image_in_window(
-    *,
-    page: Any,
-    access_token: str,
-    project_id: str,
-    media_id: str,
-    user_paygate_tier: str,
-    generation_session_id: str,
-    log_file: Path,
-    max_retries: int,
-    bring_prefix: str,
-    sess: "VeoSession",
-    target_bring_acquire_lock: bool = True,
-) -> str:
-    """页面内调用 `flow/upsampleImage`（对齐 flow2api `FlowClient.upsample_image`），返回 base64 图片数据。"""
-    last_err: Optional[str] = None
-    n = max(1, min(5, int(max_retries)))
-    for attempt in range(n):
-        recaptcha_token = await _veo_fetch_recaptcha_token_enhanced(
-            page.context,
-            project_id=project_id,
-            action="IMAGE_GENERATION",
-            log_file=log_file,
-        )
-        if not recaptcha_token:
-            last_err = "无法获取 reCAPTCHA token（放大）"
-            append_log(log_file, f"[veo][image][upsample] attempt {attempt + 1}: no recaptcha")
-            if attempt + 1 < n:
-                await asyncio.sleep(2.0)
-                try:
-                    await sess._bring_target_page_to_front(
-                        refresh_target=False,
-                        drafts_url=bring_prefix,
-                        acquire_bring_lock=target_bring_acquire_lock,
-                    )
-                except Exception:
-                    pass
-            continue
-
-        upsample_session_id = generation_session_id or _veo_generate_session_id()
-        json_data: Dict[str, Any] = {
-            "mediaId": str(media_id).strip(),
-            "targetResolution": UPSAMPLE_IMAGE_RESOLUTION_2K,
-            "clientContext": {
-                "recaptchaContext": {
-                    "token": recaptcha_token,
-                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-                },
-                "sessionId": upsample_session_id,
-                "projectId": str(project_id).strip(),
-                "tool": "PINHOLE",
-                "userPaygateTier": _veo_normalize_user_paygate_tier(user_paygate_tier),
-            },
-        }
-        try:
-            tx = await page_fetch_json(
-                page,
-                url=FLOW_FLOW_UPSAMPLE_IMAGE_URL,
-                method="POST",
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {access_token}",
-                },
-                json_data=json_data,
-                log_file=log_file,
-            )
-        except Exception as e:
-            last_err = _short_err_msg(e, max_len=200)
-            append_log(log_file, f"[veo][image][upsample] fetch error: {e}")
-            continue
-
-        st = tx.get("status")
-        if st is not None and int(st) >= 400:
-            body = safe_trim(str(tx.get("response_body") or ""), 500)
-            last_err = f"HTTP {st} {body}"
-            append_log(log_file, f"[veo][image][upsample] rejected: {last_err}")
-            if attempt + 1 < n:
-                await asyncio.sleep(1.5)
-            continue
-
-        resp = tx.get("_json")
-        try:
-            b64 = _veo_parse_upsample_encoded_image(resp)
-        except NonPenalizedTaskError as e:
-            last_err = str(e)
-            append_log(log_file, f"[veo][image][upsample] bad response: {last_err}")
-            continue
-
-        append_log(
-            log_file,
-            f"[veo][image][upsample] ok mediaId={safe_trim(str(media_id), 60)!r} b64_len={len(b64)}",
-        )
-        return b64
-
-    raise NonPenalizedTaskError(last_err or "图片放大失败", status_code=502)
-
-
-def _veo_parse_batch_generate_images_fife_url(resp: Any) -> tuple[str, Optional[str]]:
-    if not isinstance(resp, dict):
-        raise NonPenalizedTaskError("图片生成返回格式异常", status_code=502)
-    media = resp.get("media")
-    m0: Optional[Dict[str, Any]] = None
-    if isinstance(media, list) and len(media) > 0 and isinstance(media[0], dict):
-        m0 = media[0]
-    if m0 is None:
-        reqs = resp.get("responses")
-        if isinstance(reqs, list) and len(reqs) > 0 and isinstance(reqs[0], dict):
-            media2 = reqs[0].get("media")
-            if isinstance(media2, list) and len(media2) > 0 and isinstance(media2[0], dict):
-                m0 = media2[0]
-    if m0 is None:
-        raise NonPenalizedTaskError(
-            f"图片生成结果为空：{safe_trim(str(resp), 320)}",
-            status_code=502,
-        )
-    img_block = m0.get("image")
-    if not isinstance(img_block, dict):
-        img_block = {}
-    gen = img_block.get("generatedImage")
-    if not isinstance(gen, dict):
-        gen = {}
-    fife = str(gen.get("fifeUrl") or "").strip()
-    if not fife:
-        raise NonPenalizedTaskError(
-            f"图片生成未返回 fifeUrl：{safe_trim(str(resp), 400)}",
-            status_code=502,
-        )
-    name_v = m0.get("name")
-    mid = str(name_v).strip() if name_v else None
-    return fife, mid
-
-
-def _veo_parse_batch_generate_images_workflow_info(
-    resp: Any,
-    *,
-    fallback_project_id: Optional[str] = None,
-) -> tuple[Optional[str], Optional[str]]:
-    """从 batchGenerateImages 返回中提取 workflowId 与 projectId，用于归档生成记录。"""
-    if not isinstance(resp, dict):
-        return None, None
-
-    workflow_id: Optional[str] = None
-    workflow_project_id: Optional[str] = None
-
-    def _first_media(obj: Any) -> Optional[Dict[str, Any]]:
-        if not isinstance(obj, dict):
-            return None
-        media = obj.get("media")
-        if isinstance(media, list):
-            for item in media:
-                if isinstance(item, dict):
-                    return item
-        reqs = obj.get("responses")
-        if isinstance(reqs, list):
-            for req in reqs:
-                if not isinstance(req, dict):
-                    continue
-                media2 = req.get("media")
-                if isinstance(media2, list):
-                    for item in media2:
-                        if isinstance(item, dict):
-                            return item
-        return None
-
-    m0 = _first_media(resp)
-    if isinstance(m0, dict):
-        workflow_id = str(m0.get("workflowId") or "").strip() or None
-        img_block = m0.get("image")
-        if isinstance(img_block, dict):
-            gen = img_block.get("generatedImage")
-            if isinstance(gen, dict):
-                workflow_id = workflow_id or (str(gen.get("workflowId") or "").strip() or None)
-
-    workflows_raw = resp.get("workflows")
-    workflows: List[Any] = list(workflows_raw) if isinstance(workflows_raw, list) else []
-    if not workflows:
-        reqs = resp.get("responses")
-        if isinstance(reqs, list):
-            for req in reqs:
-                if not isinstance(req, dict):
-                    continue
-                wf2 = req.get("workflows")
-                if isinstance(wf2, list):
-                    workflows.extend(wf2)
-
-    selected_workflow: Optional[Dict[str, Any]] = None
-    for wf in workflows:
-        if not isinstance(wf, dict):
-            continue
-        name = str(wf.get("name") or "").strip()
-        if workflow_id and name == workflow_id:
-            selected_workflow = wf
-            break
-        if selected_workflow is None:
-            selected_workflow = wf
-
-    if isinstance(selected_workflow, dict):
-        workflow_id = workflow_id or (str(selected_workflow.get("name") or "").strip() or None)
-        workflow_project_id = str(selected_workflow.get("projectId") or "").strip() or None
-
-    workflow_project_id = workflow_project_id or (str(fallback_project_id or "").strip() or None)
-    return workflow_id, workflow_project_id
-
-
-async def _veo_archive_flow_workflow_in_window(
-    *,
-    page: Any,
-    access_token: str,
-    workflow_id: Optional[str],
-    project_id: Optional[str],
-    log_file: Path,
-    workflow_kind: str = "image",
-) -> bool:
-    """将 Flow workflow 标记为 archived=true，避免生成内容继续留在项目记录中。"""
-    kind = str(workflow_kind or "flow").strip() or "flow"
-    log_prefix = f"[veo][{kind}]"
-    wid = str(workflow_id or "").strip()
-    pid = str(project_id or "").strip()
-    if not wid:
-        append_log(log_file, f"{log_prefix} archive workflow skipped: missing workflowId")
-        return False
-    if not pid:
-        append_log(log_file, f"{log_prefix} archive workflow skipped: missing projectId workflowId={wid!r}")
-        return False
-
-    url = f"{FLOW_FLOW_WORKFLOWS_BASE_URL}/{wid}"
-    json_data = {
-        "workflow": {
-            "name": wid,
-            "projectId": pid,
-            "metadata": {"archived": True},
-        },
-        "updateMask": "metadata.archived",
-    }
-    try:
-        tx = await page_fetch_json(
-            page,
-            url=url,
-            method="PATCH",
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {access_token}",
-            },
-            json_data=json_data,
-            log_file=log_file,
-        )
-    except Exception as e:
-        append_log(log_file, f"{log_prefix} archive workflow failed workflowId={wid!r}: {e}")
-        return False
-
-    try:
-        st = int(tx.get("status")) if tx.get("status") is not None else 0
-    except Exception:
-        st = 0
-    if st >= 400:
-        body = safe_trim(str(tx.get("response_body") or ""), 500)
-        append_log(
-            log_file,
-            f"{log_prefix} archive workflow rejected workflowId={wid!r} status={st} body={body!r}",
-        )
-        return False
-
-    append_log(log_file, f"{log_prefix} archive workflow ok workflowId={wid!r} projectId={pid!r} status={st}")
-    return True
-
-
-async def _veo_archive_uploaded_image_workflows_in_window(
-    *,
-    page: Any,
-    access_token: str,
-    uploaded_workflows: List[Dict[str, str]],
-    log_file: Path,
-    workflow_kind: str,
-) -> Dict[str, int]:
-    """归档本次任务中通过 flow/uploadImage 上传的参考图 workflow。"""
-    stats = {"total": 0, "archived": 0, "skipped": 0}
-    if page is None:
-        stats["skipped"] = len(uploaded_workflows or [])
-        if stats["skipped"]:
-            append_log(log_file, f"[veo][{workflow_kind}] upload image archive skipped: page is None")
-        return stats
-
-    seen: set[str] = set()
-    for item in list(uploaded_workflows or []):
-        if not isinstance(item, dict):
-            continue
-        workflow_id = str(item.get("workflow_id") or "").strip()
-        if not workflow_id or workflow_id in seen:
-            stats["skipped"] += 1
-            continue
-        seen.add(workflow_id)
-        stats["total"] += 1
-        project_id = str(item.get("project_id") or "").strip()
-        ok = await _veo_archive_flow_workflow_in_window(
-            page=page,
-            access_token=access_token,
-            workflow_id=workflow_id,
-            project_id=project_id,
-            log_file=log_file,
-            workflow_kind=workflow_kind,
-        )
-        if ok:
-            stats["archived"] += 1
-    if stats["total"] or stats["skipped"]:
-        append_log(
-            log_file,
-            f"[veo][{workflow_kind}] uploaded image workflow archive summary "
-            f"total={stats['total']} archived={stats['archived']} skipped={stats['skipped']}",
-        )
-    return stats
 
 # ---------------------------------------------------------------------------
 # 入口函数
@@ -5046,7 +3441,6 @@ async def veo_workflow(
     idle_close_seconds = float(payload.get("ctx_idle_close_seconds") or 30.0)
     max_wait_seconds = float(payload.get("veo_pending_max_wait_seconds") or max(60.0, min(float(timeout_seconds), 1800.0)))
     poll_interval_seconds = float(payload.get("veo_pending_poll_interval_seconds") or 5.0)
-    max_submit_retries = 1
 
     sess = get_or_create_veo_session(
         vendor=browser_vendor,
@@ -5061,7 +3455,6 @@ async def veo_workflow(
     sess.idle_close_seconds = idle_close_seconds
 
     log_file = sess._log_file
-    started_at = time.time()
     project_page = _veo_project_page_url(project_id=project_id, hint_url=labs_hint)
     bring_prefix = project_page
     print(f"bring_prefix: {bring_prefix}")
@@ -5119,26 +3512,43 @@ async def veo_workflow(
                         t2 = str(row.get("sora_access_token") or "").strip() or None
                         e2 = str(row.get("sora_access_expires") or "").strip() or None
                         if t2:
-                            ext_session_token, ext_exp = t2, e2
+                            ext_session_token,ext_at, ext_exp = t2, t2, e2
             except Exception as e:
                 append_log(log_file, f"[veo][extension] reload access_token from DB failed (use call args): {e}")
 
         try:
-            append_log(log_file, "[veo][extension] fetch long/short access_token via browser extension")
-            ext_tok_info = await veo_fetch_access_tokens_via_extension(
-                sess=sess,
-                target_url=project_page,
-                space_id=space_id,
-                window_key=window_key,
-                connect_wait_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
-                token_timeout_seconds=float(payload.get("extension_token_timeout_seconds") or 45.0),
-                log_file=log_file,
-            )
-            ext_session_token = str((ext_tok_info or {}).get("session_token") or (ext_tok_info or {}).get("access_token") or "").strip() or None
-            ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
-            ext_at = str((ext_tok_info or {}).get("short_access_token") or "").strip() or None
+            if not _veo_cached_access_still_valid(access_token, access_expires, margin_seconds=10):
+                ext_tok_info = await veo_fetch_access_tokens_via_extension(
+                    sess=sess,
+                    target_url=project_page,
+                    space_id=space_id,
+                    window_key=window_key,
+                    connect_wait_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
+                    token_timeout_seconds=float(payload.get("extension_token_timeout_seconds") or 45.0),
+                    log_file=log_file,
+                    access_token=ext_session_token,
+                    access_expires=ext_exp,
+                    session_token=ext_session_token,
+                    short_access_token=ext_at,
+                    short_expires=ext_exp,
+                )
+                ext_session_token = str((ext_tok_info or {}).get("session_token") or (ext_tok_info or {}).get("access_token") or "").strip() or None
+                ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
+                ext_at = str((ext_tok_info or {}).get("short_access_token") or "").strip() or ext_at
+                if not _veo_cached_access_still_valid(ext_at, ext_exp, margin_seconds=10):
+                    if db is not None and task_type_window_id:
+                        try:
+                            mid = int(task_type_window_id)
+                            if mid > 0:
+                                await db.update_task_type_window(mapping_id=mid, enabled=False)
+                                append_log(log_file, f"[veo][extension] google account logged out; disabled task_type_window id={mid}")
+                        except Exception as disable_e:
+                            append_log(log_file, f"[veo][extension] disable task_type_window after logout failed: {disable_e}")
+                    raise RuntimeError("google账号已登出")
         except Exception as e:
             append_log(log_file, f"[veo][extension] fetch long/short access_token via extension failed: {e}")
+            if isinstance(e, NonPenalizedTaskError):
+                raise
             ext_session_token = None
             ext_at = None
         if not ext_session_token:
@@ -5204,6 +3614,7 @@ async def veo_workflow(
                 "poll_interval_seconds": poll_interval_seconds,
                 "access_token": ext_at,
                 "access_expires": ext_exp,
+                "ext_session_token": ext_session_token,
                 "extension_model_key": _ext_model_key,
                 "extension_video_aspect_ratio": _ext_video_aspect,
                 "extension_image_aspect_ratio": _ext_image_aspect,
@@ -5244,34 +3655,7 @@ async def veo_workflow(
                     status_code=getattr(e, "status_code", None) or 400,
                     content_violation=True,
                 )
-            if not _veo_is_auth_credentials_error(e):
-                raise
-            append_log(log_file, f"[veo][extension] task auth failed; force refresh long/short tokens and retry once: {e}")
-            force_info = await _veo_force_refresh_access_tokens_for_mapping(
-                sess=sess,
-                target_url=project_page,
-                db=db,
-                task_type_window_id=task_type_window_id,
-                picked=SimpleNamespace(window_pk=int(task_type_window_id or 0) if task_type_window_id else 0),
-                log_file=log_file,
-                reason=str(e),
-            )
-            ext_session_token = str(force_info.get("session_token") or "").strip() or ext_session_token
-            ext_exp = str(force_info.get("expires") or "").strip() or None
-            ext_at = str(force_info.get("short_access_token") or "").strip() or None
-            if not ext_at:
-                raise NonPenalizedTaskError("VEO token 强制刷新后仍缺少 short access_token", status_code=401)
-            ext_payload["access_token"] = ext_at
-            ext_payload["access_expires"] = ext_exp
-            ext_payload["force_refreshed_access_token"] = True
-            _ext_result = await submit_extension_task(
-                space_id=space_id,
-                window_key=window_key,
-                provider="veo",
-                payload=ext_payload,
-                progress_cb=progress_cb,
-                timeout_seconds=max_wait_seconds + 120.0,
-            )
+            raise
         if image_mode:
             _ext_result = await _veo_extension_upload_upsample_data_url_to_oss(
                 _ext_result,

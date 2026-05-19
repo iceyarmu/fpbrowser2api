@@ -88,8 +88,16 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "nana-banana-2",
     "nana-banana-pro",
     "veo-3-1",
+    "gpt-image2-1k",
+    "gpt-image2-2k",
+    "gpt-image2-4k",
 )
 OPENAI_COMPAT_VIDEO_MODEL_SET = set(OPENAI_COMPAT_VIDEO_MODELS)
+GPT_IMAGE2_VIDEO_MODELS: Dict[str, str] = {
+    "gpt-image2-1k": "1k",
+    "gpt-image2-2k": "2k",
+    "gpt-image2-4k": "4k",
+}
 
 
 def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
@@ -113,6 +121,20 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         if duration != 8:
             raise HTTPException(status_code=400, detail="veo-3-1 only supports duration=8")
         payload["n_frames"] = 240
+    elif model in GPT_IMAGE2_VIDEO_MODELS:
+        task_type_code = "gpt_workflow"
+        duration = payload.get("duration")
+        if duration is not None and duration != 1:
+            raise HTTPException(status_code=400, detail=f"{model} only supports duration=1 (image generation mode)")
+        resolution = GPT_IMAGE2_VIDEO_MODELS[model]
+        payload["duration"] = 1
+        payload["workflow_kind"] = "image"
+        payload["model"] = model
+        payload["model_code"] = "gpt-image-2"
+        payload["image_model_name"] = "gpt-image-2"
+        payload["gpt_image2_model"] = model
+        payload["resolution"] = resolution
+        payload["size_tier"] = resolution.upper()
     else:
         task_type_code = model
     return task_type_code, payload

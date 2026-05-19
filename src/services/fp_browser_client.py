@@ -267,7 +267,7 @@ class FPBrowserClient:
                 ##args.append("--mute-audio")
                 ##args.append("--disable-extensions")
                 ##args.append("--autoplay-policy=user-gesture-required")
-                _append_unique_arg(args, "--blink-settings=imagesEnabled=false")
+                ##_append_unique_arg(args, "--blink-settings=imagesEnabled=false")
                 pass
 
         return await self._roxy_open_browser(
