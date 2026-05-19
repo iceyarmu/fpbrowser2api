@@ -949,6 +949,7 @@ async def refresh_gpt_balance_via_extension(
                     access_expires = str(row.get("sora_access_expires") or "").strip() or None
         except Exception as e:
             pass
+        print(f"access_token:{access_token} access_expires:{access_expires}");
         result = await gpt_fetch_balance_via_extension(
             sess=sess,
             target_url=target,
@@ -966,8 +967,8 @@ async def refresh_gpt_balance_via_extension(
             "mapping_id": int(getattr(picked, "mapping_id", 0) or 0),
             "remaining_quota": remaining,
             "sora_remaining_count": remaining,
-            "sora_access_token": at,
-            "sora_access_expires": exp,
+            "sora_access_token": access_token,
+            "sora_access_expires": access_expires,
         }
         if result.get("cooldown_until"):
             kwargs["cooldown_until"] = str(result.get("cooldown_until"))
@@ -1093,7 +1094,9 @@ async def refresh_gpt_balance(ctx: Any) -> int:
         pure_mode=_bool(row.get("pure_mode"), True),
     )
     if app_config.extension_executor_enabled and picked.space_id and picked.window_key and picked.browser_base_url:
+        print(f"-----------------");
         ext_info = await refresh_gpt_balance_via_extension(db=ctx.db, picked=picked, refresh_timeout_seconds=30.0, auto_triger_connection=True)
+        print(f"ext_info:{ext_info}");
         if isinstance(ext_info, dict) and (ext_info.get("remaining") is not None or ext_info.get("image_quota_remaining") is not None):
             return _int(ext_info.get("remaining", ext_info.get("image_quota_remaining")), 0)
 

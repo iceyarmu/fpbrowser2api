@@ -3515,8 +3515,22 @@ async def veo_workflow(
                             ext_session_token,ext_at, ext_exp = t2, t2, e2
             except Exception as e:
                 append_log(log_file, f"[veo][extension] reload access_token from DB failed (use call args): {e}")
-
+    
         try:
+            client = await ensure_extension_connected_via_window(
+                sess=sess,
+                target_url=project_page,
+                space_id=space_id,
+                window_key=window_key,
+                wait_seconds=10,
+                log_file=log_file,
+                auto_triger_connection = True,
+            )
+            if client is None:
+                raise NonPenalizedTaskError(
+                    f"浏览器插件未连接： window_key={window_key!r}",
+                    status_code=503,
+                )
             if not _veo_cached_access_still_valid(access_token, access_expires, margin_seconds=10):
                 ext_tok_info = await veo_fetch_access_tokens_via_extension(
                     sess=sess,
