@@ -140,6 +140,7 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
           <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
           <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
           <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
@@ -3551,12 +3552,18 @@
             sora_subscription_end: d?.subscription_end != null ? d.subscription_end : "",
           };
           const _subHandler = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          // veo_workflow / grok_workflow / gpt_workflow：刷新会员信息只更新套餐名，不刷新余额（与后端 refresh-subscription-info 一致）
-          if (_subHandler !== "veo_workflow" && _subHandler !== "grok_workflow" && _subHandler !== "gpt_workflow" && d && typeof d.credits === "number") {
+          // veo_workflow：刷新会员信息复用刷新余额能力，同时更新余额与套餐档位。
+          // grok_workflow / gpt_workflow：仅更新套餐名。
+          if (_subHandler === "veo_workflow" && d && (typeof d.remaining_quota === "number" || typeof d.credits === "number")) {
+            patch.remaining_quota = d.remaining_quota ?? d.credits;
+            if (d && Object.prototype.hasOwnProperty.call(d, "cooldown_until")) {
+              patch.cooldown_until = d.cooldown_until ?? null;
+            }
+          } else if (_subHandler !== "grok_workflow" && _subHandler !== "gpt_workflow" && d && typeof d.credits === "number") {
             patch.remaining_quota = d.credits;
           }
           updateMappingRowUI(mappingId, patch);
-          toast("会员信息已刷新", "success");
+          toast(_subHandler === "veo_workflow" ? "余额与会员信息已刷新" : "会员信息已刷新", "success");
         } catch (e) {
           toast(e.message, "error");
         } finally {
@@ -4352,7 +4359,7 @@
           if (closeBtn) closeBtn.disabled = true;
           if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
-          //await clearMappingBrowserLocalCache(mappingId);
+          await clearMappingBrowserLocalCache(mappingId);
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
@@ -5100,9 +5107,16 @@
           if (d && Object.prototype.hasOwnProperty.call(d, "cooldown_until")) {
             patch.cooldown_until = d.cooldown_until ?? null;
           }
+          if (d && Object.prototype.hasOwnProperty.call(d, "plan_title")) {
+            patch.sora_plan_title = d.plan_title || "";
+          }
+          if (d && Object.prototype.hasOwnProperty.call(d, "subscription_end")) {
+            patch.sora_subscription_end = d.subscription_end ?? "";
+          }
           updateMappingRowUI(mappingId, patch);
           const cuHint = patch.cooldown_until != null && patch.cooldown_until !== "" ? `，重置时间=${patch.cooldown_until}` : "";
-          toast(`已刷新：remaining_quota=${v}${cuHint}`, "success");
+          const planHint = patch.sora_plan_title ? `，会员=${patch.sora_plan_title}` : "";
+          toast(`已刷新：remaining_quota=${v}${cuHint}${planHint}`, "success");
         } catch (e) {
           // 如果后端提示“已禁用”，这里同步 UI（兼容定时/手动场景）
           try {

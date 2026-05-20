@@ -197,11 +197,18 @@ def _gpt_image2_ratio(payload: Dict[str, Any]) -> str:
 def _gpt_image2_size(payload: Dict[str, Any], resolution: Optional[str] = None) -> str:
     p = payload or {}
     size = _one_str(p.get("size"))
-    if size:
-        return size
     tier = (resolution or _gpt_image2_resolution(p)).lower()
+    if size:
+        public = _one_str(p.get("gpt_image2_model") or p.get("model")).lower()
+        if public in GPT_IMAGE2_PUBLIC_MODELS and size not in set((GPT_IMAGE2_SIZE_TABLE.get(tier) or {}).values()):
+            # gpt-image2-1k/2k/4k 的公开模型名即分辨率选择；避免调用方传入
+            # 冲突 size 时覆盖模型名语义。
+            size = ""
+        else:
+            return size
     ratio = _gpt_image2_ratio(p)
-    return (GPT_IMAGE2_SIZE_TABLE.get(tier) or GPT_IMAGE2_SIZE_TABLE["1k"]).get(ratio) or GPT_IMAGE2_SIZE_TABLE[tier].get("1:1") or "1024x1024"
+    by_ratio = GPT_IMAGE2_SIZE_TABLE.get(tier) or GPT_IMAGE2_SIZE_TABLE["1k"]
+    return by_ratio.get(ratio) or by_ratio.get("1:1") or "1024x1024"
 
 
 def _gpt_is_image2_payload(payload: Dict[str, Any]) -> bool:
@@ -236,6 +243,10 @@ def _gpt_apply_image2_payload_defaults(payload: Dict[str, Any]) -> Dict[str, Any
     p["resolution"] = resolution
     p["size_tier"] = resolution.upper()
     p["size"] = size
+    if p.get("aspect_ratio") and not p.get("ratio"):
+        p["ratio"] = _one_str(p.get("aspect_ratio"))
+    if _gpt_collect_reference_urls(p) and not p.get("operation"):
+        p["operation"] = "edit"
     return p
 
 
@@ -247,7 +258,10 @@ def _gpt_collect_reference_urls(payload: Dict[str, Any]) -> List[str]:
         if isinstance(v, str):
             s = v.strip()
         elif isinstance(v, dict):
-            s = _one_str(v.get("url") or v.get("image_url") or v.get("src"))
+            nested_image_url = v.get("image_url")
+            if isinstance(nested_image_url, dict):
+                nested_image_url = nested_image_url.get("url")
+            s = _one_str(v.get("url") or nested_image_url or v.get("src"))
         else:
             s = ""
         if s and s not in out:

@@ -76,6 +76,7 @@ from .grok_workflow_executor import (
 )
 from .veo_workflow_executor import (
     _veo_resolve_n_frames,
+    _veo_payload_video_model_override,
     get_or_create_veo_session,
     refresh_veo_balance_via_extension,
     veo_fetch_access_tokens_via_extension,
@@ -137,7 +138,9 @@ def _remaining_quota_exclusive_floor_for_pick(
     if code == "sora_gen_video":
         return 3, credit_threthold
     if code == "veo_workflow":
-        if _veo_resolve_n_frames(payload or {}) > 1:
+        if _veo_payload_video_model_override(payload or {}) is not None:
+            return 160,credit_threthold
+        elif _veo_resolve_n_frames(payload or {}) > 1:
             return 30,credit_threthold
         else:
             return 10,credit_threthold
@@ -571,7 +574,7 @@ class TaskService:
                 continue
             handler = (t.create_task_handler or "").strip()
             credit_threthold = 1;
-            if handler in ("veo_workflow", "grok_workflow", "gpt_workflow"):
+            if handler in ("veo_workflow",):
                 hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
                 floor = 30 if hi else 10
             else:
@@ -1905,7 +1908,7 @@ class TaskService:
                         picked=picked,
                         refresh_timeout_seconds=refresh_timeout_seconds,
                         signal_window_pool_replenish=self._signal_window_pool_replenish,
-                        force_refresh_token=False,
+                        auto_triger_connection=False,
                     )
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
@@ -1948,7 +1951,7 @@ class TaskService:
                         picked=picked,
                         refresh_timeout_seconds=refresh_timeout_seconds,
                         signal_window_pool_replenish=self._signal_window_pool_replenish,
-                        force_refresh_token=False,
+                        auto_triger_connection=False,
                     )
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
@@ -1959,7 +1962,13 @@ class TaskService:
                         task_id=task_id,
                     )
                 elif picked.create_task_handler == "grok_workflow":
-                    pass
+                    await refresh_gpt_balance_via_extension(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                        auto_triger_connection=False,
+                    )
                 elif picked.create_task_handler == "sora_gen_video":
                     await refresh_sora_balance_best_effort(
                         db=self.db,

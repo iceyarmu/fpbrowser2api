@@ -232,6 +232,7 @@ async def request_logger(request: Request, call_next):
             r"^/api/admin/spaces/\d+/windows/[^/]+/remark$",
             r"^/api/admin/ai-agent/chat$",
             r"^/api/admin/ai-agent/windows/\d+/run$",
+            r"^/api/admin/network-capture/(start|pause|resume|stop|clear)$",
             r"^/api/admin/paypal/windows/\d+/(open|login|register)$",
         ]
         allow_non_admin_write = any(re.match(p, path) for p in non_admin_write_allow_patterns)
@@ -302,6 +303,11 @@ async def admin_tasks_page():
 @app.get("/admin/test", response_class=HTMLResponse)
 async def admin_test_page():
     return _page(static_dir / "test.html")
+
+
+@app.get("/admin/network-capture", response_class=HTMLResponse)
+async def admin_network_capture_page():
+    return _page(static_dir / "network_capture.html")
 
 
 @app.get("/admin/agent", response_class=HTMLResponse)

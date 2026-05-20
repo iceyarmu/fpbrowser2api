@@ -87,6 +87,7 @@ const PAGE_PATHS = {
   task_types: "/admin/task-types",
     tasks: "/admin/tasks",
     test: "/admin/test",
+    network_capture: "/admin/network-capture",
     agent: "/admin/agent",
     paypal: "/admin/paypal",
     image_resources: "/admin/image-resources",

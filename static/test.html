@@ -22,6 +22,7 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
           <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
           <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
           <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
@@ -82,6 +83,11 @@
                 <label class="form-label">时长 duration（可选）</label>
                 <input class="form-control mono" id="duration" placeholder="5" />
                 <div class="text-muted small">输入为1的时候生成图片</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">视频模型 video_model（可选）</label>
+                <input class="form-control mono" id="videoModel" placeholder="例如 veo_3_1_t2v_fast / veo_3_1_t2v_fast_portrait" />
+                <div class="text-muted small">填写后会原样传入 payload.video_model，支持本地缓存。</div>
               </div>
               <div class="mb-3">
                 <label class="form-label">图片输出分辨率（可选）</label>
@@ -150,6 +156,7 @@
         testFirstImageUrl: `${LS_PREFIX}test.first_image_url`,
         testDreaminaImageUploadWorkflow: `${LS_PREFIX}test.dreamina_image_upload_workflow`,
         testDuration: `${LS_PREFIX}test.duration`,
+        testVideoModel: `${LS_PREFIX}test.video_model`,
         testImageResolution: `${LS_PREFIX}test.image_resolution`,
         testLastTaskId: `${LS_PREFIX}test.last_task_id`,
       };
@@ -314,6 +321,7 @@
           const cardKeyIdRaw = (document.getElementById("cardKeySelect")?.value || "").trim();
           const durationRaw = document.getElementById("duration").value.trim();
           const duration = durationRaw ? Number(durationRaw) : undefined;
+          const videoModel = (document.getElementById("videoModel")?.value || "").trim();
           if (!type) throw new Error("请选择任务类型");
           if (!prompt && !videoUrl && !(dreaminaImageUploadWorkflow && firstImageUrl)) throw new Error("请输入文本内容、填写 video_url，或勾选单图上传并填写图片链接");
           // 注意：不同 task handler 可能需要不同字段，这里仅示例常用字段
@@ -332,6 +340,7 @@
             payload.card_key = String(selected.card_key);
           }
           if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
+          if (videoModel) payload.video_model = videoModel;
           const imageResRaw = (document.getElementById("imageResolution")?.value || "").trim().toLowerCase();
           const imageResolution = (imageResRaw === "2k" || imageResRaw === "4k") ? imageResRaw : "1k";
           payload.resolution = imageResolution;
@@ -454,6 +463,14 @@
         if (savedDuration !== null && durationEl) durationEl.value = savedDuration;
         if (durationEl) {
           durationEl.addEventListener("input", (e) => lsSet(LS_KEYS.testDuration, e.target.value));
+        }
+
+        // video_model 回填与缓存
+        const videoModelEl = document.getElementById("videoModel");
+        const savedVideoModel = lsGet(LS_KEYS.testVideoModel);
+        if (savedVideoModel !== null && videoModelEl) videoModelEl.value = savedVideoModel;
+        if (videoModelEl) {
+          videoModelEl.addEventListener("input", (e) => lsSet(LS_KEYS.testVideoModel, e.target.value));
         }
 
         // 图片输出分辨率回填与缓存（供 GPT image2 / VEO 图片流程读取 payload.resolution）

@@ -211,6 +211,40 @@ async function simulateHumanActivity(tabId, runtime, minMs = 3000, maxMs = 10000
   } catch (_) {}
 }
 
+
+async function assertProjectPageAccessible(projectPage, runtime) {
+  const url = projectPage || "https://labs.google/fx";
+  let resp = null;
+  let text = "";
+  try {
+    await runtime.progress(2, { stage: "check_project_page", url, method: "GET" });
+  } catch (_) {}
+  try {
+    resp = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      redirect: "follow",
+      headers: { "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" }
+    });
+    try { text = await resp.text(); } catch (_) { text = ""; }
+  } catch (e) {
+    const msg = String((e && e.message) || e || "");
+    throw new Error(`VEO project page GET failed: ${url}; Request Method: GET; error=${msg}`);
+  }
+  if (!resp || !resp.ok) {
+    const status = resp ? resp.status : 0;
+    const statusText = resp ? (resp.statusText || "") : "";
+    const finalUrl = resp ? (resp.url || url) : url;
+    const body = String(text || "").slice(0, 500);
+    throw new Error(`VEO project page is not accessible: ${finalUrl}; Request Method: GET; Status Code: ${status}${statusText ? ` ${statusText}` : ""}; response: ${body}`);
+  }
+  try {
+    await runtime.progress(2, { stage: "check_project_page_ok", url: resp.url || url, status: resp.status });
+  } catch (_) {}
+  return { status: resp.status, url: resp.url || url };
+}
+
 async function reloadProjectPage(progress, tabId, projectPage, runtime) {
   return await withVeoTabOpLock(tabId, "reload_project_page", async () => {
     if (await shouldSkipProjectPageRefresh(progress, runtime, "reload_project_page", projectPage)) return false;
@@ -673,16 +707,36 @@ function parseImageResult(resp) {
 }
 
 function parseVideoPoll(resp) {
-  let workflowId = "", projectId = "", status = "", videoUrl = "";
+  let workflowId = "", projectId = "", status = "", videoUrl = "", mediaName = "";
   const media = Array.isArray(resp?.media) ? resp.media : [];
   for (const item of media) {
+    mediaName ||= item.name || "";
     workflowId ||= item.workflowId || "";
     projectId ||= item.projectId || "";
     status ||= item.mediaMetadata?.mediaStatus?.mediaGenerationStatus || "";
     videoUrl ||= item.mediaMetadata?.video?.fifeUrl || firstStringByKey(item, "fifeUrl");
   }
   videoUrl ||= firstStringByKey(resp, "fifeUrl");
-  return { workflowId, projectId, status, videoUrl };
+  return { workflowId, projectId, status, videoUrl, mediaName };
+}
+
+function parseVideoSubmitWorkflow(resp) {
+  const workflows = Array.isArray(resp?.workflows) ? resp.workflows : [];
+  const media = Array.isArray(resp?.media) ? resp.media : [];
+  const workflow = workflows.find(x => x && typeof x === "object" && (x.name || x.workflowId || x.id)) || null;
+  const videoMedia = media.find(x => x && typeof x === "object" && (x.mediaMetadata?.video || x.workflowId || x.name)) || null;
+  const workflowId = (videoMedia && (videoMedia.workflowId || videoMedia.mediaMetadata?.video?.workflowId))
+    || (workflow && (workflow.name || workflow.workflowId || workflow.id))
+    || firstStringByKey(resp, "workflowId")
+    || "";
+  const projectId = (videoMedia && videoMedia.projectId)
+    || (workflow && (workflow.projectId || workflow.metadata?.projectId))
+    || firstStringByKey(resp, "projectId")
+    || "";
+  const mediaName = (videoMedia && videoMedia.name)
+    || (workflow && workflow.metadata?.primaryMediaId)
+    || "";
+  return { workflowId, projectId, mediaName };
 }
 
 function normalizeVideoOperations(mediaList) {
@@ -745,6 +799,19 @@ async function archiveUploadedWorkflows(tabId, at, uploaded, runtime, reason = "
     } catch (_) {}
   }
   return { archived, total };
+}
+
+async function archiveGeneratedWorkflow(tabId, at, workflowId, projectId, runtime, reason = "archive_generated_workflow") {
+  const archived = workflowId ? await archiveWorkflow(tabId, at, workflowId, projectId) : false;
+  try {
+    await runtime.progress(96, {
+      stage: reason,
+      workflow_id: workflowId || "",
+      project_id: projectId || "",
+      archived
+    });
+  } catch (_) {}
+  return archived;
 }
 
 async function refreshProjectPageAfterArchive(progress, tabId, projectPage, runtime, reason = "refresh_project_page_after_archive") {
@@ -1083,6 +1150,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
 
   await runtime.progress(10, { stage: "submit_task", video_mode: mode });
   let operations = [];
+  let submittedWorkflow = { workflowId: "", projectId: "", mediaName: "" };
   let submitErr = "";
   const maxVideoSubmitAttempts = 2; // 首次提交 + 失败后连续重试 2 次
   for (let attempt = 0; attempt < maxVideoSubmitAttempts; attempt++) {
@@ -1103,6 +1171,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
       const tx = await pageFetchJson(tabId, submitUrl, { method: "POST", headers: authHeaders(at), body, attempts: 1 });
       if (tx.status >= 400) throw new Error(`VEO video submit failed: ${compactErrorResponse(tx)}`);
       const submitMedia = Array.isArray(tx.json?.media) ? tx.json.media : [];
+      submittedWorkflow = parseVideoSubmitWorkflow(tx.json);
       operations = normalizeVideoOperations(submitMedia);
       if (!operations.length) throw new Error(`VEO video submit missing operations: ${JSON.stringify(tx.json).slice(0, 500)}`);
       break;
@@ -1124,10 +1193,15 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   if (!operations.length) throw new Error(submitErr || "VEO video submit failed");
   await runtime.progress(25, { stage: "polling", operations: operations.length });
   const done = await pollVideo(tabId, at, operations, runtime, p);
-  const archived = archiveEnabled(p, "archive_workflow") ? await archiveWorkflow(tabId, at, done.workflowId, done.projectId || projectId) : false;
+  const generatedWorkflowId = done.workflowId || submittedWorkflow.workflowId || "";
+  const generatedProjectId = done.projectId || submittedWorkflow.projectId || projectId;
+  const generatedMediaId = done.mediaName || submittedWorkflow.mediaName || "";
+  const archived = archiveEnabled(p, "archive_workflow")
+    ? await archiveGeneratedWorkflow(tabId, at, generatedWorkflowId, generatedProjectId, runtime, "archive_video_workflow")
+    : false;
   if (archiveEnabled(p, "archive_uploaded_workflows")) await archiveUploadedWorkflows(tabId, at, uploaded, runtime, "cleanup_uploaded_workflows_done");
   await refreshProjectPageAfterArchive(98, tabId, p.project_page, runtime);
-  await runtime.progress(100, { stage: "done", video_url: done.videoUrl, workflow_id: done.workflowId });
+  await runtime.progress(100, { stage: "done", video_url: done.videoUrl, workflow_id: generatedWorkflowId });
   return {
     type: "veo_workflow_video",
     message: mode === "r2v" ? "VEO Ingredients（多图参考）视频完成" : (mode === "i2v" ? "VEO 图生视频完成" : "VEO 文生视频完成"),
@@ -1137,7 +1211,8 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
     model_key: modelKey,
     aspect_ratio: aspectRatio,
     project_id: projectId,
-    generated_workflow_id: done.workflowId,
+    generated_media_id: generatedMediaId,
+    generated_workflow_id: generatedWorkflowId,
     workflow_archived: archived
   };
   } catch (e) {
@@ -1155,7 +1230,10 @@ export async function runVeoTask(msg, runtime) {
     if (action === "current_page" || action === "get_current_page" || action === "current_url" || action === "get_current_url") {
       return await fetchVeoCurrentPageTask(msg, runtime);
     }
+    const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
     if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
+      const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+      await reloadProjectPage(1, tabId, projectPage, runtime);
       return await fetchVeoAccessTokensTask(msg, runtime);
     }
     try {
@@ -1171,10 +1249,11 @@ export async function runVeoTask(msg, runtime) {
     if (p.workflow_kind === "balance_refresh" || p.action === "refresh_balance") {
       return await refreshVeoBalanceTask(msg, runtime);
     }
-    const projectPage = p.project_page || "https://labs.google/fx";
     await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
     // 普通生成任务必须保持在 project_page；如果余额刷新打开了 one.google 标签，
     // 这里会重新选中/导航回精确项目页，避免停留到 /tools/flow 列表页。
+    
+    await assertProjectPageAccessible(projectPage, runtime);
     const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
     await reloadProjectPage(3, tabId, projectPage, runtime);
     await simulateHumanActivity(tabId, runtime, 3000, 10000);

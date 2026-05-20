@@ -2122,19 +2122,6 @@ class DreaminaSession:
                     pass
                 await asyncio.sleep(2.0)
 
-            # 检查是否在 Dreamina 域名下
-            try:
-                u = _safe_url(target_page).lower()
-                if "capcut.com" not in u and "dreamina" not in u:
-                    raise NonPenalizedTaskError(
-                        "当前页面不在 Dreamina 域名（capcut.com）下，请先在指纹窗口登录 Dreamina",
-                        status_code=401,
-                    )
-            except NonPenalizedTaskError:
-                raise
-            except Exception:
-                pass
-
         if acquire_bring_lock:
             async with self._bring_drafts_lock:
                 await _inner()

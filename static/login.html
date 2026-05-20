@@ -98,13 +98,14 @@
           }
           setAdminToken(d.token);
           const me = await getAdminProfile(true);
-          const order = ["system", "projects", "task_types", "tasks", "test", "card_keys", "logs", "users"];
+          const order = ["system", "projects", "task_types", "tasks", "test", "network_capture", "card_keys", "logs", "users"];
           const pathMap = {
             system: "/admin/system",
             projects: "/admin/projects",
             task_types: "/admin/task-types",
             tasks: "/admin/tasks",
             test: "/admin/test",
+            network_capture: "/admin/network-capture",
             card_keys: "/admin/card-keys",
             logs: "/admin/logs",
             users: "/admin/users",
@@ -127,4 +128,3 @@
     </script>
   </body>
 </html>
-

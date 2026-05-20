@@ -492,8 +492,12 @@ function normalizeImage2Ratio(p) {
 
 function normalizeImage2Size(p, resolution = "") {
   const explicit = String((p && p.size) || "").trim();
-  if (explicit) return explicit;
   const tier = resolution || normalizeImage2Resolution(p);
+  if (explicit) {
+    const publicModel = String((p && (p.gpt_image2_model || p.model)) || "").trim().toLowerCase();
+    const byRatioForTier = GPT_IMAGE2_SIZE_TABLE[tier] || {};
+    if (!GPT_IMAGE2_PUBLIC_MODELS[publicModel] || Object.values(byRatioForTier).includes(explicit)) return explicit;
+  }
   const ratio = normalizeImage2Ratio(p);
   const byRatio = GPT_IMAGE2_SIZE_TABLE[tier] || GPT_IMAGE2_SIZE_TABLE["1k"];
   return byRatio[ratio] || byRatio["1:1"] || "1024x1024";
@@ -578,90 +582,28 @@ async function startConversation(tabId, token, reqs, conduit, payload, kind, ref
   return { ...got, raw_text_tail: String(r.text || "").slice(-2000) };
 }
 
-function codexHeaders(token, path) {
-  const h = gptHeaders(token, path, "text/event-stream");
-  h["Originator"] = "codex-tui";
-  h["OpenAI-Beta"] = "responses=v1";
-  return h;
-}
-
-function image2MainModel(p) {
-  const v = String((p && (p.main_model || p.codex_main_model || p.responses_model)) || "").trim();
-  return v || "gpt-5.5";
-}
-
-function image2Quality(p) {
-  const q = String((p && p.quality) || "").trim().toLowerCase();
-  if (q === "draft" || q === "low") return "low";
-  if (q === "standard" || q === "medium") return "medium";
-  if (q === "hd" || q === "high") return "high";
-  return "";
-}
-
-function image2Body(payload, prompt, refs, size) {
-  const content = [{ type: "input_text", text: prompt || "生成一张高质量图片" }];
-  for (const ref of refs || []) {
-    if (ref) content.push({ type: "input_image", image_url: ref });
-  }
-  const action = (refs && refs.length) || String(payload.operation || "").toLowerCase() === "edit" ? "edit" : "generate";
-  const tool = { type: "image_generation", action, model: "gpt-image-2", size };
-  const quality = image2Quality(payload);
-  if (quality) tool.quality = quality;
-  for (const k of ["background", "output_format", "output_compression", "partial_images", "moderation", "input_fidelity"]) {
-    if (payload[k] !== undefined && payload[k] !== null && payload[k] !== "") tool[k] = payload[k];
-  }
-  const mask = payload.mask || payload.mask_image_url;
-  if (mask) tool.input_image_mask = { image_url: mask };
-  return {
-    instructions: "You are an image generation assistant. Follow the user's prompt and return the generated image.",
-    stream: true,
-    reasoning: { effort: "medium", summary: "auto" },
-    parallel_tool_calls: true,
-    include: ["reasoning.encrypted_content"],
-    model: image2MainModel(payload),
-    store: false,
-    tool_choice: "auto",
-    input: [{ type: "message", role: "user", content }],
-    tools: [tool]
-  };
-}
-
-function shouldRetryImage2WithoutToolChoice(text) {
-  const s = String(text || "").toLowerCase();
-  return s.includes("tool choice") && s.includes("image_generation") && s.includes("not found") && s.includes("tools");
-}
 
 async function runImage2Workflow(tabId, token, payload, runtime) {
   const p = normalizeImage2Payload(payload);
   const resolution = normalizeImage2Resolution(p);
   const size = normalizeImage2Size(p, resolution);
   const dims = parseSize(size);
-  const count = Math.max(1, Math.min(Number(p.count || p.n || 1) || 1, 4));
-  const refUrls = collectRefUrls(p);
-  const urls = [];
-  let lastTail = "";
-  const path = "/backend-api/codex/responses";
-  await runtime.progress(5, { stage: "image2_prepare", model: p.gpt_image2_model, resolution, size, count, ref_count: refUrls.length });
-  for (let i = 0; i < count; i++) {
-    let body = image2Body(p, appendRatioHint(p.prompt || "", p), refUrls, size);
-    await runtime.progress(10 + Math.floor((i / count) * 70), { stage: "image2_submit", index: i + 1, count, resolution, size });
-    let r = await pageFetch(tabId, CHATGPT + path, { method: "POST", headers: codexHeaders(token, path), body });
-    if (r && r.status >= 400 && shouldRetryImage2WithoutToolChoice(r.text)) {
-      body = { ...body };
-      delete body.tool_choice;
-      await runtime.progress(12 + Math.floor((i / count) * 70), { stage: "image2_retry_without_tool_choice", index: i + 1, count, resolution, size });
-      r = await pageFetch(tabId, CHATGPT + path, { method: "POST", headers: codexHeaders(token, path), body });
-    }
-    if (!r || r.status >= 400) throw new Error(`gpt-image-2 ${resolution} failed HTTP ${r && r.status}: ${(r && r.text || "").slice(0, 600)}`);
-    lastTail = String(r.text || "").slice(-2000);
-    const got = extractAssets(r.text);
-    urls.push(...(got.urls || []));
-    if (uniq(urls).length >= count) break;
-  }
-  const outUrls = uniq(urls);
-  if (!outUrls.length) throw new Error(`gpt-image-2 ${resolution} returned no images; tail=${lastTail.slice(0, 400)}`);
-  await runtime.progress(100, { stage: "done", asset_count: outUrls.length, resolution, size });
+  // 注意：fpbrowser2api 使用的是 ChatGPT Web 页面里 /api/auth/session 取得的
+  // ChatGPT access_token，不是 Codex OAuth token。gpt2api-main 的稳定 Web 通道
+  // 对应 generateImage2Web：chat-requirements -> 上传参考图 -> conversation/prepare
+  // -> /backend-api/f/conversation SSE -> poll/resolve 附件，而不是
+  // /backend-api/codex/responses。后者会用当前 token 返回 401 Unauthorized。
+  const out = await runConversationWorkflow(tabId, token, p, "image", runtime);
+  const outUrls = uniq(out.urls || []);
+  if (!outUrls.length) throw new Error(`gpt-image-2 ${resolution} returned no images`);
+  const assets = outUrls.map((url) => ({
+    url,
+    width: dims.width,
+    height: dims.height,
+    mime: /^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png")
+  }));
   return {
+    ...out,
     type: "gpt_workflow_image",
     workflow_kind: "image",
     model: p.gpt_image2_model,
@@ -671,9 +613,12 @@ async function runImage2Workflow(tabId, token, payload, runtime) {
     width: dims.width,
     height: dims.height,
     urls: outUrls,
+    result_urls: outUrls,
+    assets,
+    data: assets.map(a => ({ url: a.url, width: a.width, height: a.height, mime: a.mime })),
     share_url: outUrls[0] || "",
     image_url: outUrls[0] || "",
-    raw_text_tail: lastTail
+    raw_text_tail: out.raw_text_tail || ""
   };
 }
 
@@ -739,6 +684,15 @@ function collectGeneratedPayload(v, out) {
 
 function parseSseJsonObjects(text) {
   const objects = [];
+  const raw = String(text || "").trim();
+  if (raw && (raw.startsWith("{") || raw.startsWith("["))) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) objects.push(...parsed);
+      else objects.push(parsed);
+      return objects;
+    } catch (_) {}
+  }
   let dataLines = [];
   const flush = () => {
     if (!dataLines.length) return;
@@ -870,7 +824,14 @@ async function pollConversation(tabId, token, cid, refs, maxWaitMs, intervalMs, 
 function collectRefUrls(p) {
   const out = [];
   const add = (v) => {
-    const s = typeof v === "string" ? v.trim() : (v && typeof v === "object" ? String(v.url || v.image_url || "").trim() : "");
+    let s = "";
+    if (typeof v === "string") {
+      s = v.trim();
+    } else if (v && typeof v === "object") {
+      let nestedImageURL = v.image_url;
+      if (nestedImageURL && typeof nestedImageURL === "object") nestedImageURL = nestedImageURL.url;
+      s = String(v.url || nestedImageURL || v.src || "").trim();
+    }
     if (s && !out.includes(s)) out.push(s);
   };
   for (const k of ["image", "image_url", "imageUrl", "first_image_url", "firstImageUrl", "last_image_url", "lastImageUrl", "end_image_url", "endImageUrl", "mask_image_url", "mask", "reference_image"]) add(p[k]);
@@ -1048,6 +1009,11 @@ async function queryProgressTask(tabId, token, p, runtime) {
   return { type: "gpt_progress", status: urls.length ? "completed" : "in_progress", workflow_kind: kind, conversation_id: cid, urls, image_url: kind === "image" ? (urls[0] || "") : undefined, video_url: kind === "video" ? (urls[0] || "") : undefined, file_ids, sediment_ids };
 }
 
+async function runVideoWorkflow(tabId, token, payload, runtime) {
+  await runtime.progress(5, { stage: "video_reserved", workflow_kind: "video" });
+  throw new Error("GPT video workflow is reserved but not implemented yet");
+}
+
 export async function runGptTask(msg, runtime) {
   const p = msg.payload || {};
   const target = p.target_url || p.gpt_url || CHATGPT;
@@ -1072,6 +1038,9 @@ export async function runGptTask(msg, runtime) {
   }
 
   const kind = (p.workflow_kind || "").toLowerCase().includes("video") ? "video" : "image";
+  if (kind === "video") {
+    return await runVideoWorkflow(tabId, token, p, runtime);
+  }
   if (kind === "image" && isImage2Payload(p)) {
     return await runImage2Workflow(tabId, token, p, runtime);
   }

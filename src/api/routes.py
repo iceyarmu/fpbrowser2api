@@ -7,7 +7,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import JSONResponse
@@ -76,6 +76,10 @@ class CreateVideoRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     duration: Optional[int] = None
     image: Optional[str] = None
+    images: Optional[List[Any]] = None
+    n: Optional[int] = Field(default=None, ge=1, le=4)
+    size: Optional[str] = None
+    quality: Optional[str] = None
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
     # 允许透传未来新增的视频参数。
@@ -127,6 +131,7 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         if duration is not None and duration != 1:
             raise HTTPException(status_code=400, detail=f"{model} only supports duration=1 (image generation mode)")
         resolution = GPT_IMAGE2_VIDEO_MODELS[model]
+        aspect_ratio = str(payload.get("aspect_ratio") or payload.get("ratio") or "").strip()
         payload["duration"] = 1
         payload["workflow_kind"] = "image"
         payload["model"] = model
@@ -135,6 +140,10 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         payload["gpt_image2_model"] = model
         payload["resolution"] = resolution
         payload["size_tier"] = resolution.upper()
+        if aspect_ratio and not str(payload.get("ratio") or "").strip():
+            payload["ratio"] = aspect_ratio
+        if (payload.get("images") or payload.get("image") or payload.get("image_url")) and not payload.get("operation"):
+            payload["operation"] = "edit"
     else:
         task_type_code = model
     return task_type_code, payload
@@ -275,20 +284,37 @@ def _build_newapi_video_create_response(task_id: str, payload: Dict[str, Any]) -
 def _extract_public_result_urls(result: Any) -> tuple[Optional[str], Optional[str], list[str]]:
     if not isinstance(result, dict):
         return None, None, []
-    share_url = str(
-        result.get("share_url")
-        or result.get("video_url")
-        or result.get("image_url")
-        or result.get("url")
-        or ""
-    ).strip()
-    if not share_url:
+
+    result_urls: list[str] = []
+
+    def add_url(value: Any) -> None:
+        if isinstance(value, str):
+            u = value.strip()
+            if u and u not in result_urls:
+                result_urls.append(u)
+        elif isinstance(value, dict):
+            add_url(value.get("url") or value.get("image_url") or value.get("video_url"))
+
+    for key in ("urls", "result_urls"):
+        raw = result.get(key)
+        if isinstance(raw, list):
+            for item in raw:
+                add_url(item)
+    raw_assets = result.get("assets") or result.get("data")
+    if isinstance(raw_assets, list):
+        for item in raw_assets:
+            add_url(item)
+    for key in ("share_url", "video_url", "image_url", "url"):
+        add_url(result.get(key))
+
+    if not result_urls:
         return None, None, []
+    share_url = result_urls[0]
     kind = str(result.get("workflow_kind") or result.get("type") or "").strip().lower()
     is_image = "image" in kind and "video" not in kind
     if is_image:
-        return None, share_url, [share_url]
-    return share_url, None, [share_url]
+        return None, share_url, result_urls
+    return share_url, None, result_urls
 
 
 async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:

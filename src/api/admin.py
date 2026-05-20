@@ -237,6 +237,7 @@ PAGE_KEYS: Set[str] = {
     "task_types",
     "tasks",
     "test",
+    "network_capture",
     "agent",
     "paypal",
     "image_resources",
@@ -501,6 +502,23 @@ class UpdateTaskTypeWindowRequest(BaseModel):
 class UpsertSoraAccessTokenRequest(BaseModel):
     access_token: Optional[str] = None
     expires: Optional[str] = None
+
+
+class NetworkCaptureStartRequest(BaseModel):
+    mapping_id: int = Field(ge=1)
+    target_url: Optional[str] = Field(default=None, max_length=2048)
+    headless: bool = False
+    pure_mode: Optional[bool] = None
+    clear: bool = True
+    methods: List[str] = Field(default_factory=lambda: ["GET", "POST", "PATCH"])
+    max_entries: int = Field(default=2000, ge=100, le=20000)
+    max_body_chars: int = Field(default=60000, ge=1000, le=1000000)
+    wait_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
+    navigate: bool = True
+
+
+class NetworkCaptureMappingRequest(BaseModel):
+    mapping_id: int = Field(ge=1)
 
 
 class UpdateWindowProxyRequest(BaseModel):
@@ -3821,7 +3839,7 @@ async def _refresh_window_pool_after_task_type_write() -> None:
 
 @router.get("/api/admin/task-types")
 async def list_task_types(include_all: bool = False, token: str = Depends(verify_admin_token)):
-    user = await _ensure_any_page_access(token, {"task_types", "tasks", "test", "paypal", "users"})
+    user = await _ensure_any_page_access(token, {"task_types", "tasks", "test", "network_capture", "paypal", "users"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     allowed_ids = None if include_all else await _get_allowed_task_type_ids(user)
@@ -4087,12 +4105,16 @@ async def refresh_mapping_remaining_quota(
 
     ctx_after = await db.get_task_type_window_context(mapping_id)
     cooldown_until_out = (ctx_after or {}).get("cooldown_until")
+    plan_title_out = (ctx_after or {}).get("sora_plan_title")
+    subscription_end_out = (ctx_after or {}).get("sora_subscription_end")
     return {
         "success": True,
         "mapping_id": mapping_id,
         "remaining_quota": new_remaining,
         "handler": handler_used,
         "cooldown_until": cooldown_until_out,
+        "plan_title": plan_title_out,
+        "subscription_end": subscription_end_out,
     }
 
 
@@ -4165,17 +4187,11 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         }
 
     if handler == "veo_workflow":
-        # VEO：使用已保存的长效 session-token，通过两层代理换短效 access_token 后请求 credits；
-        # 不再打开/依赖指纹浏览器窗口。
+        # VEO：复用“刷新余额”能力；credits 响应里的 userPaygateTier 同步作为会员信息。
         from ..services.veo_workflow_executor import (  # type: ignore
-            fetch_short_access_token_by_proxy,
-            veo_fetch_credits_by_proxy,
+            refresh_veo_balance_via_extension,
             veo_format_paygate_tier_label,
         )
-
-        long_session_token = str(ctx_row.get("sora_access_token") or "").strip()
-        if not long_session_token:
-            raise HTTPException(status_code=400, detail="缺少 session-token，请先获取并保存")
 
         default_target_url = str(ctx_row.get("default_target_url") or "").strip()
         target_url = default_target_url or "https://labs.google/fx"
@@ -4184,38 +4200,39 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             mapping_id=int(mapping_id),
             space_id=space_id,
             window_key=window_key,
+            browser_vendor=vendor,
+            browser_base_url=base_url,
+            browser_access_key=access_key,
+            default_target_url=target_url,
+            headless=headless,
+            pure_mode=bool(ctx_row.get("pure_mode")) if ctx_row.get("pure_mode") is not None else True,
+            task_code=str(ctx_row.get("task_code") or ""),
         )
 
         try:
-            short_info = await fetch_short_access_token_by_proxy(
-                session_token=long_session_token,
-                target_url=target_url,
+            info = await refresh_veo_balance_via_extension(
                 db=db,
                 picked=picked,
-            )
-            info = await veo_fetch_credits_by_proxy(
-                sess=None,
-                target_url=target_url,
-                access_token=str((short_info or {}).get("access_token") or ""),
-                db=db,
-                picked=picked,
+                refresh_timeout_seconds=60.0,
+                auto_triger_connection=True,
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
+        if not info:
+            raise HTTPException(status_code=400, detail="刷新会员信息失败：插件未返回 credits 信息")
 
         tier = str((info or {}).get("user_paygate_tier") or "").strip() or None
         plan_title = veo_format_paygate_tier_label(tier)
-        # 「刷新会员信息」仅更新套餐/档位展示，不写入 remaining_quota（余额请用「刷新额度」）
-        await db.update_task_type_window(
-            mapping_id=mapping_id,
-            sora_plan_title=plan_title,
-        )
+        credits = int((info or {}).get("credits") or 0)
         return {
             "success": True,
             "mapping_id": mapping_id,
-            "plan_title": plan_title,
+            "plan_title": tier,
             "subscription_end": None,
             "user_paygate_tier": tier,
+            "credits": credits,
+            "remaining_quota": credits,
+            "cooldown_until": (info or {}).get("cooldown_until"),
         }
 
     from ..services.sora_task_executor import get_or_create_sora_session  # type: ignore
@@ -4567,15 +4584,10 @@ async def manual_open_mapping_window(
 
     if handler == "veo_workflow":
         from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
-
         veo_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
         veo_ctx.browser_headless = headless
         veo_ctx.browser_pure_mode = effective_pure
         veo_ctx.idle_close_disabled = True
-        try:
-            await veo_ctx.close_and_drop()
-        except Exception:
-            pass
         try:
             veo_ctx._cancel_idle_close()
         except Exception:
@@ -5200,6 +5212,219 @@ async def veo_connect_bring_mapping_window(mapping_id: int, headless: bool = Fal
     return {"success": True, "mapping_id": mapping_id, "enabled": enabled_before, "idle_close_disabled": True}
 
 
+# -------------------- network capture (extension injected) --------------------
+async def _network_capture_noop_progress(_progress: int, _meta: Optional[Dict[str, Any]] = None) -> None:
+    return
+
+
+def _network_capture_normalize_methods(methods: Optional[List[str]]) -> List[str]:
+    out: List[str] = []
+    for item in (methods or ["GET", "POST", "PATCH"]):
+        m = str(item or "").strip().upper()
+        if not m:
+            continue
+        if not re.match(r"^[A-Z]+$", m):
+            continue
+        if m not in out:
+            out.append(m)
+    return out or ["GET", "POST", "PATCH"]
+
+
+def _network_capture_validate_http_url(raw: Optional[str], *, field_name: str = "target_url") -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    try:
+        p = urlparse(s)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field_name} 格式不合法")
+    if p.scheme not in {"http", "https"} or not p.netloc:
+        raise HTTPException(status_code=400, detail=f"{field_name} 必须是 http/https URL")
+    return s
+
+
+async def _network_capture_get_mapping_context(mapping_id: int, token: str) -> Dict[str, Any]:
+    user = await _ensure_page_access(token, "network_capture")
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+    allowed_task_type_ids = await _get_allowed_task_type_ids(user)
+    ttid = int(ctx_row.get("task_type_id") or 0)
+    if allowed_task_type_ids is not None and ttid not in {int(x) for x in allowed_task_type_ids}:
+        raise HTTPException(status_code=403, detail="无权操作该绑定窗口")
+    space_id = str(ctx_row.get("space_id") or "").strip()
+    window_key = str(ctx_row.get("window_key") or "").strip()
+    base_url = str(ctx_row.get("lan_addr") or "").strip()
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing vendor/lan_addr/space_id/window_key")
+    return ctx_row
+
+
+async def _network_capture_submit_action(
+    ctx_row: Dict[str, Any],
+    *,
+    action: str,
+    payload: Optional[Dict[str, Any]] = None,
+    timeout_seconds: float = 15.0,
+) -> Dict[str, Any]:
+    from ..services.browser_extension_interaction import submit_extension_task  # type: ignore
+
+    space_id = str(ctx_row.get("space_id") or "").strip()
+    window_key = str(ctx_row.get("window_key") or "").strip()
+    try:
+        out = await submit_extension_task(
+            space_id=space_id,
+            window_key=window_key,
+            provider="network",
+            payload={"action": action, **dict(payload or {})},
+            progress_cb=_network_capture_noop_progress,
+            timeout_seconds=max(3.0, float(timeout_seconds or 15.0)),
+        )
+    except Exception as e:
+        msg = str(e)
+        status = int(getattr(e, "status_code", 400) or 400)
+        if "浏览器插件未连接" in msg or "extension client disconnected" in msg:
+            status = 503
+            msg = f"{msg}；请先点击“开始抓取”，或在任务类型页对该窗口执行一次“获取/更新 access_token”以完成插件注册。"
+        raise HTTPException(status_code=status, detail=msg)
+    if not isinstance(out, dict):
+        raise HTTPException(status_code=502, detail=f"插件返回格式异常: {out!r}")
+    return out
+
+
+@router.post("/api/admin/network-capture/start")
+async def start_network_capture(req: NetworkCaptureStartRequest, token: str = Depends(verify_admin_token)):
+    """连接目标指纹窗口，经插件注入抓取 fetch/XHR/beacon 网络请求。"""
+    ctx_row = await _network_capture_get_mapping_context(req.mapping_id, token)
+    requested_url = _network_capture_validate_http_url(req.target_url)
+    target_url = requested_url or _admin_manual_open_target_url(ctx_row)
+    target_url = _network_capture_validate_http_url(target_url, field_name="任务类型默认目标网址")
+    if not target_url:
+        raise HTTPException(status_code=400, detail="缺少目标网址：请在页面填写 target_url 或在任务类型中配置默认目标网址")
+
+    vendor = str(ctx_row.get("vendor") or "roxy")
+    base_url = str(ctx_row.get("lan_addr") or "")
+    access_key = ctx_row.get("access_key")
+    space_id = str(ctx_row.get("space_id") or "")
+    window_key = str(ctx_row.get("window_key") or "")
+    effective_pure = _effective_browser_pure_mode(ctx_row, req.pure_mode)
+
+    try:
+        from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
+        from ..services.browser_extension_interaction import ensure_extension_connected_via_window  # type: ignore
+
+        sess = get_or_create_veo_session(
+            vendor=vendor,
+            base_url=base_url,
+            access_key=access_key,
+            space_id=space_id,
+            window_key=window_key,
+        )
+        sess.browser_headless = bool(req.headless)
+        sess.browser_pure_mode = bool(effective_pure)
+        sess.idle_close_disabled = True
+        try:
+            sess._cancel_idle_close()
+        except Exception:
+            pass
+
+        client = await ensure_extension_connected_via_window(
+            sess=sess,
+            target_url=target_url,
+            space_id=space_id,
+            window_key=window_key,
+            wait_seconds=float(req.wait_seconds or 8.0),
+            force_open=False,
+            headless=bool(req.headless),
+            pure_mode=bool(effective_pure),
+            auto_triger_connection=True,
+        )
+        if client is None:
+            raise RuntimeError("浏览器插件未连接：打开中转页后仍未收到 WebSocket 注册")
+        # content.fpbConfig 收到配置后会给 Python 侧一点断开 CDP 的缓冲时间，再由插件跳转目标页。
+        # 这里等待跳转完成，避免 start_capture 过早创建第二个目标标签页。
+        await asyncio.sleep(3.5)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"连接目标窗口/插件失败：{e}")
+
+    session_id = f"netcap-{req.mapping_id}-{int(datetime.now().timestamp() * 1000)}"
+    payload = {
+        "session_id": session_id,
+        "target_url": target_url,
+        "methods": _network_capture_normalize_methods(req.methods),
+        "max_entries": int(req.max_entries or 2000),
+        "max_body_chars": int(req.max_body_chars or 60000),
+        "clear": bool(req.clear),
+        "navigate": bool(req.navigate),
+        "mapping_id": int(req.mapping_id),
+        "window_pk": int(ctx_row.get("window_pk") or 0),
+        "task_type_id": int(ctx_row.get("task_type_id") or 0),
+        "task_code": str(ctx_row.get("task_code") or ""),
+    }
+    out = await _network_capture_submit_action(
+        ctx_row,
+        action="start_capture",
+        payload=payload,
+        timeout_seconds=30.0,
+    )
+    return {
+        "success": True,
+        "mapping_id": req.mapping_id,
+        "target_url": target_url,
+        "session_id": session_id,
+        **out,
+    }
+
+
+@router.post("/api/admin/network-capture/pause")
+async def pause_network_capture(req: NetworkCaptureMappingRequest, token: str = Depends(verify_admin_token)):
+    ctx_row = await _network_capture_get_mapping_context(req.mapping_id, token)
+    out = await _network_capture_submit_action(ctx_row, action="pause_capture", timeout_seconds=10.0)
+    return {"success": True, "mapping_id": req.mapping_id, **out}
+
+
+@router.post("/api/admin/network-capture/resume")
+async def resume_network_capture(req: NetworkCaptureMappingRequest, token: str = Depends(verify_admin_token)):
+    ctx_row = await _network_capture_get_mapping_context(req.mapping_id, token)
+    out = await _network_capture_submit_action(ctx_row, action="resume_capture", timeout_seconds=10.0)
+    return {"success": True, "mapping_id": req.mapping_id, **out}
+
+
+@router.post("/api/admin/network-capture/stop")
+async def stop_network_capture(req: NetworkCaptureMappingRequest, token: str = Depends(verify_admin_token)):
+    ctx_row = await _network_capture_get_mapping_context(req.mapping_id, token)
+    out = await _network_capture_submit_action(ctx_row, action="stop_capture", timeout_seconds=10.0)
+    return {"success": True, "mapping_id": req.mapping_id, **out}
+
+
+@router.post("/api/admin/network-capture/clear")
+async def clear_network_capture(req: NetworkCaptureMappingRequest, token: str = Depends(verify_admin_token)):
+    ctx_row = await _network_capture_get_mapping_context(req.mapping_id, token)
+    out = await _network_capture_submit_action(ctx_row, action="clear_capture", timeout_seconds=10.0)
+    return {"success": True, "mapping_id": req.mapping_id, **out}
+
+
+@router.get("/api/admin/network-capture/snapshot")
+async def network_capture_snapshot(
+    mapping_id: int,
+    since_seq: int = 0,
+    limit: int = 1000,
+    token: str = Depends(verify_admin_token),
+):
+    ctx_row = await _network_capture_get_mapping_context(mapping_id, token)
+    out = await _network_capture_submit_action(
+        ctx_row,
+        action="snapshot",
+        payload={"since_seq": max(0, int(since_seq or 0)), "limit": max(1, min(5000, int(limit or 1000)))},
+        timeout_seconds=10.0,
+    )
+    return {"success": True, "mapping_id": mapping_id, **out}
+
+
 @router.delete("/api/admin/task-types/{task_type_id}")
 async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_token)):
     await _ensure_admin_user(token)
@@ -5211,7 +5436,7 @@ async def delete_task_type(task_type_id: int, token: str = Depends(verify_admin_
 
 @router.get("/api/admin/task-types/{task_type_id}/windows")
 async def list_task_type_windows(task_type_id: int, token: str = Depends(verify_admin_token)):
-    user = await _ensure_any_page_access(token, {"task_types", "test", "paypal"})
+    user = await _ensure_any_page_access(token, {"task_types", "test", "network_capture", "paypal"})
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     allowed_ids = await _get_allowed_task_type_ids(user)

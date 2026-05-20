@@ -1,6 +1,7 @@
 import { runVeoTask } from "./providers/veo_provider.js";
 import { runDreaminaTask } from "./providers/dreamina_provider.js";
 import { runGptTask } from "./providers/gpt_provider.js";
+import { runNetworkTask, handleNetworkRuntimeMessage } from "./providers/network_provider.js";
 
 let ws = null;
 let reconnectTimer = null;
@@ -196,7 +197,7 @@ async function connectBridge(options = {}) {
       version: chrome.runtime.getManifest().version,
       space_id: cfg.spaceId,
       window_key: cfg.windowKey,
-      capabilities: ["veo", "veo_tokens", "dreamina", "gpt"]
+      capabilities: ["veo", "veo_tokens", "dreamina", "gpt", "network_capture"]
     }));
     startHeartbeat(socket, mySeq);
   };
@@ -266,6 +267,8 @@ async function runTask(msg) {
     result = await runDreaminaTask(msg, runtime);
   } else if (msg.provider === "gpt") {
     result = await runGptTask(msg, runtime);
+  } else if (msg.provider === "network") {
+    result = await runNetworkTask(msg, runtime);
   } else {
     throw new Error(`unsupported provider: ${msg.provider}`);
   }
@@ -277,6 +280,11 @@ async function runTask(msg) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const type = message && message.type;
+    if (type === "fpb.networkCapture.event") {
+      const out = await handleNetworkRuntimeMessage(message, sender);
+      sendResponse(out || { ok: true });
+      return;
+    }
     if (type === "content.fpbConfig") {
       const cfg = message.config || {};
       const redirectUrl = normalizeRedirectUrl(message.redirect_url || cfg.redirect_url || "");

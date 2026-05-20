@@ -113,7 +113,6 @@ async def refresh_veo_balance_via_extension(
             access_expires = str((token_info or {}).get("short_expires") or "").strip() or None
         if not access_token:
             return None
-        print(f"veo_target:{veo_target}");
         result = await asyncio.wait_for(
             submit_extension_task(
                 space_id=picked.space_id,
@@ -133,12 +132,14 @@ async def refresh_veo_balance_via_extension(
             timeout=max(1.0, float(refresh_timeout_seconds or 45.0)) + 5.0,
         )
         if result is not None and result.get("credits") is not None:
+            user_paygate_tier = str(result.get("user_paygate_tier") or result.get("userPaygateTier") or "").strip() or None
             _kw: Dict[str, Any] = {
                 "mapping_id": picked.mapping_id,
                 "remaining_quota": int(result.get("credits") or 0),
                 "sora_remaining_count": int(result.get("credits") or 0),
                 "sora_access_token": access_token,
                 "sora_access_expires": access_expires,
+                "sora_plan_title": user_paygate_tier,
             }
             _kw["cooldown_until"] = str(result.get("cooldown_until") or _veo_local_next_0105_cooldown_str())
             await db.update_task_type_window(**_kw)
@@ -2403,6 +2404,49 @@ def _veo_resolve_t2v_model(payload: Dict[str, Any]) -> tuple[str, str]:
         return "veo_3_1_t2v_fast_portrait", VIDEO_ASPECT_RATIO_PORTRAIT
     return "veo_3_1_t2v_fast", VIDEO_ASPECT_RATIO_LANDSCAPE
 
+
+def _veo_payload_video_model_override(payload: Dict[str, Any]) -> Optional[str]:
+    """?? video_model ????? videoModelKey???????????????"""
+    raw = (payload or {}).get("video_model")
+    if raw is None:
+        return None
+    model = str(raw).strip()
+    return model or None
+
+
+def _veo_resolve_extension_video_model_and_aspect(
+    payload: Dict[str, Any],
+    *,
+    want_ingredients: bool = False,
+    want_i2v: bool = False,
+) -> tuple[str, str]:
+    """????????? (videoModelKey, aspectRatio)?
+
+    - want_ingredients: ?????????R2V?
+    - want_i2v: ????????I2V?
+    - ??: ?????T2V?
+
+    ??????? payload.video_model ???? videoModelKey ?????
+    aspectRatio ????????????
+    """
+    payload = payload or {}
+    if want_ingredients:
+        model_key, video_aspect = _veo_resolve_r2v_model(payload)
+    elif want_i2v:
+        video_aspect = _veo_resolve_i2v_aspect_ratio(payload)
+        model_key = (
+            VEO_I2V_MODEL_PORTRAIT_FL
+            if video_aspect == VIDEO_ASPECT_RATIO_PORTRAIT
+            else VEO_I2V_MODEL_LANDSCAPE_FL
+        )
+    else:
+        model_key, video_aspect = _veo_resolve_t2v_model(payload)
+
+    override_model = _veo_payload_video_model_override(payload)
+    if override_model:
+        model_key = override_model
+    return model_key, video_aspect
+
 def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
     """将 userPaygateTier 转为可读套餐名（与 flow2api manage.html formatAccountType 一致）。"""
     t = str(tier or "").strip()
@@ -2768,6 +2812,10 @@ def is_accounts_google(url):
     parsed = urlparse(url)
     return parsed.netloc == "accounts.google.com"
 
+def is_google_flow(url):
+    parsed = urlparse(url)
+    return parsed.netloc == "labs.google"
+
 async def veo_fetch_access_tokens_via_extension(
     *,
     sess: "VeoSession",
@@ -2816,18 +2864,17 @@ async def veo_fetch_access_tokens_via_extension(
             timeout_seconds=max(3.0, min(10.0, float(connect_wait_seconds or 8.0))),
         )
         current_url = str((page_info or {}).get("url") or "").strip()
-        print(f"current_url:{current_url}")
-        if is_accounts_google(current_url):
+        if not is_google_flow(current_url):
             append_log(
                 log_file,
                 "[veo][token] current page is not flow page, skip extension token fetch "
                 f"current_url={safe_trim(current_url, 300)!r} required_prefix={VEO_FLOW_PAGE_URL_PREFIX!r}",
             )
             return _veo_input_token_params_result(
-                access_token=access_token,
+                access_token="",
                 access_expires="1999-00-20T07:00:00.000Z",
-                session_token=session_token,
-                short_access_token=short_access_token,
+                session_token="",
+                short_access_token="",
                 short_expires="1999-00-20T07:00:00.000Z",
                 target_url=target_url,
                 current_url=current_url,
@@ -3592,17 +3639,11 @@ async def veo_workflow(
             _ext_model_key = None
             _ext_video_aspect = None
         else:
-            if want_ingredients:
-                _ext_model_key, _ext_video_aspect = _veo_resolve_r2v_model(payload)
-            elif want_i2v:
-                _ext_video_aspect = _veo_resolve_i2v_aspect_ratio(payload)
-                _ext_model_key = (
-                    VEO_I2V_MODEL_PORTRAIT_FL
-                    if _ext_video_aspect == VIDEO_ASPECT_RATIO_PORTRAIT
-                    else VEO_I2V_MODEL_LANDSCAPE_FL
-                )
-            else:
-                _ext_model_key, _ext_video_aspect = _veo_resolve_t2v_model(payload)
+            _ext_model_key, _ext_video_aspect = _veo_resolve_extension_video_model_and_aspect(
+                payload,
+                want_ingredients=want_ingredients,
+                want_i2v=want_i2v,
+            )
             _ext_image_aspect = None
             _ext_image_model = None
             _ext_resolution_label, _ext_want_2k = ("1K", False)
@@ -3638,7 +3679,7 @@ async def veo_workflow(
                 "extension_image_want_2k": _ext_want_2k,
             }
         )
-        append_log(log_file, f"[veo][extension] dispatch workflow {_mode} project_id={project_id!r}")
+        append_log(log_file, f"[veo][extension] dispatch workflow {_mode} project_id={project_id!r} model={_ext_model_key!r} ratio={_ext_video_aspect!r}")
         # 如插件在 token 获取后意外断开，仍走统一的“中转页 fpb_* URL 触发 WS”接口；
         # Python 只短暂连接 CDP 打开中转页，随后立刻断开；目标页由插件延迟跳转打开。
         if await wait_extension_client(space_id, window_key, timeout_seconds=0.2) is None:
