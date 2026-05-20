@@ -92,6 +92,7 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "nana-banana-2",
     "nana-banana-pro",
     "veo-3-1",
+    "veo-omni-flash",
     "gpt-image2-1k",
     "gpt-image2-2k",
     "gpt-image2-4k",
@@ -125,6 +126,13 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         if duration != 8:
             raise HTTPException(status_code=400, detail="veo-3-1 only supports duration=8")
         payload["n_frames"] = 240
+    elif model in {"veo-omni-flash"}:
+        task_type_code = "veo_workflow"
+        duration = payload.get("duration")
+        if duration != 10:
+            raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=10")
+        payload["n_frames"] = 300
+        payload["video_model"] = "abra_t2v_10s"
     elif model in GPT_IMAGE2_VIDEO_MODELS:
         task_type_code = "gpt_workflow"
         duration = payload.get("duration")
