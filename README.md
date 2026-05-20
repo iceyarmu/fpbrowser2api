@@ -4,9 +4,10 @@
 
 ### 操作视频https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2
 
-## 最新更新-2026-5-17
-##### 1.香蕉、veo、sd等切换到浏览器插件模式，比协议、自动化更加稳定。
-32GB内存可以支持到100多并发没有问题,browser_extension是插件目录，把它加载到浏览器中去
+## 最新情人节奉献功能2026-5-20：
+##### 1.Flow: Nana Banana2(图片生成)、Banana Pro(图片生成)、veo-3-1(视频生成)、Veo-omni-flash(视频生成)
+##### 2.ChatGPT: gpt-image2(图片生成)
+##### 3.Jimeng:seedance2.0(视频生成)
 
 ## 最新更新-2026-5-11
 ##### 1.google Flow纯净模式，生成的视频和图片都会归档，保证页面干净，减少资源消耗，支持香蕉2/Pro和Veo3.1
