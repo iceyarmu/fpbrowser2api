@@ -13,8 +13,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import hashlib
 import io
 import json
+import mimetypes
+import os
 import random
 from math import gcd
 import re
@@ -32,7 +35,7 @@ import httpx
 from ..core.config import config as app_config
 from ..core.database import Database
 from ..core.logger import logger
-from ..core.paths import MONITOR_LOG_FILE
+from ..core.paths import MONITOR_LOG_FILE, STATIC_DIR
 from .playwright_broswer_context import (
     PlaywrightBrowserContext,
     acquire_browser_open_slot,
@@ -56,6 +59,470 @@ from .browser_extension_interaction import (
 
 async def _noop_progress_cb(progress: int, data: Dict[str, Any]) -> None:
     return None
+
+
+def _veo_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = os.getenv(name, "").strip()
+    try:
+        val = int(raw) if raw else int(default)
+    except Exception:
+        val = int(default)
+    return max(min_value, min(max_value, val))
+
+
+def _veo_float_env(name: str, default: float, *, min_value: float, max_value: float) -> float:
+    raw = os.getenv(name, "").strip()
+    try:
+        val = float(raw) if raw else float(default)
+    except Exception:
+        val = float(default)
+    return max(min_value, min(max_value, val))
+
+
+def _veo_env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw not in {"0", "false", "no", "off", "disable", "disabled"}
+
+
+_VEO_LOCAL_IMAGE_CACHE_SUBDIR = "veo_image_cache"
+_VEO_LOCAL_IMAGE_CACHE_DIR = STATIC_DIR / "assets" / _VEO_LOCAL_IMAGE_CACHE_SUBDIR
+_VEO_LOCAL_IMAGE_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
+    _veo_int_env("VEO_LOCAL_IMAGE_DOWNLOAD_CONCURRENCY", 50, min_value=1, max_value=64)
+)
+_VEO_LOCAL_IMAGE_LOCKS: Dict[str, asyncio.Lock] = {}
+_VEO_LOCAL_IMAGE_LOCKS_GUARD = asyncio.Lock()
+_VEO_LOCAL_IMAGE_LAST_CLEANUP = 0.0
+
+
+def _veo_local_image_cache_ttl_seconds() -> float:
+    return _veo_float_env("VEO_LOCAL_IMAGE_CACHE_TTL_SECONDS", 1 * 3600, min_value=0.0, max_value=30 * 86400)
+
+
+def _veo_local_image_cache_max_bytes() -> int:
+    return _veo_int_env("VEO_LOCAL_IMAGE_CACHE_MAX_BYTES", 20 * 1024 * 1024 * 1024, min_value=256 * 1024 * 1024, max_value=500 * 1024 * 1024 * 1024)
+
+
+def _veo_local_image_max_bytes() -> int:
+    return _veo_int_env("VEO_LOCAL_IMAGE_MAX_BYTES", 20 * 1024 * 1024, min_value=1 * 1024 * 1024, max_value=1024 * 1024 * 1024)
+
+
+def _veo_payload_flag_is_false(v: Any) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return not v
+    if isinstance(v, (int, float)):
+        return v == 0
+    return str(v or "").strip().lower() in {"0", "false", "no", "off", "disable", "disabled"}
+
+
+def _veo_extension_local_image_cache_enabled(payload: Dict[str, Any]) -> bool:
+    """插件模式输入图本地化开关，默认开启。
+
+    背景：指纹浏览器经海外代理访问国内图片经常 `Failed to fetch`。Python 服务端先
+    直连下载到 `/assets/veo_image_cache/`，插件再从配置的 base_url 读取本机白名单
+    地址，避免图片下载走指纹浏览器代理。
+    """
+    if not _veo_env_enabled("VEO_LOCAL_IMAGE_CACHE_ENABLED", True):
+        return False
+    payload = payload or {}
+    for key in (
+        "localize_extension_images",
+        "veo_localize_extension_images",
+        "local_image_cache",
+        "veo_local_image_cache",
+    ):
+        if key in payload and _veo_payload_flag_is_false(payload.get(key)):
+            return False
+    return True
+
+
+def _veo_extension_http_base_url() -> str:
+    """返回插件可访问的 HTTP(S) 服务根地址，来自 setting.toml 的 extension_executor.base_url。"""
+    raw = str(getattr(app_config, "extension_launcher_url", "") or "").strip()
+    if raw:
+        p = urlparse(raw)
+        if p.scheme in {"http", "https"} and p.netloc:
+            return raw.rstrip("/")
+    base_url = str((app_config.get_raw_config() or {}).get("extension_executor", {}).get("base_url") or "").strip()
+    if not base_url:
+        raise NonPenalizedTaskError(
+            "VEO 输入图本地化失败：config/setting.toml [extension_executor].base_url 为空，无法生成插件可访问的本机图片 URL",
+            status_code=500,
+        )
+    if not re.match(r"^https?://", base_url, flags=re.I):
+        base_url = f"http://{base_url}"
+    p = urlparse(base_url)
+    if p.scheme not in {"http", "https"} or not p.netloc:
+        raise NonPenalizedTaskError(
+            f"VEO 输入图本地化失败：[extension_executor].base_url 无效：{base_url!r}",
+            status_code=500,
+        )
+    return base_url.rstrip("/")
+
+
+def _veo_local_asset_url(path: Path) -> str:
+    return f"{_veo_extension_http_base_url()}/assets/{_VEO_LOCAL_IMAGE_CACHE_SUBDIR}/{quote(path.name)}"
+
+
+def _veo_is_local_asset_url(raw: str) -> bool:
+    try:
+        u = urlparse(str(raw or "").strip())
+        return u.path.startswith(f"/assets/{_VEO_LOCAL_IMAGE_CACHE_SUBDIR}/")
+    except Exception:
+        return False
+
+
+def _veo_image_ext_from_mime_or_url(content_type: str = "", source_url: str = "") -> str:
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    fixed = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+        "image/tiff": ".tiff",
+        "image/avif": ".avif",
+    }
+    if ct in fixed:
+        return fixed[ct]
+    guessed = mimetypes.guess_extension(ct) if ct else ""
+    if guessed:
+        return ".jpg" if guessed in {".jpe", ".jpeg"} else guessed
+    try:
+        suffix = Path(urlparse(source_url or "").path).suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif"}:
+            return ".jpg" if suffix == ".jpeg" else suffix
+    except Exception:
+        pass
+    return ".jpg"
+
+
+def _veo_sniff_image_mime(data: bytes) -> str:
+    """根据常见图片 magic bytes 粗略识别下载结果，防止把 HTML/错误页当图片缓存。"""
+    b = bytes(data or b"")[:64]
+    if b.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if b.startswith(b"GIF87a") or b.startswith(b"GIF89a"):
+        return "image/gif"
+    if b.startswith(b"RIFF") and len(b) >= 12 and b[8:12] == b"WEBP":
+        return "image/webp"
+    if b.startswith(b"BM"):
+        return "image/bmp"
+    if b.startswith(b"II*\x00") or b.startswith(b"MM\x00*"):
+        return "image/tiff"
+    if len(b) >= 12 and b[4:8] == b"ftyp" and b[8:12] in {b"avif", b"avis"}:
+        return "image/avif"
+    return ""
+
+
+def _veo_validate_image_bytes(head: bytes, *, content_type: str, source_label: str) -> str:
+    declared = (content_type or "").split(";", 1)[0].strip().lower()
+    sniffed = _veo_sniff_image_mime(head)
+    if sniffed:
+        return sniffed
+    bad_declared = declared.startswith("text/") or declared in {
+        "application/json",
+        "application/xml",
+        "application/xhtml+xml",
+        "application/problem+json",
+    }
+    if bad_declared or not declared.startswith("image/"):
+        sample = bytes(head or b"")[:32].hex()
+        raise NonPenalizedTaskError(
+            "VEO 输入图片本地下载失败：下载结果不像图片；"
+            f"content_type={declared or 'unknown'}; first_bytes={sample}; source={safe_trim(source_label, 300)}",
+            status_code=400,
+        )
+    return declared
+
+
+def _veo_cached_image_for_key(cache_key: str) -> Optional[Path]:
+    try:
+        if not _VEO_LOCAL_IMAGE_CACHE_DIR.exists():
+            return None
+        ttl = _veo_local_image_cache_ttl_seconds()
+        now = time.time()
+        for p in _VEO_LOCAL_IMAGE_CACHE_DIR.glob(f"{cache_key}.*"):
+            if not p.is_file() or p.name.endswith(".tmp"):
+                continue
+            if ttl > 0 and (now - p.stat().st_mtime) > ttl:
+                continue
+            return p
+    except Exception:
+        return None
+    return None
+
+
+def _veo_cleanup_local_image_cache_sync() -> None:
+    try:
+        cache_dir = _VEO_LOCAL_IMAGE_CACHE_DIR
+        if not cache_dir.exists():
+            return
+        now = time.time()
+        ttl = _veo_local_image_cache_ttl_seconds()
+        files: List[tuple[Path, float, int]] = []
+        for p in cache_dir.glob("*"):
+            if not p.is_file():
+                continue
+            try:
+                st = p.stat()
+            except Exception:
+                continue
+            if p.name.endswith(".tmp") or (ttl > 0 and (now - st.st_mtime) > ttl):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+                continue
+            files.append((p, st.st_mtime, int(st.st_size)))
+        max_total = _veo_local_image_cache_max_bytes()
+        total = sum(size for _, _, size in files)
+        if total <= max_total:
+            return
+        for p, _mtime, size in sorted(files, key=lambda it: it[1]):
+            if total <= max_total:
+                break
+            try:
+                p.unlink()
+                total -= size
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+async def _veo_maybe_cleanup_local_image_cache() -> None:
+    global _VEO_LOCAL_IMAGE_LAST_CLEANUP
+    now = time.time()
+    if now - _VEO_LOCAL_IMAGE_LAST_CLEANUP < 300:
+        return
+    _VEO_LOCAL_IMAGE_LAST_CLEANUP = now
+    await asyncio.to_thread(_veo_cleanup_local_image_cache_sync)
+
+
+async def _veo_local_image_lock(cache_key: str) -> asyncio.Lock:
+    async with _VEO_LOCAL_IMAGE_LOCKS_GUARD:
+        lock = _VEO_LOCAL_IMAGE_LOCKS.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _VEO_LOCAL_IMAGE_LOCKS[cache_key] = lock
+        return lock
+
+
+async def _veo_write_bytes_to_local_image_cache(data: bytes, *, content_type: str, source_label: str) -> Path:
+    max_bytes = _veo_local_image_max_bytes()
+    if len(data) > max_bytes:
+        raise NonPenalizedTaskError(
+            f"VEO 输入图片过大：{len(data)} bytes > limit={max_bytes} source={safe_trim(source_label, 300)!r}",
+            status_code=413,
+        )
+    cache_key = hashlib.sha256(data).hexdigest()
+    lock = await _veo_local_image_lock(f"bytes:{cache_key}")
+    async with lock:
+        cached = _veo_cached_image_for_key(cache_key)
+        if cached:
+            return cached
+        _VEO_LOCAL_IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        effective_type = _veo_validate_image_bytes(data[:4096], content_type=content_type, source_label=source_label)
+        ext = _veo_image_ext_from_mime_or_url(effective_type, source_label)
+        final = _VEO_LOCAL_IMAGE_CACHE_DIR / f"{cache_key}{ext}"
+        tmp = _VEO_LOCAL_IMAGE_CACHE_DIR / f"{cache_key}.{uuid.uuid4().hex}.tmp"
+        try:
+            await asyncio.to_thread(tmp.write_bytes, data)
+            await asyncio.to_thread(tmp.replace, final)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+        return final
+
+
+async def _veo_download_url_to_local_image_cache(source_url: str) -> Path:
+    cache_key = hashlib.sha256(source_url.encode("utf-8", "ignore")).hexdigest()
+    lock = await _veo_local_image_lock(f"url:{cache_key}")
+    async with lock:
+        cached = _veo_cached_image_for_key(cache_key)
+        if cached:
+            return cached
+        _VEO_LOCAL_IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        max_bytes = _veo_local_image_max_bytes()
+        tmp = _VEO_LOCAL_IMAGE_CACHE_DIR / f"{cache_key}.{uuid.uuid4().hex}.tmp"
+        final: Optional[Path] = None
+        total = 0
+        content_type = ""
+        final_url = source_url
+        head = bytearray()
+        timeout = httpx.Timeout(
+            connect=_veo_float_env("VEO_LOCAL_IMAGE_CONNECT_TIMEOUT_SECONDS", 15.0, min_value=1.0, max_value=120.0),
+            read=_veo_float_env("VEO_LOCAL_IMAGE_READ_TIMEOUT_SECONDS", 180.0, min_value=5.0, max_value=1800.0),
+            write=30.0,
+            pool=30.0,
+        )
+        headers = {
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 FPBrowser2API local image cache",
+        }
+        try:
+            async with _VEO_LOCAL_IMAGE_DOWNLOAD_SEMAPHORE:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+                    async with client.stream("GET", source_url, headers=headers) as resp:
+                        status = int(resp.status_code or 0)
+                        if status >= 400:
+                            body = ""
+                            try:
+                                body = (await resp.aread()).decode("utf-8", "ignore")[:300]
+                            except Exception:
+                                body = ""
+                            raise NonPenalizedTaskError(
+                                f"VEO 输入图片本地下载失败：Request Method: GET; url={safe_trim(source_url, 500)}; Status Code: {status}; response={body}",
+                                status_code=400 if status < 500 else 502,
+                            )
+                        cl = str(resp.headers.get("content-length") or "").strip()
+                        if cl.isdigit() and int(cl) > max_bytes:
+                            raise NonPenalizedTaskError(
+                                f"VEO 输入图片过大：content-length={cl} > limit={max_bytes}; url={safe_trim(source_url, 500)}",
+                                status_code=413,
+                            )
+                        content_type = str(resp.headers.get("content-type") or "")
+                        final_url = str(resp.url or source_url)
+                        with tmp.open("wb") as f:
+                            async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                                if not chunk:
+                                    continue
+                                total += len(chunk)
+                                if total > max_bytes:
+                                    raise NonPenalizedTaskError(
+                                        f"VEO 输入图片过大：downloaded={total} > limit={max_bytes}; url={safe_trim(source_url, 500)}",
+                                        status_code=413,
+                                    )
+                                if len(head) < 4096:
+                                    head.extend(chunk[: 4096 - len(head)])
+                                await asyncio.to_thread(f.write, chunk)
+            if total <= 0:
+                raise NonPenalizedTaskError(
+                    f"VEO 输入图片本地下载失败：空响应；Request Method: GET; url={safe_trim(source_url, 500)}",
+                    status_code=502,
+                )
+            effective_type = _veo_validate_image_bytes(bytes(head), content_type=content_type, source_label=source_url)
+            ext = _veo_image_ext_from_mime_or_url(effective_type, final_url)
+            final = _VEO_LOCAL_IMAGE_CACHE_DIR / f"{cache_key}{ext}"
+            assert final is not None
+            await asyncio.to_thread(tmp.replace, final)
+            return final
+        except NonPenalizedTaskError:
+            raise
+        except Exception as e:
+            raise NonPenalizedTaskError(
+                f"VEO 输入图片本地下载失败：Request Method: GET; url={safe_trim(source_url, 500)}; error={safe_trim(str(e), 500)}",
+                status_code=502,
+            ) from e
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+
+async def _veo_materialize_image_for_extension(
+    source_url: str,
+    *,
+    kind: str,
+    index: int,
+    total: int,
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+) -> str:
+    raw = str(source_url or "").strip()
+    if not raw or _veo_is_local_asset_url(raw):
+        return raw
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in {"http", "https", "data"}:
+        raise NonPenalizedTaskError(
+            f"VEO 输入图片地址协议不支持：仅支持 http/https/data URL，got={safe_trim(raw, 300)!r}",
+            status_code=400,
+        )
+    await _veo_maybe_cleanup_local_image_cache()
+    try:
+        await progress_cb(
+            2,
+            {
+                "stage": "localize_input_image",
+                "kind": kind,
+                "index": index + 1,
+                "total": total,
+                "source_host": parsed.netloc if parsed.scheme != "data" else "data-url",
+            },
+        )
+    except Exception:
+        pass
+    if parsed.scheme.lower() == "data":
+        m = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$", raw, flags=re.S)
+        if not m:
+            raise NonPenalizedTaskError("VEO 输入图片 data URL 格式不支持：仅支持 data:image/...;base64,...", status_code=400)
+        mime = m.group(1)
+        try:
+            data = base64.b64decode(m.group(2), validate=False)
+        except Exception as e:
+            raise NonPenalizedTaskError(f"VEO 输入图片 data URL 解码失败：{safe_trim(str(e), 300)}", status_code=400) from e
+        local_path = await _veo_write_bytes_to_local_image_cache(data, content_type=mime, source_label=f"data:{mime}")
+    else:
+        local_path = await _veo_download_url_to_local_image_cache(raw)
+    local_url = _veo_local_asset_url(local_path)
+    append_log(
+        log_file,
+        f"[veo][extension][image-cache] localized kind={kind} index={index + 1}/{total} "
+        f"source={safe_trim(raw, 260)!r} -> {local_url!r}",
+    )
+    try:
+        await progress_cb(
+            2,
+            {
+                "stage": "localize_input_image_ok",
+                "kind": kind,
+                "index": index + 1,
+                "total": total,
+                "url": local_url,
+            },
+        )
+    except Exception:
+        pass
+    return local_url
+
+
+async def _veo_materialize_image_urls_for_extension(
+    urls: List[str],
+    *,
+    kind: str,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+) -> List[str]:
+    if not urls or not _veo_extension_local_image_cache_enabled(payload):
+        return list(urls or [])
+    srcs = [str(u or "").strip() for u in urls if str(u or "").strip()]
+    if not srcs:
+        return []
+    tasks = [
+        _veo_materialize_image_for_extension(
+            u,
+            kind=kind,
+            index=i,
+            total=len(srcs),
+            progress_cb=progress_cb,
+            log_file=log_file,
+        )
+        for i, u in enumerate(srcs)
+    ]
+    return list(await asyncio.gather(*tasks))
 
 
 async def refresh_veo_balance_via_extension(
@@ -226,12 +693,29 @@ def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
         return s
     return s[: max(10, max_len - 3)] + "..."
 
-def _veo_is_unsafe_generation_message(err: Any) -> bool:
+_VEO_CONTENT_VIOLATION_REASON_MESSAGES = {
+    "PUBLIC_ERROR_UNSAFE_GENERATION": "VEO生成失败，内容包含（PUBLIC_ERROR_UNSAFE_GENERATION）",
+    # flow/uploadImage 在参考图疑似包含未成年人/儿童照片时返回此 reason。
+    "PUBLIC_ERROR_MINOR_UPLOAD": "VEO上传参考图失败，参考图中包含未成年人/儿童照片（PUBLIC_ERROR_MINOR_UPLOAD）",
+}
+
+
+def _veo_content_violation_reason(err: Any) -> Optional[str]:
     try:
         s = str(err or "").strip()
     except Exception:
         s = ""
-    return "PUBLIC_ERROR_UNSAFE_GENERATION" in s
+    if not s:
+        return None
+    haystack = s.upper()
+    for reason in _VEO_CONTENT_VIOLATION_REASON_MESSAGES:
+        if reason in haystack:
+            return reason
+    return None
+
+
+def _veo_is_unsafe_generation_message(err: Any) -> bool:
+    return _veo_content_violation_reason(err) is not None
 
 
 def _veo_is_auth_credentials_error(err: Any) -> bool:
@@ -2444,6 +2928,8 @@ def _veo_resolve_extension_video_model_and_aspect(
 
     override_model = _veo_payload_video_model_override(payload)
     if override_model:
+        if override_model == "veo-omni-flash":
+            override_model = "abra_t2v_10s"
         model_key = override_model
     return model_key, video_aspect
 
@@ -3648,6 +4134,34 @@ async def veo_workflow(
             _ext_image_model = None
             _ext_resolution_label, _ext_want_2k = ("1K", False)
             _ext_i2i_urls = []
+        if _veo_extension_local_image_cache_enabled(payload):
+            # 输入图不要让指纹浏览器通过海外代理直连原图；Python 服务端先直连下载并
+            # 暴露为 http://<base_url>/assets/veo_image_cache/...，插件再读取这个
+            # 本机白名单 URL。这里仅替换下发给插件的 URL，不改用户原始 payload。
+            if ingredients_urls:
+                ingredients_urls = await _veo_materialize_image_urls_for_extension(
+                    ingredients_urls,
+                    kind="ingredients",
+                    payload=payload,
+                    progress_cb=progress_cb,
+                    log_file=log_file,
+                )
+            if i2v_urls:
+                i2v_urls = await _veo_materialize_image_urls_for_extension(
+                    i2v_urls,
+                    kind="i2v",
+                    payload=payload,
+                    progress_cb=progress_cb,
+                    log_file=log_file,
+                )
+            if _ext_i2i_urls:
+                _ext_i2i_urls = await _veo_materialize_image_urls_for_extension(
+                    _ext_i2i_urls,
+                    kind="image_reference",
+                    payload=payload,
+                    progress_cb=progress_cb,
+                    log_file=log_file,
+                )
         ext_payload = dict(payload)
         ext_payload.update(
             {
@@ -3704,10 +4218,21 @@ async def veo_workflow(
                 timeout_seconds=max_wait_seconds + 120.0,
             )
         except Exception as e:
-            if _veo_is_unsafe_generation_message(e):
+            _violation_reason = _veo_content_violation_reason(e)
+            if _violation_reason:
+                _violation_prefix = _VEO_CONTENT_VIOLATION_REASON_MESSAGES.get(
+                    _violation_reason,
+                    f"VEO内容审核未通过（{_violation_reason}）",
+                )
+                try:
+                    _violation_status = int(getattr(e, "status_code", None) or 0)
+                except Exception:
+                    _violation_status = 0
+                if _violation_status < 400 or _violation_status >= 500:
+                    _violation_status = 400
                 raise NonPenalizedTaskError(
-                    f"VEO生成失败，内容包含（PUBLIC_ERROR_UNSAFE_GENERATION）：{safe_trim(str(e), 500)}",
-                    status_code=getattr(e, "status_code", None) or 400,
+                    f"{_violation_prefix}：{safe_trim(str(e), 500)}",
+                    status_code=_violation_status,
                     content_violation=True,
                 )
             raise

@@ -17,9 +17,16 @@ export async function ensureTab(urlPrefix, targetUrl, options = {}) {
 }
 
 export async function fetchJson(url, { method = "GET", headers = {}, body = null } = {}) {
-  const init = { method, headers: { ...headers }, credentials: "include" };
+  const reqMethod = String(method || "GET").toUpperCase();
+  const init = { method: reqMethod, headers: { ...headers }, credentials: "include" };
   if (body !== null && body !== undefined) init.body = JSON.stringify(body);
-  const resp = await fetch(url, init);
+  let resp;
+  try {
+    resp = await fetch(url, init);
+  } catch (e) {
+    const rawMsg = String((e && e.message) || e || "unknown error");
+    throw new Error(`fetchJson failed; Request Method: ${reqMethod}; url=${url}; error=${rawMsg}`);
+  }
   const text = await resp.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch (_) {}

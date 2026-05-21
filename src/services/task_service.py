@@ -139,7 +139,7 @@ def _remaining_quota_exclusive_floor_for_pick(
         return 3, credit_threthold
     if code == "veo_workflow":
         if _veo_payload_video_model_override(payload or {}) is not None:
-            return 160,credit_threthold
+            return 160,160
         elif _veo_resolve_n_frames(payload or {}) > 1:
             return 30,credit_threthold
         else:

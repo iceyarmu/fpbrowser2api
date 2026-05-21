@@ -269,8 +269,12 @@ async function reloadProjectPage(progress, tabId, projectPage, runtime) {
 
 async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = null, attempts = 3 } = {}) {
   let lastErr = null;
+  let lastAttempt = 0;
+  const reqMethod = String(method || "GET").toUpperCase();
   const maxAttempts = Math.max(1, Number.parseInt(attempts, 10) || 1);
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const attemptNo = attempt + 1;
+    lastAttempt = attemptNo;
     try {
       const result = await withVeoTabOpLock(tabId, "page_fetch_json", async () => {
         try {
@@ -304,16 +308,18 @@ async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = 
         return Array.isArray(frames) && frames[0] ? frames[0].result : null;
       });
       if (result) return result;
-      lastErr = new Error(`pageFetchJson returned empty result for ${url}`);
+      lastErr = new Error(`pageFetchJson returned empty result; Request Method: ${reqMethod}; url=${url}; attempt=${attemptNo}/${maxAttempts}`);
     } catch (e) {
-      lastErr = e;
+      const rawMsg = String((e && e.message) || e || "unknown error");
+      lastErr = new Error(`pageFetchJson failed; Request Method: ${reqMethod}; url=${url}; attempt=${attemptNo}/${maxAttempts}; error=${rawMsg}`);
+      try { lastErr.cause = e; } catch (_) {}
     }
     if (attempt + 1 < maxAttempts) {
       const extra = isTransientPageFetchError(lastErr) ? 500 : 0;
       await sleep(extra + 250 * (attempt + 1));
     }
   }
-  throw lastErr || new Error(`pageFetchJson returned empty result for ${url}`);
+  throw lastErr || new Error(`pageFetchJson returned empty result; Request Method: ${reqMethod}; url=${url}; attempt=${lastAttempt || 0}/${maxAttempts}`);
 }
 
 async function getAccessTokenFromPage(tabId) {
@@ -642,8 +648,15 @@ async function getRecaptchaToken(tabId, action) {
 }
 
 async function downloadImageAsBase64(url) {
-  const resp = await fetch(url, { credentials: "omit" });
-  if (!resp.ok) throw new Error(`download image failed: HTTP ${resp.status}`);
+  const reqMethod = "GET";
+  let resp;
+  try {
+    resp = await fetch(url, { method: reqMethod, credentials: "omit" });
+  } catch (e) {
+    const rawMsg = String((e && e.message) || e || "unknown error");
+    throw new Error(`download image failed; Request Method: ${reqMethod}; url=${url}; error=${rawMsg}`);
+  }
+  if (!resp.ok) throw new Error(`download image failed; Request Method: ${reqMethod}; url=${url}; Status Code: ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ""}`);
   const blob = await resp.blob();
   const mime = blob.type || "image/jpeg";
   const buf = await blob.arrayBuffer();
@@ -654,7 +667,7 @@ async function downloadImageAsBase64(url) {
 }
 
 async function uploadImage(tabId, url, at, projectId, runtime, index, total) {
-  await runtime.progress(7 + index, { stage: "upload_image", index: index + 1, total });
+  await runtime.progress(7 + index, { stage: "upload_image", index: index + 1, total, url });
   const img = await downloadImageAsBase64(url);
   const ext = img.mime.includes("png") ? "png" : "jpg";
   const tx = await pageFetchJson(tabId, URLS.uploadImage, {
