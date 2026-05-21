@@ -1,6 +1,7 @@
-# FPBrowser2API：逆向+AI自动化结合的方案
+# FPBrowser2API：逆向插件+Python账号保活管理方案
 
-> 项目主题：利用指纹浏览器半自动化模拟真人环境 + 逆向注入/页面上下文代码执行，实现高并发自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口逆向研究，并内置 Cloudflare/claudeflare 验证页检测、等待、自愈重启与自动点击等处理策略，目标是在授权研究环境中自动过 claudeflare/Cloudflare（实际通过率取决于账号、代理、环境与站点策略）。
+> 项目主题：逆向框架，支持veo3.1、seedance2.0、omni flash、grok、nana banana、sora2、gpt-image2，QQ交流群：1035463132
+> 利用指纹浏览器管理账号保活 + 插件逆向注入/页面上下文代码执行，实现高并发自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口逆向研究。
 
 ### 操作视频https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2
 
