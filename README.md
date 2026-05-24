@@ -6,8 +6,8 @@
 ### 操作视频https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2
 
 ## 最新情人节奉献功能2026-5-20：
-##### 1.Flow: Nana Banana2(图片生成)、Banana Pro(图片生成)、veo-3-1(视频生成)、Veo-omni-flash(视频生成)
-##### 2.ChatGPT: gpt-image2(图片生成)
+##### 1.Flow: Nana Banana2 1k/2k/4k(图片生成)、Banana Pro 1k/2k/4k(图片生成)、veo-3-1(视频生成)、Veo-omni-flash(视频生成)
+##### 2.ChatGPT: gpt-image2-1k/2k/4k(图片生成)
 ##### 3.Jimeng:seedance2.0(视频生成)
 
 ## 最新更新-2026-5-11
