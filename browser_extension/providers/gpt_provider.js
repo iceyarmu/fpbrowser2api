@@ -1,3 +1,5 @@
+import { createAliyunOssPutTarget, uploadDataUrlListToAliyunOss } from "./common.js";
+
 const CHATGPT = "https://chatgpt.com";
 const WEB_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
 const WEB_CLIENT_VERSION = "prod-81e0c5cdf6140e8c5db714d613337f4aeab94029";
@@ -23,6 +25,7 @@ const GPT_IMAGE2_SIZE_TABLE = {
     "5:4": "2784x2224", "4:5": "2224x2784", "16:9": "3312x1872", "9:16": "1872x3312", "21:9": "3808x1632"
   }
 };
+const GPT_IMAGE2_DEFAULT_RATIO = "1:1";
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function uuid() { const c = globalThis.crypto; return c && c.randomUUID ? c.randomUUID() : `${Date.now()}-${Math.random()}`; }
@@ -128,13 +131,27 @@ function gptHeaders(token, path = "/", accept = "application/json") {
   return h;
 }
 
-async function getAccessToken(tabId, targetUrl) {
+async function getAuthSession(tabId, targetUrl) {
   const origin = originFromTarget(targetUrl);
   const r = await pageFetch(tabId, `${origin}/api/auth/session`, { headers: { "Accept": "application/json" } });
   const j = r && r.json || {};
+  return {
+    type: "gpt_auth_session",
+    access_token: j.accessToken || j.access_token || j.token || "",
+    expires: j.expires || null,
+    email: j.user && j.user.email || null,
+    account_id: accountIdFromInit(j) || null,
+    raw: j,
+    source: "extension.auth_session"
+  };
+}
+
+async function getAccessToken(tabId, targetUrl) {
+  const auth = await getAuthSession(tabId, targetUrl);
+  const j = auth.raw || {};
   const tok = j.accessToken || j.access_token || j.token;
   if (!tok) throw new Error(`GPT access token not found: ${JSON.stringify(j).slice(0, 240)}`);
-  return { type: "gpt_access_token", access_token: tok, expires: j.expires || null, email: j.user && j.user.email || null, raw: j, source: "extension.auth_session" };
+  return { type: "gpt_access_token", access_token: tok, expires: auth.expires || null, email: auth.email || null, account_id: auth.account_id || null, raw: j, source: "extension.auth_session" };
 }
 
 function utf8Bytes(s) {
@@ -467,12 +484,17 @@ function normalizeImage2Resolution(p) {
     if (v === "4" || v === "4k" || v === "k4") return "4k";
   }
   const size = String((p && p.size) || "").trim();
-  if (size) {
-    for (const [tier, byRatio] of Object.entries(GPT_IMAGE2_SIZE_TABLE)) {
-      if (Object.values(byRatio).includes(size)) return tier;
-    }
-  }
+  if (size) return image2TierFromSize(size) || "1k";
   return "1k";
+}
+
+function image2TierFromSize(size) {
+  const s = String(size || "").trim();
+  if (!s) return "";
+  for (const [tier, byRatio] of Object.entries(GPT_IMAGE2_SIZE_TABLE)) {
+    if (Object.values(byRatio).includes(s)) return tier;
+  }
+  return "";
 }
 
 function image2RatioFromSize(size) {
@@ -486,21 +508,82 @@ function image2RatioFromSize(size) {
   return "";
 }
 
+function image2RatioSupported(ratio, tier = "") {
+  const r = String(ratio || "").trim();
+  if (!r) return false;
+  if (tier && GPT_IMAGE2_SIZE_TABLE[tier]) return !!GPT_IMAGE2_SIZE_TABLE[tier][r];
+  return Object.values(GPT_IMAGE2_SIZE_TABLE).some(byRatio => !!byRatio[r]);
+}
+
+function image2Gcd(a, b) {
+  a = Math.abs(Math.trunc(a));
+  b = Math.abs(Math.trunc(b));
+  while (b) {
+    const t = b;
+    b = a % b;
+    a = t;
+  }
+  return a || 1;
+}
+
+function normalizeImage2RatioValue(raw) {
+  let s = String(raw || "").trim().toLowerCase().replace(/：/g, ":").replace(/\s+/g, "");
+  if (!s) return "";
+  const aliases = {
+    square: "1:1",
+    landscape: "16:9",
+    horizontal: "16:9",
+    wide: "16:9",
+    portrait: "9:16",
+    vertical: "9:16"
+  };
+  if (aliases[s]) return aliases[s];
+  if (image2RatioSupported(s)) return s;
+  const m = s.match(/^(\d+)(?:[:/x])(\d+)$/);
+  if (m) {
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      const g = image2Gcd(w, h);
+      const reduced = `${Math.trunc(w / g)}:${Math.trunc(h / g)}`;
+      return image2RatioSupported(reduced) ? reduced : s;
+    }
+  }
+  return s;
+}
+
+function image2ExplicitRatio(p) {
+  if (!p) return "";
+  for (const key of ["aspect_ratio", "ratio", "size_ratio", "aspectRatio"]) {
+    const explicit = normalizeImage2RatioValue(p[key]);
+    if (image2RatioSupported(explicit)) return explicit;
+  }
+  return "";
+}
+
 function normalizeImage2Ratio(p) {
-  return String((p && (p.ratio || p.aspect_ratio || p.size_ratio || p.aspectRatio)) || "").trim() || image2RatioFromSize(p && p.size) || "1:1";
+  const explicit = image2ExplicitRatio(p);
+  if (image2RatioSupported(explicit)) return explicit;
+  return image2RatioFromSize(p && p.size) || GPT_IMAGE2_DEFAULT_RATIO;
 }
 
 function normalizeImage2Size(p, resolution = "") {
   const explicit = String((p && p.size) || "").trim();
   const tier = resolution || normalizeImage2Resolution(p);
-  if (explicit) {
-    const publicModel = String((p && (p.gpt_image2_model || p.model)) || "").trim().toLowerCase();
-    const byRatioForTier = GPT_IMAGE2_SIZE_TABLE[tier] || {};
-    if (!GPT_IMAGE2_PUBLIC_MODELS[publicModel] || Object.values(byRatioForTier).includes(explicit)) return explicit;
-  }
   const ratio = normalizeImage2Ratio(p);
   const byRatio = GPT_IMAGE2_SIZE_TABLE[tier] || GPT_IMAGE2_SIZE_TABLE["1k"];
-  return byRatio[ratio] || byRatio["1:1"] || "1024x1024";
+  const computed = byRatio[ratio] || byRatio[GPT_IMAGE2_DEFAULT_RATIO] || "1024x1024";
+  if (explicit) {
+    const publicModel = String((p && (p.gpt_image2_model || p.model)) || "").trim().toLowerCase();
+    const explicitTier = image2TierFromSize(explicit);
+    const explicitRatio = image2RatioFromSize(explicit);
+    const ratioHint = image2ExplicitRatio(p);
+    const explicitMatchesTier = Object.values(byRatio).includes(explicit);
+    if (explicitTier && explicitTier !== tier) return computed;
+    if (ratioHint && explicitRatio && explicitRatio !== ratio) return computed;
+    if (!GPT_IMAGE2_PUBLIC_MODELS[publicModel] || explicitMatchesTier) return explicit;
+  }
+  return computed;
 }
 
 function parseSize(size) {
@@ -519,6 +602,7 @@ function isImage2Payload(p) {
 function normalizeImage2Payload(p) {
   const out = { ...(p || {}) };
   const resolution = normalizeImage2Resolution(out);
+  const aspectRatio = normalizeImage2Ratio(out);
   const size = normalizeImage2Size(out, resolution);
   let publicModel = String(out.gpt_image2_model || out.model || "").trim().toLowerCase();
   if (!GPT_IMAGE2_PUBLIC_MODELS[publicModel]) publicModel = `gpt-image2-${resolution}`;
@@ -528,6 +612,7 @@ function normalizeImage2Payload(p) {
   out.image_model_name = "gpt-image-2";
   out.resolution = resolution;
   out.size_tier = resolution.toUpperCase();
+  out.aspect_ratio = aspectRatio;
   out.size = size;
   return out;
 }
@@ -539,10 +624,427 @@ function normalizeWebModel(p, kind) {
   return p.model || p.model_code || (kind === "image" ? "gpt-5-5-thinking" : "gpt-5-5-thinking");
 }
 
+function mainModelForImage2(p) {
+  const explicit = p && (p.main_model || p.codex_model || p.responses_model);
+  return String(explicit || "gpt-5.5").trim();
+}
+
+function image2Quality(p) {
+  switch (String((p && p.quality) || "").trim().toLowerCase()) {
+    case "draft":
+    case "low":
+      return "low";
+    case "standard":
+    case "medium":
+      return "medium";
+    case "hd":
+    case "high":
+      return "high";
+    default:
+      return "";
+  }
+}
+
+function copyIfPresent(dst, src, key) {
+  if (!src || src[key] === undefined || src[key] === null || src[key] === "") return;
+  dst[key] = src[key];
+}
+
+function codexInputImageItem(ref) {
+  if (!ref) return null;
+  if (typeof ref === "object") {
+    const fileId = String(ref.file_id || ref.fileId || ref.id || "").trim();
+    if (fileId) return { type: "input_image", file_id: fileId };
+    const u = String(ref.url || ref.image_url || ref.src || "").trim();
+    if (u) return { type: "input_image", image_url: u };
+    return null;
+  }
+  const u = String(ref || "").trim();
+  return u ? { type: "input_image", image_url: u } : null;
+}
+
+function codexImageMaskValue(mask) {
+  if (!mask) return null;
+  if (typeof mask === "object") {
+    const fileId = String(mask.file_id || mask.fileId || mask.id || "").trim();
+    if (fileId) return { file_id: fileId };
+    const u = String(mask.url || mask.image_url || mask.src || "").trim();
+    if (u) return { image_url: u };
+    return null;
+  }
+  const u = String(mask || "").trim();
+  return u ? { image_url: u } : null;
+}
+
+function codexImage2RequestBody(p, size, refs, maskRef = null) {
+  const content = [{ type: "input_text", text: String(p.prompt || "") }];
+  for (const ref of refs || []) {
+    const item = codexInputImageItem(ref);
+    if (item) content.push(item);
+  }
+  const action = (refs && refs.length) || String(p.operation || "").toLowerCase() === "edit" || String(p.mode || "").toLowerCase() === "i2i" ? "edit" : "generate";
+  const tool = {
+    type: "image_generation",
+    action,
+    model: "gpt-image-2",
+    size
+  };
+  const defaultOutputFormat = preferredImage2OutputFormat(p);
+  if (defaultOutputFormat) {
+    tool.output_format = defaultOutputFormat;
+    if (p.output_compression == null && p.compression == null) tool.output_compression = 85;
+  }
+  const quality = image2Quality(p);
+  if (quality) tool.quality = quality;
+  for (const key of ["background", "output_format", "output_compression", "partial_images", "moderation", "input_fidelity"]) copyIfPresent(tool, p, key);
+  const mask = codexImageMaskValue(maskRef || p.mask || p.mask_image_url);
+  if (mask) tool.input_image_mask = mask;
+  return {
+    instructions: "You are an image generation assistant. Follow the user's prompt and return the generated image.",
+    stream: true,
+    reasoning: { effort: "medium", summary: "auto" },
+    parallel_tool_calls: true,
+    include: ["reasoning.encrypted_content"],
+    model: mainModelForImage2(p),
+    store: false,
+    tool_choice: "auto",
+    input: [{ type: "message", role: "user", content }],
+    tools: [tool]
+  };
+}
+
+function codexHeaders(token, path = "/backend-api/codex/responses") {
+  const h = gptHeaders(token, path, "text/event-stream");
+  h["Originator"] = "codex-tui";
+  h["Connection"] = "Keep-Alive";
+  return h;
+}
+
+function shouldRetryCodexWithoutToolChoice(text) {
+  const s = String(text || "").toLowerCase();
+  return s.includes("tool choice") && s.includes("image_generation") && s.includes("not found") && s.includes("tools");
+}
+
+async function runImage2CodexOnce(tabId, token, p, size, refs, runtime, index, count, maskRef = null) {
+  const path = "/backend-api/codex/responses";
+  let body = codexImage2RequestBody(p, size, refs, maskRef);
+  let retriedWithoutToolChoice = false;
+  for (;;) {
+    await runtime.progress(10 + Math.floor((index / Math.max(1, count)) * 70), {
+      stage: "codex_responses",
+      index: index + 1,
+      count,
+      size,
+      main_model: body.model,
+      ref_count: refs.length,
+      has_tool_choice: !!body.tool_choice
+    });
+    const r = await pageFetch(tabId, CHATGPT + path, {
+      method: "POST",
+      headers: codexHeaders(token, path),
+      body
+    });
+    if (!r || r.status >= 400) {
+      const text = (r && r.text) || "";
+      throwIfTooManyRequests(r && (r.json || r.text), "gpt-image-2 codex");
+      if (!retriedWithoutToolChoice && shouldRetryCodexWithoutToolChoice(text)) {
+        body = { ...body };
+        delete body.tool_choice;
+        retriedWithoutToolChoice = true;
+        continue;
+      }
+      throw new Error(`gpt-image-2 codex responses HTTP ${r && r.status}: ${String(text).slice(0, 800)}`);
+    }
+    throwIfTooManyRequests(r.json || r.text, "gpt-image-2 codex");
+    const urls = [];
+    const fallbackOutputFormat = preferredImage2OutputFormat(p, image2TierFromSize(size) || "");
+    for (const obj of parseSseJsonObjects(r.text)) collectGeneratedPayload(obj, urls, fallbackOutputFormat);
+    if (!urls.length) {
+      // 兜底用正则提取，兼容不同 SSE event 包装。
+      const got = extractAssets(r.text);
+      urls.push(...(got.urls || []));
+    }
+    return { urls: uniq(urls), raw_text_tail: String(r.text || "").slice(-2000) };
+  }
+}
+
+async function runImage2CodexWorkflow(tabId, token, payload, runtime) {
+  const p = normalizeImage2Payload(payload);
+  const resolution = normalizeImage2Resolution(p);
+  const aspectRatio = normalizeImage2Ratio(p);
+  const size = normalizeImage2Size(p, resolution);
+  const dims = parseSize(size);
+  const refUrls = collectRefUrls(p);
+  // 2K/4K Codex responses 分支对齐 gpt2api-main 的 generateImage2():
+  // 参考图不走 ChatGPT Web 文件上传；直接作为 input_image.image_url 传给
+  // /backend-api/codex/responses。调用方应尽量提供上游可访问的 https URL
+  //（data:image/...;base64,... 也会被原样透传）。
+  const refs = refUrls.map(u => String(u || "").trim()).filter(Boolean);
+  const maskUrl = p.mask || p.mask_image_url;
+  const maskRef = maskUrl ? String(maskUrl || "").trim() : null;
+  const count = Math.max(1, Math.min(Number(p.count || p.n || 1) || 1, 4));
+  const allUrls = [];
+  let rawTextTail = "";
+  await runtime.progress(5, { stage: "codex_start", resolution, aspect_ratio: aspectRatio, size, count, ref_count: refs.length });
+  for (let i = 0; i < count && allUrls.length < count; i++) {
+    const out = await runImage2CodexOnce(tabId, token, p, size, refs, runtime, i, count, maskRef);
+    rawTextTail = out.raw_text_tail || rawTextTail;
+    allUrls.push(...(out.urls || []));
+  }
+  let outUrls = uniq(allUrls).slice(0, count);
+  if (!outUrls.length) throw new Error(`gpt-image-2 ${resolution} codex returned no images; tail=${rawTextTail.slice(-500)}`);
+  let ossUploads = [];
+  if ((p.oss_upload || p.extension_oss_upload) && outUrls.some(u => /^data:image\//i.test(String(u || "")))) {
+    await runtime.progress(93, {
+      stage: "codex_asset_ready",
+      route: "codex",
+      resolution,
+      aspect_ratio: aspectRatio,
+      size,
+      asset_count: outUrls.length,
+      data_url_count: outUrls.filter(u => /^data:image\//i.test(String(u || ""))).length
+    });
+    const uploadResult = await uploadDataUrlListToAliyunOss(outUrls, p.oss_upload || p.extension_oss_upload, {
+      runtime,
+      stage: "oss_upload",
+      progress: 94,
+      objectKeyPrefix: (p.oss_upload && p.oss_upload.object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
+      taskId: p._bridge_task_id || p.task_id || "",
+      resolution
+    });
+    outUrls = uploadResult.values || outUrls;
+    ossUploads = uploadResult.uploads || [];
+  }
+  await runtime.progress(100, { stage: "done", route: "codex", resolution, aspect_ratio: aspectRatio, size, asset_count: outUrls.length, oss_uploads: ossUploads.length });
+  const ossMimeByUrl = new Map((ossUploads || []).map(u => [u.url, u.content_type || u.contentType || ""]));
+  const assets = outUrls.map((url) => ({
+    url,
+    width: dims.width,
+    height: dims.height,
+    mime: ossMimeByUrl.get(url) || (/^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png"))
+  }));
+  return {
+    type: "gpt_workflow_image",
+    workflow_kind: "image",
+    provider_route: "codex",
+    model: p.gpt_image2_model,
+    model_code: "gpt-image-2",
+    resolution,
+    aspect_ratio: aspectRatio,
+    size,
+    width: dims.width,
+    height: dims.height,
+    urls: outUrls,
+    result_urls: outUrls,
+    assets,
+    oss_uploads: ossUploads,
+    data: assets.map(a => ({ url: a.url, width: a.width, height: a.height, mime: a.mime })),
+    share_url: outUrls[0] || "",
+    image_url: outUrls[0] || "",
+    raw_text_tail: rawTextTail
+  };
+}
+
+async function pageDownloadAssetAsDataUrl(tabId, url) {
+  if (/^data:(image|video)\//i.test(String(url || ""))) return String(url || "");
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [String(url || "")],
+    func: async (assetUrl) => {
+      const resp = await fetch(assetUrl, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store"
+      });
+      if (!resp.ok) {
+        let text = "";
+        try { text = await resp.text(); } catch (_) {}
+        throw new Error(`asset download HTTP ${resp.status}: ${String(text).slice(0, 240)}`);
+      }
+      let blob = await resp.blob();
+      let mime = blob.type || resp.headers.get("content-type") || "";
+      if (!/^(image|video)\//i.test(mime)) mime = "image/png";
+      if (blob.type !== mime) blob = new Blob([blob], { type: mime });
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
+        reader.readAsDataURL(blob);
+      });
+      return {
+        dataUrl,
+        mime,
+        size: blob.size || 0,
+        finalUrl: resp.url || assetUrl
+      };
+    }
+  });
+  const res = Array.isArray(frames) && frames[0] ? frames[0].result : null;
+  if (!res || !res.dataUrl) throw new Error(`asset download returned empty data URL: ${String(url || "").slice(0, 160)}`);
+  return res.dataUrl;
+}
+
+async function pageDownloadAssetDirectlyToOss(tabId, url, putTarget) {
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [String(url || ""), putTarget],
+    func: async (assetUrl, target) => {
+      const assetResp = await fetch(assetUrl, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store"
+      });
+      if (!assetResp.ok) {
+        let text = "";
+        try { text = await assetResp.text(); } catch (_) {}
+        throw new Error(`asset download HTTP ${assetResp.status}: ${String(text).slice(0, 240)}`);
+      }
+      let blob = await assetResp.blob();
+      const actualMime = blob.type || assetResp.headers.get("content-type") || "";
+      const signedMime = String((target && target.content_type) || "").trim();
+      if (signedMime && blob.type !== signedMime) blob = new Blob([blob], { type: signedMime });
+      const putResp = await fetch(target.upload_url, {
+        method: "PUT",
+        headers: target.headers || {},
+        body: blob
+      });
+      if (!putResp.ok) {
+        let text = "";
+        try { text = await putResp.text(); } catch (_) {}
+        throw new Error(`OSS upload HTTP ${putResp.status}: ${String(text).slice(0, 500)}`);
+      }
+      return {
+        ok: true,
+        url: target.url,
+        upload_url: target.upload_url,
+        object_key: target.object_key,
+        content_type: signedMime || blob.type || actualMime || "application/octet-stream",
+        actual_mime: actualMime,
+        size: blob.size || 0,
+        source_final_url: assetResp.url || assetUrl,
+        bucket: target.bucket,
+        region: target.region
+      };
+    }
+  });
+  const res = Array.isArray(frames) && frames[0] ? frames[0].result : null;
+  if (!res || !res.url) throw new Error(`direct OSS upload returned empty result: ${String(url || "").slice(0, 160)}`);
+  return res;
+}
+
+function shouldProxyAssetThroughPage(url) {
+  const s = String(url || "");
+  if (/^data:(image|video)\//i.test(s)) return true;
+  try {
+    const u = new URL(s);
+    return (
+      (u.hostname === "chatgpt.com" || u.hostname === "chat.openai.com") &&
+      (
+        u.pathname.includes("/backend-api/estuary/content") ||
+        u.pathname.includes("/backend-api/files/") ||
+        u.pathname.includes("/backend-api/conversation/")
+      )
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+async function uploadPageAccessibleAssetsToOss(tabId, urls, payload, runtime, options = {}) {
+  const cfg = payload && (payload.oss_upload || payload.extension_oss_upload);
+  const input = Array.isArray(urls) ? urls : [];
+  if (!cfg || !input.length) return { values: input.slice(), uploads: [], skipped: true };
+  const out = input.slice();
+  const uploads = [];
+  const dataUrls = [];
+  const mapIndex = [];
+  const proxiedTotal = input.filter(x => shouldProxyAssetThroughPage(String(x || ""))).length;
+  for (let i = 0; i < input.length; i++) {
+    const url = String(input[i] || "");
+    if (!shouldProxyAssetThroughPage(url)) continue;
+    if (runtime && typeof runtime.progress === "function") {
+      try {
+        await runtime.progress(options.downloadProgress || 90, {
+          stage: options.downloadStage || "page_asset_download",
+          index: dataUrls.length + 1,
+          total: proxiedTotal,
+          source_url: url.slice(0, 160)
+        });
+      } catch (_) {}
+    }
+    if (options.directOssUpload !== false) {
+      try {
+        const contentType = String(options.contentType || "image/png");
+        const target = await createAliyunOssPutTarget(cfg, {
+          ...options,
+          index: uploads.length + dataUrls.length + 1,
+          contentType,
+          extension: imageFormatForMime(contentType) || "png"
+        });
+        const uploaded = await pageDownloadAssetDirectlyToOss(tabId, url, target);
+        out[i] = uploaded.url;
+        uploads.push(uploaded);
+        if (runtime && typeof runtime.progress === "function") {
+          try {
+            await runtime.progress(options.directDoneProgress || options.downloadDoneProgress || 91, {
+              stage: options.directDoneStage || "page_asset_direct_oss_done",
+              index: uploads.length,
+              total: proxiedTotal,
+              size: uploaded.size || 0,
+              url: uploaded.url
+            });
+          } catch (_) {}
+        }
+        continue;
+      } catch (e) {
+        if (runtime && typeof runtime.progress === "function") {
+          try {
+            await runtime.progress(options.fallbackProgress || options.downloadProgress || 90, {
+              stage: "page_asset_direct_oss_fallback",
+              index: uploads.length + dataUrls.length + 1,
+              total: proxiedTotal,
+              error: String((e && e.message) || e || "").slice(0, 240)
+            });
+          } catch (_) {}
+        }
+      }
+    }
+    const dataUrl = await pageDownloadAssetAsDataUrl(tabId, url);
+    dataUrls.push(dataUrl);
+    mapIndex.push(i);
+    if (runtime && typeof runtime.progress === "function") {
+      try {
+        await runtime.progress(options.downloadDoneProgress || 91, {
+          stage: options.downloadDoneStage || "page_asset_download_done",
+          index: dataUrls.length,
+          total: proxiedTotal,
+          data_url_length: dataUrl.length
+        });
+      } catch (_) {}
+    }
+  }
+  if (!dataUrls.length) return { values: out, uploads, skipped: !uploads.length };
+  const uploadResult = await uploadDataUrlListToAliyunOss(dataUrls, cfg, {
+    runtime,
+    stage: options.stage || "oss_upload",
+    progress: options.progress || 92,
+    objectKeyPrefix: (payload.oss_upload && payload.oss_upload.object_key_prefix) || options.objectKeyPrefix || "gpt_workflow/image",
+    taskId: payload._bridge_task_id || payload.task_id || "",
+    resolution: options.resolution || ""
+  });
+  if (uploadResult && uploadResult.skipped) return { values: out, uploads, skipped: !uploads.length };
+  const values = uploadResult.values || dataUrls;
+  for (let i = 0; i < mapIndex.length; i++) out[mapIndex[i]] = values[i] || out[mapIndex[i]];
+  uploads.push(...(uploadResult.uploads || []));
+  return { values: out, uploads, skipped: false };
+}
+
 function appendRatioHint(prompt, p) {
-  const ratio = p.ratio || p.aspect_ratio || p.size_ratio || "";
+  const ratio = normalizeImage2Ratio(p);
   let out = prompt;
-  if (ratio && ratio !== "1:1") out = `${out}\n\n将宽高比设为 ${ratio}`;
+  if (ratio && ratio !== GPT_IMAGE2_DEFAULT_RATIO) out = `${out}\n\n将宽高比设为 ${ratio}`;
   if (isImage2Payload(p)) {
     const resolution = normalizeImage2Resolution(p).toUpperCase();
     const size = normalizeImage2Size(p, resolution.toLowerCase());
@@ -578,6 +1080,7 @@ async function startConversation(tabId, token, reqs, conduit, payload, kind, ref
   const headers = withRequirementHeaders(gptHeaders(token, path, "text/event-stream"), reqs, conduit);
   const r = await pageFetch(tabId, CHATGPT + path, { method: "POST", headers, body });
   if (!r || r.status >= 400) throw new Error(`conversation failed HTTP ${r && r.status}: ${(r && r.text || "").slice(0, 600)}`);
+  throwIfTooManyRequests(r.json || r.text, `GPT ${kind}`);
   const got = extractAssets(r.text);
   return { ...got, raw_text_tail: String(r.text || "").slice(-2000) };
 }
@@ -586,22 +1089,44 @@ async function startConversation(tabId, token, reqs, conduit, payload, kind, ref
 async function runImage2Workflow(tabId, token, payload, runtime) {
   const p = normalizeImage2Payload(payload);
   const resolution = normalizeImage2Resolution(p);
+  const aspectRatio = normalizeImage2Ratio(p);
   const size = normalizeImage2Size(p, resolution);
   const dims = parseSize(size);
-  // 注意：fpbrowser2api 使用的是 ChatGPT Web 页面里 /api/auth/session 取得的
-  // ChatGPT access_token，不是 Codex OAuth token。gpt2api-main 的稳定 Web 通道
-  // 对应 generateImage2Web：chat-requirements -> 上传参考图 -> conversation/prepare
-  // -> /backend-api/f/conversation SSE -> poll/resolve 附件，而不是
-  // /backend-api/codex/responses。后者会用当前 token 返回 401 Unauthorized。
+  // 1K 继续沿用已验证的 ChatGPT Web 对话流；2K/4K 走 Codex responses 分支，
+  // 对齐 gpt2api-main: /backend-api/codex/responses + image_generation tool。
+  if (resolution === "2k" || resolution === "4k") {
+    return await runImage2CodexWorkflow(tabId, token, p, runtime);
+  }
   const out = await runConversationWorkflow(tabId, token, p, "image", runtime);
-  const outUrls = uniq(out.urls || []);
+  let outUrls = uniq(out.urls || []);
   if (!outUrls.length) throw new Error(`gpt-image-2 ${resolution} returned no images`);
+  let ossUploads = [];
+  if (p.oss_upload || p.extension_oss_upload) {
+    const uploadResult = await uploadPageAccessibleAssetsToOss(tabId, outUrls, p, runtime, {
+      downloadStage: "page_asset_download",
+      downloadProgress: 90,
+      downloadDoneStage: "page_asset_download_done",
+      downloadDoneProgress: 91,
+      directOssUpload: true,
+      directDoneStage: "page_asset_direct_oss_done",
+      directDoneProgress: 92,
+      stage: "oss_upload",
+      progress: 93,
+      contentType: mimeForImageFormat(preferredImage2OutputFormat(p, resolution) || p.output_format || "png"),
+      objectKeyPrefix: ((p.oss_upload || p.extension_oss_upload) && (p.oss_upload || p.extension_oss_upload).object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
+      resolution
+    });
+    outUrls = uploadResult.values || outUrls;
+    ossUploads = uploadResult.uploads || [];
+  }
+  const ossMimeByUrl = new Map((ossUploads || []).map(u => [u.url, u.content_type || u.contentType || ""]));
   const assets = outUrls.map((url) => ({
     url,
     width: dims.width,
     height: dims.height,
-    mime: /^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png")
+    mime: ossMimeByUrl.get(url) || (/^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png"))
   }));
+  await runtime.progress(100, { stage: "done", route: "conversation", resolution, aspect_ratio: aspectRatio, size, asset_count: outUrls.length, oss_uploads: ossUploads.length });
   return {
     ...out,
     type: "gpt_workflow_image",
@@ -609,12 +1134,14 @@ async function runImage2Workflow(tabId, token, payload, runtime) {
     model: p.gpt_image2_model,
     model_code: "gpt-image-2",
     resolution,
+    aspect_ratio: aspectRatio,
     size,
     width: dims.width,
     height: dims.height,
     urls: outUrls,
     result_urls: outUrls,
     assets,
+    oss_uploads: ossUploads,
     data: assets.map(a => ({ url: a.url, width: a.width, height: a.height, mime: a.mime })),
     share_url: outUrls[0] || "",
     image_url: outUrls[0] || "",
@@ -647,6 +1174,21 @@ function mimeForImageFormat(format) {
   }
 }
 
+function imageFormatForMime(mime) {
+  const m = String(mime || "").toLowerCase();
+  if (m.includes("jpeg") || m.includes("jpg")) return "jpeg";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("png")) return "png";
+  return "";
+}
+
+function preferredImage2OutputFormat(p, resolution = "") {
+  const explicit = String((p && (p.output_format || p.format || p.response_format)) || "").trim().toLowerCase();
+  if (explicit) return explicit;
+  const tier = resolution || normalizeImage2Resolution(p);
+  return tier === "2k" || tier === "4k" ? "jpeg" : "";
+}
+
 function addGeneratedURL(out, raw, outputFormat = "") {
   const u = String(raw || "").trim().replace(/\\\//g, "/").replace(/\\u0026/g, "&");
   if (!u) return;
@@ -665,21 +1207,21 @@ function addGeneratedURL(out, raw, outputFormat = "") {
   }
 }
 
-function collectGeneratedPayload(v, out) {
+function collectGeneratedPayload(v, out, fallbackOutputFormat = "") {
   if (!v) return;
   if (Array.isArray(v)) {
-    for (const item of v) collectGeneratedPayload(item, out);
+    for (const item of v) collectGeneratedPayload(item, out, fallbackOutputFormat);
     return;
   }
   if (typeof v !== "object") return;
-  const outputFormat = v.output_format || v.format || "";
+  const outputFormat = v.output_format || v.format || fallbackOutputFormat || "";
   addGeneratedURL(out, v.url, outputFormat);
   addGeneratedURL(out, v.download_url, outputFormat);
   addGeneratedURL(out, v.result, outputFormat);
   addGeneratedURL(out, v.b64_json, outputFormat);
   addGeneratedURL(out, v.image_b64, outputFormat);
   addGeneratedURL(out, v.partial_image_b64, outputFormat);
-  for (const value of Object.values(v)) collectGeneratedPayload(value, out);
+  for (const value of Object.values(v)) collectGeneratedPayload(value, out, outputFormat);
 }
 
 function parseSseJsonObjects(text) {
@@ -726,6 +1268,43 @@ function extractAssets(text) {
   }
   for (const obj of parseSseJsonObjects(s)) collectGeneratedPayload(obj, urls);
   return { conversation_id, file_ids, sediment_ids, urls };
+}
+
+function detectTooManyRequests(raw) {
+  const text = typeof raw === "string" ? raw : (() => { try { return JSON.stringify(raw || ""); } catch (_) { return String(raw || ""); } })();
+  const check = (obj) => {
+    if (!obj || typeof obj !== "object") return "";
+    const detail = obj.detail || (obj.error && obj.error.detail) || (obj.error && obj.error.message) || obj.message || "";
+    return /too many requests/i.test(String(detail || "")) ? String(detail || "Too many requests") : "";
+  };
+  const direct = check(raw);
+  if (direct) return direct;
+  for (const obj of parseSseJsonObjects(text)) {
+    const msg = check(obj);
+    if (msg) return msg;
+  }
+  return /"detail"\s*:\s*"Too many requests"/i.test(text) || /Too many requests/i.test(text) ? "Too many requests" : "";
+}
+
+function throwIfTooManyRequests(raw, where = "GPT") {
+  const msg = detectTooManyRequests(raw);
+  if (msg) throw new Error(`${where}: ${msg}`);
+}
+
+function validateConversationMappingResponse(raw, where = "GPT conversation") {
+  throwIfTooManyRequests(raw, where);
+  const j = raw && typeof raw === "object" ? raw : null;
+  const mapping = j && j.mapping && typeof j.mapping === "object" && !Array.isArray(j.mapping) ? j.mapping : null;
+  if (!mapping) throw new Error(`${where}: invalid response missing mapping`);
+  for (const node of Object.values(mapping)) {
+    const msg = node && node.message;
+    if (!msg || typeof msg !== "object") continue;
+    if (msg.end_turn !== true) continue;
+    if (String(msg.author && msg.author.role || msg.role || "").toLowerCase() !== "assistant") continue;
+    const parts = msg.content && Array.isArray(msg.content.parts) ? msg.content.parts : [];
+    const text = parts.filter(x => typeof x === "string" && x.trim()).join("\n").trim();
+    if (text) throw new Error(`${where}: ${text.slice(0, 1000)}`);
+  }
 }
 
 function filterGenerated(ids, refs) {
@@ -800,6 +1379,7 @@ async function pollConversation(tabId, token, cid, refs, maxWaitMs, intervalMs, 
     const path = `/backend-api/conversation/${encodeURIComponent(cid)}`;
     const r = await pageFetch(tabId, CHATGPT + path, { headers: gptHeaders(token, path) });
     if (r && r.status < 400) {
+      validateConversationMappingResponse(r.json, `GPT ${kind}`);
       const got = extractAssets(r.text);
       last.file_ids = uniq([...(last.file_ids || []), ...(got.file_ids || [])]);
       last.sediment_ids = uniq([...(last.sediment_ids || []), ...(got.sediment_ids || [])]);
@@ -881,7 +1461,7 @@ async function runConversationWorkflow(tabId, token, payload, kind, runtime) {
   const file_ids = uniq(allFileIds);
   const sediment_ids = uniq(allSedIds);
   if (!urls.length) throw new Error(`GPT ${kind} returned no asset urls; conversation_id=${cids[0] || ""} file_ids=${file_ids.length} sediment_ids=${sediment_ids.length}`);
-  await runtime.progress(100, { stage: "done", asset_count: urls.length, file_ids: file_ids.length, sediment_ids: sediment_ids.length });
+  await runtime.progress(88, { stage: "done", asset_count: urls.length, file_ids: file_ids.length, sediment_ids: sediment_ids.length });
   return {
     type: kind === "video" ? "gpt_workflow_video" : "gpt_workflow_image",
     workflow_kind: kind,
@@ -902,6 +1482,90 @@ function isImageQuotaFeature(name) {
   return ["image_gen", "image_generation", "image_edit", "img_gen"].includes(n) || n.includes("image_gen") || n.includes("img_gen");
 }
 
+function parseResetAfter(raw) {
+  if (raw == null || raw === "") return 0;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const n = raw > 10000000000 ? raw / 1000 : raw;
+    return Math.floor(n);
+  }
+  const s = String(raw || "").trim();
+  if (!s) return 0;
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.floor(n > 10000000000 ? n / 1000 : n);
+  }
+  const ms = Date.parse(s);
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.floor(ms / 1000);
+}
+
+function formatLocalDateTime(rawTs) {
+  const ts = parseResetAfter(rawTs);
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatBeijingDateTime(raw) {
+  const ts = parseResetAfter(raw);
+  if (!ts) return "";
+  // active_until 返回 UTC/Z 时间；会员到期时间固定按北京时间（UTC+8）展示/入库。
+  const d = new Date((ts + 8 * 3600) * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
+function accountIdFromInit(data) {
+  const d = data && typeof data === "object" ? data : {};
+  const account = d.account && typeof d.account === "object" ? d.account : null;
+  const direct = d.account_id || d.accountId || d.current_account_id || d.currentAccountId || (account && (account.id || account.account_id || account.accountId));
+  if (direct) return String(direct).trim();
+  const accounts = Array.isArray(d.accounts) ? d.accounts : [];
+  for (const item of accounts) {
+    if (item && typeof item === "object" && (item.id || item.account_id || item.accountId)) {
+      return String(item.id || item.account_id || item.accountId).trim();
+    }
+  }
+  return "";
+}
+
+async function fetchSubscriptionInfo(tabId, token, initData) {
+  const accountId = accountIdFromInit(initData);
+  if (!accountId) return { account_id: null, subscription_end: null, subscription_error: "account_id_missing" };
+  const path = `/backend-api/subscriptions?account_id=${encodeURIComponent(accountId)}`;
+  const r = await pageFetch(tabId, CHATGPT + path, {
+    method: "GET",
+    headers: token
+      ? gptHeaders(token, path)
+      : { "Accept": "application/json", "Content-Type": "application/json", "OAI-Language": "en-US" }
+  });
+  if (!r || r.status >= 400) {
+    return {
+      account_id: accountId,
+      subscription_end: null,
+      subscription_error: `subscriptions HTTP ${r && r.status}: ${(r && r.text || "").slice(0, 300)}`
+    };
+  }
+  const sub = r.json && typeof r.json === "object" ? r.json : {};
+  const activeUntil = sub.active_until || sub.activeUntil || sub.current_period_end || sub.expires_at || null;
+  const activeStart = sub.active_start || sub.activeStart || null;
+  const subscriptionEnd = formatBeijingDateTime(activeUntil);
+  return {
+    account_id: accountId,
+    subscription_end: subscriptionEnd || null,
+    active_until: activeUntil,
+    active_start: activeStart,
+    plan_type: sub.plan_type || sub.planType || null,
+    membership: sub.plan_type || sub.planType || null,
+    billing_period: sub.billing_period || sub.billingPeriod || null,
+    will_renew: sub.will_renew,
+    is_delinquent: sub.is_delinquent,
+    subscription_raw: sub
+  };
+}
+
 function normalizeBalance(data) {
   const d = data && typeof data === "object" ? data : {};
   let remaining = -1, total = -1, resetAt = 0;
@@ -916,14 +1580,15 @@ function normalizeBalance(data) {
       if (used != null) total = (Number(item.remaining) || 0) + (Number(used) || 0);
     }
     if (item.reset_after) {
-      const ts = Math.floor(Date.parse(item.reset_after) / 1000);
+      const ts = parseResetAfter(item.reset_after);
       if (Number.isFinite(ts) && ts > 0 && (!resetAt || ts < resetAt)) resetAt = ts;
     }
   }
   if (remaining < 0) remaining = Number(d.image_quota_remaining ?? d.remaining ?? d.remaining_quota ?? d.credits ?? 0) || 0;
   if (total < 0) total = Number(d.image_quota_total ?? d.quota_total ?? d.total ?? d.limit ?? 0) || 0;
-  const plan = d.plan_type || d.account_plan || d.subscription || d.account_plan_type || null;
-  return { remaining: Math.max(0, remaining), image_quota_remaining: Math.max(0, remaining), image_quota_total: Math.max(0, total), image_quota_reset_at: resetAt, membership: plan, plan_type: plan, default_model_slug: d.default_model_slug || null, blocked_features: Array.isArray(d.blocked_features) ? d.blocked_features : [], raw: d };
+  if (!resetAt) resetAt = parseResetAfter(d.image_quota_reset_at ?? d.reset_at ?? d.reset_after);
+  const cooldownUntil = formatLocalDateTime(resetAt);
+  return { remaining: Math.max(0, remaining), image_quota_remaining: Math.max(0, remaining), image_quota_total: Math.max(0, total), image_quota_reset_at: resetAt, cooldown_until: cooldownUntil || null, default_model_slug: d.default_model_slug || null, blocked_features: Array.isArray(d.blocked_features) ? d.blocked_features : [], raw: d };
 }
 
 function jwtPayload(token) {
@@ -972,27 +1637,47 @@ async function refreshBalanceTask(tabId, token, runtime) {
     }
   });
   if (!r || r.status >= 400) throw new Error(`GPT balance conversation/init HTTP ${r && r.status}: ${(r && r.text || "").slice(0, 500)}`);
-  const info = normalizeBalance(r.json || {});
-  const jwtPlan = planFromToken(token);
-  if (!info.membership && jwtPlan) {
-    info.membership = jwtPlan;
-    info.plan_type = jwtPlan;
-  }
-  await runtime.progress(100, { stage: "done", remaining: info.remaining, total: info.image_quota_total });
+  const initData = r.json || {};
+  const info = normalizeBalance(initData);
+  await runtime.progress(100, { stage: "done", remaining: info.remaining, total: info.image_quota_total, cooldown_until: info.cooldown_until || null });
   return { type: "gpt_balance", ...info, source: "conversation_init" };
 }
-async function membershipTask(tabId, token, runtime) {
-  const info = await refreshBalanceTask(tabId, token, runtime);
-  const membership = String(info.membership || info.plan_type || planFromToken(token) || "").trim();
+
+async function membershipTask(tabId, token, runtime, target = CHATGPT) {
+  await runtime.progress(10, { stage: "auth_session" });
+  let auth = {};
+  let authRaw = {};
+  let useToken = token;
+  let authError = null;
+  try {
+    auth = await getAuthSession(tabId, target);
+    authRaw = auth.raw || {};
+    if (auth.access_token) useToken = auth.access_token;
+  } catch (e) {
+    authError = String(e && e.message || e || "auth_session_failed");
+  }
+
+  const account = authRaw && typeof authRaw === "object" && authRaw.account && typeof authRaw.account === "object" ? authRaw.account : null;
+  const accountPlan = account && (account.planType || account.plan_type);
+  await runtime.progress(45, { stage: "subscriptions", account_id: accountIdFromInit(authRaw) || null });
+  const sub = await fetchSubscriptionInfo(tabId, useToken, authRaw);
+  const membership = String(sub.membership || sub.plan_type || accountPlan || planFromToken(useToken) || "").trim();
+  await runtime.progress(100, { stage: "done", account_id: sub.account_id || accountIdFromInit(authRaw) || null, subscription_end: sub.subscription_end || null, membership: membership || null });
   return {
     type: "gpt_membership",
     membership: membership || null,
     plan_type: membership || null,
     plan_title: membership || null,
-    subscription_end: null,
-    default_model_slug: info.default_model_slug || null,
-    blocked_features: info.blocked_features || [],
-    raw: info.raw || null
+    subscription_end: sub.subscription_end || null,
+    active_until: sub.active_until || null,
+    active_start: sub.active_start || null,
+    account_id: sub.account_id || accountIdFromInit(authRaw) || null,
+    billing_period: sub.billing_period || null,
+    will_renew: sub.will_renew,
+    is_delinquent: sub.is_delinquent,
+    access_token: auth.access_token || null,
+    expires: auth.expires || null,
+    raw: { auth_session: authRaw || null, subscription: sub.subscription_raw || null, subscription_error: sub.subscription_error || null, auth_error: authError }
   };
 }
 
@@ -1024,14 +1709,19 @@ export async function runGptTask(msg, runtime) {
     return await getAccessToken(tabId, target);
   }
 
+  if (action === "refresh_membership" || action === "membership_refresh" || action === "get_membership" || action === "membership" || action === "subscription_info") {
+    let token = p.access_token || "";
+    if (!token) {
+      try { token = (await getAccessToken(tabId, target)).access_token || ""; } catch (_) {}
+    }
+    return await membershipTask(tabId, token, runtime, target);
+  }
+
   const token = p.access_token || (await getAccessToken(tabId, target)).access_token;
   if (!token) throw new Error("GPT access_token missing");
 
   if (action === "refresh_balance" || action === "balance_refresh" || action === "get_balance" || action === "balance") {
     return await refreshBalanceTask(tabId, token, runtime);
-  }
-  if (action === "refresh_membership" || action === "membership_refresh" || action === "get_membership" || action === "membership" || action === "subscription_info") {
-    return await membershipTask(tabId, token, runtime);
   }
   if (action === "query_progress" || action === "poll_task" || action === "get_task") {
     return await queryProgressTask(tabId, token, p, runtime);

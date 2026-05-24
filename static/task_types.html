@@ -351,7 +351,7 @@
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
                       <th>备注</th>
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
-                      <th>AccessToken / 过期</th>
+                      <th class="sort-head" id="thAccessTokenExpires" title="点击按 access_token 过期时间排序">AccessToken / 过期 <span class="text-muted" id="accessTokenSortHint">↕</span></th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th class="sort-head col-drafts" id="thDrafts" title="点击按草稿数排序">草稿数 <span class="text-muted" id="draftsSortHint">↕</span></th>
                       <th class="sort-head" id="thSpaceName" title="点击按空间名称排序">空间名称 <span class="text-muted" id="spaceNameSortHint">↕</span></th>
@@ -587,6 +587,27 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
             <button type="button" class="btn btn-primary" id="btnRollbackMapping">确认回退</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Data Transfer Modal -->
+    <div class="modal fade" id="dataTransferModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="dataTransferTitle">传输数据到插件面板</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="dataTransferMappingId" />
+            <div class="small text-muted mb-2" id="dataTransferHint">请输入任意要传输到插件数据面板的信息。</div>
+            <textarea class="form-control mono" id="dataTransferText" rows="10" placeholder="每行会在插件面板中单独显示和复制；如果包含 http/https 链接，插件面板中可点击打开。"></textarea>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" id="btnSendDataTransfer">传输</button>
           </div>
         </div>
       </div>
@@ -830,6 +851,7 @@
       const mappingEditModal = new bootstrap.Modal("#mappingEditModal");
       const mappingTransferModal = new bootstrap.Modal("#mappingTransferModal");
       const mappingRollbackModal = new bootstrap.Modal("#mappingRollbackModal");
+      const dataTransferModal = new bootstrap.Modal("#dataTransferModal");
       const aiOperationModal = new bootstrap.Modal("#aiOperationModal");
       const errorModal = new bootstrap.Modal("#errorModal");
       const autoRefreshErrorModal = new bootstrap.Modal("#autoRefreshErrorModal");
@@ -846,6 +868,7 @@
       let currentAiMappingId = 0;
       let currentAiActiveBtn = null;
       let lastAiOperationPayload = null;
+      let currentDataTransferBtn = null;
 
       let state = {
         types: [],
@@ -2680,6 +2703,20 @@
           });
           return items;
         }
+        if (key === "sora_access_expires") {
+          items.sort((a, b) => {
+            const av = parseTimeMs(a?.sora_access_expires);
+            const bv = parseTimeMs(b?.sora_access_expires);
+            const aMissing = av == null;
+            const bMissing = bv == null;
+            if (aMissing !== bMissing) return aMissing ? 1 : -1;
+            const a1 = aMissing ? 0 : av;
+            const b1 = bMissing ? 0 : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         if (key === "window_status") {
           items.sort((a, b) => {
             const av = Number(a?.window_status || 0);
@@ -2751,6 +2788,7 @@
         mk(document.getElementById("proxySortHint"), ui.mappingSortKey === "proxy");
         mk(document.getElementById("spaceNameSortHint"), ui.mappingSortKey === "space_name");
         mk(document.getElementById("spaceSortHint"), ui.mappingSortKey === "subscription_end");
+        mk(document.getElementById("accessTokenSortHint"), ui.mappingSortKey === "sora_access_expires");
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
         mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
         mk(document.getElementById("enabledSortHint"), ui.mappingSortKey === "enabled");
@@ -2955,13 +2993,13 @@
                 <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
-                  <button class="btn btn-primary btn-sm btn-icon" title="AI操作：携带该窗口的平台账号、密码、2FA 和网址，让智能体通过 Playwright 自动操作" aria-label="AI操作" data-act="aiOperation" data-mid="${m.id}">AI<span class="visually-hidden">AI操作</span></button>
 
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
                   <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地与服务器缓存，并清空本行已保存的 access_token、额度与会员信息（Roxy：clear_local_cache + clear_server_cache）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
                   ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="${escapeHtml(_openAccountTitle)}" aria-label="${escapeHtml(_openAccountLabel)}" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">${escapeHtml(_openAccountLabel)}</span></button>` : ""}
+                  <button class="btn btn-outline-primary btn-sm btn-icon" title="输入任意信息并发送到插件数据面板" aria-label="传输数据" data-act="transferData" data-mid="${m.id}"><i class="bi bi-send" aria-hidden="true"></i><span class="visually-hidden">传输</span></button>
                 </div>
               </div>
             </td>
@@ -3125,7 +3163,9 @@
               </div>
             </td>
             <td>
-              ${canEditMapping ? `<button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>` : `<span class="text-muted">-</span>`}
+              <div class="d-flex flex-wrap gap-1 justify-content-end">
+                ${canEditMapping ? `<button class="btn btn-outline-secondary btn-sm" data-act="edit" data-mid="${m.id}">编辑</button>` : `<span class="text-muted">-</span>`}
+              </div>
             </td>
           </tr>
         `; }).join("");
@@ -3234,7 +3274,6 @@
         const selectedVal = el instanceof HTMLSelectElement ? String(el.value || "") : "";
         const proxyId = parseInt(String(selectedVal || el.dataset.current_proxy_id || "0"), 10) || 0;
         const spacePk = parseInt(String(el.dataset.space_pk || ""), 10) || 0;
-        if (!spacePk) return { ok: false, reason: "缺少 space_pk，无法检测代理" };
         if (proxyId <= 0) return { ok: false, reason: "当前未选择可检测的代理" };
         return { ok: true, el, spacePk, proxyId };
       }
@@ -3413,6 +3452,56 @@
         }
       }
 
+      function openDataTransferModal(mappingId, btn) {
+        const m = getMappingById(mappingId);
+        if (!m) return toast("未找到窗口绑定数据，请刷新列表后重试", "warning");
+        currentDataTransferBtn = btn || null;
+        const idEl = document.getElementById("dataTransferMappingId");
+        const textEl = document.getElementById("dataTransferText");
+        const titleEl = document.getElementById("dataTransferTitle");
+        const hintEl = document.getElementById("dataTransferHint");
+        if (idEl) idEl.value = String(mappingId);
+        if (textEl) textEl.value = "";
+        if (titleEl) titleEl.textContent = `传输数据 - #${m.window_sort_num ?? m.window_pk ?? mappingId} ${m.window_name || ""}`.trim();
+        if (hintEl) hintEl.textContent = "请输入任意要发送到该浏览器插件数据面板的信息。每行会单独显示和复制。";
+        dataTransferModal.show();
+        setTimeout(() => textEl?.focus(), 200);
+      }
+
+      async function submitDataTransfer() {
+        const mappingId = parseInt(String(document.getElementById("dataTransferMappingId")?.value || ""), 10);
+        if (!mappingId) return toast("缺少窗口绑定 ID", "warning");
+        const m = getMappingById(mappingId);
+        const textEl = document.getElementById("dataTransferText");
+        const text = String(textEl?.value || "").trim();
+        if (!text) {
+          toast("请先输入要传输的信息", "warning");
+          textEl?.focus();
+          return;
+        }
+        const btn = document.getElementById("btnSendDataTransfer");
+        try {
+          setBtnBusy(btn, true, { loadingText: "传输中", keepWidth: true });
+          if (currentDataTransferBtn) setBtnBusy(currentDataTransferBtn, true, { loadingText: "", keepWidth: false });
+          const lines = text.split(/\r?\n/);
+          const d = await postJson(`/api/admin/task-type-windows/${mappingId}/transfer-data`, {
+            method: "POST",
+            body: {
+              title: `#${m?.window_sort_num ?? m?.window_pk ?? mappingId} ${m?.window_name || ""}`.trim(),
+              text,
+              lines,
+            },
+          });
+          toast(`已发送到插件数据面板（${d?.line_count ?? lines.length} 行）`, "success");
+          dataTransferModal.hide();
+        } catch (e) {
+          toast(e.message || "发送到插件失败，请确认该窗口插件已连接", "error");
+        } finally {
+          setBtnBusy(btn, false);
+          if (currentDataTransferBtn) setBtnBusy(currentDataTransferBtn, false);
+        }
+      }
+
       async function openMappingEditor(mappingId, act, el) {
         if (!canEditTaskTypeConfig() && (act === "edit" || act === "del")) {
           toast("当前账号无权编辑绑定", "warning");
@@ -3426,6 +3515,9 @@
         }
         if (act === "aiOperation") {
           return openAiOperationModal(mappingId, el);
+        }
+        if (act === "transferData") {
+          return openDataTransferModal(mappingId, el);
         }
 
 
@@ -3601,7 +3693,7 @@
         const btn = fromEl;
         try {
           setBtnBusy(btn, true, { loadingText: "检测中" });
-          const r = await adminFetch(`/api/admin/spaces/${spacePk}/proxies/${proxyId}/analyze-ip`, {
+          const r = await adminFetch(`/api/admin/proxies/${proxyId}/analyze-ip`, {
             method: "POST",
             body: JSON.stringify({}),
           });
@@ -3611,17 +3703,23 @@
 
           const riskLevel = String(d.risk_level || "").trim();
           const asnType = String(d.asn_type || "").trim();
-          const arr = normalizeProxies(proxiesCache.get(spacePk) || []);
-          const it = arr.find(x => String(x.proxy_id) === String(proxyId));
-          if (it) {
-            it.risk_level = riskLevel;
-            it.asn_type = asnType;
-            if (Object.prototype.hasOwnProperty.call(d, "check_status")) {
-              it.check_status = d.check_status;
+          const actualSpacePk = parseInt(String(d.space_pk || "0"), 10) || 0;
+          const cacheKeys = new Set([spacePk, actualSpacePk].filter(x => parseInt(String(x || "0"), 10) > 0));
+          cacheKeys.forEach(k => {
+            const key = parseInt(String(k), 10) || 0;
+            if (!key || !proxiesCache.has(key)) return;
+            const arr = normalizeProxies(proxiesCache.get(key) || []);
+            const it = arr.find(x => String(x.proxy_id) === String(proxyId));
+            if (it) {
+              it.risk_level = riskLevel;
+              it.asn_type = asnType;
+              if (Object.prototype.hasOwnProperty.call(d, "check_status")) {
+                it.check_status = d.check_status;
+              }
             }
-          }
-          proxiesCache.set(spacePk, arr);
-          fillProxyControlsCached(spacePk);
+            proxiesCache.set(key, arr);
+            fillProxyControlsCached(key);
+          });
           toast(`检测完成：安全级别=${riskLevel || "-"}，IP类型=${asnType || "-"}`, "success");
         } catch (e) {
           toast(e.message || "检测失败", "error");
@@ -4205,7 +4303,7 @@
           return;
         }
         try {
-          setBtnBusy(btn, true, { loadingText: "⏳" });
+          setBtnBusy(btn, true, { loadingText: "", keepWidth:false });
           const hl = getMappingHeadless(mappingId);
           const d = await postJson(`/api/admin/task-type-windows/${mappingId}/convert-access-token?headless=${hl}`, {
             method: "POST",
@@ -4359,7 +4457,7 @@
           if (closeBtn) closeBtn.disabled = true;
           if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
-          await clearMappingBrowserLocalCache(mappingId);
+          // await clearMappingBrowserLocalCache(mappingId);
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
@@ -4855,6 +4953,7 @@
       document.getElementById("btnDeleteMapping")?.addEventListener("click", deleteMappingFromModal);
       document.getElementById("btnTransferMapping")?.addEventListener("click", transferMappingToOtherType);
       document.getElementById("btnRollbackMapping")?.addEventListener("click", rollbackMappingToOtherType);
+      document.getElementById("btnSendDataTransfer")?.addEventListener("click", submitDataTransfer);
       document.getElementById("mapTransferTypeId")?.addEventListener("change", (e) => {
         const id = parseInt(String(e.target?.value || ""), 10);
         if (!Number.isNaN(id) && id > 0) lsSet(LS_KEYS.transferTargetTypeId, String(id));
@@ -5722,6 +5821,7 @@
       document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));
       document.getElementById("thSpaceName")?.addEventListener("click", () => toggleSort("space_name", "asc"));
       document.getElementById("thSpace")?.addEventListener("click", () => toggleSort("subscription_end", "asc"));
+      document.getElementById("thAccessTokenExpires")?.addEventListener("click", () => toggleSort("sora_access_expires", "asc"));
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));
       document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));
       document.getElementById("thEnabled")?.addEventListener("click", () => toggleSort("enabled", "desc"));

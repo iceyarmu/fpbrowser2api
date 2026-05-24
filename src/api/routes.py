@@ -91,6 +91,8 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "seedance-2-fast",
     "nana-banana-2",
     "nana-banana-pro",
+    "nana-banana-2-4k",
+    "nana-banana-pro-4k",
     "veo-3-1",
     "veo-omni-flash",
     "gpt-image2-1k",
@@ -120,6 +122,16 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         task_type_code = "veo_workflow"
         payload["n_frames"] = 1
         payload["image_model_name"] = "GEM_PIX_2"
+    elif model in {"nana-banana-2-4k"}:
+        task_type_code = "veo_workflow"
+        payload["n_frames"] = 1
+        payload["image_model_name"] = "NARWHAL"
+        payload["resolution"] = "4k"
+    elif model in {"nana-banana-pro-4k"}:
+        task_type_code = "veo_workflow"
+        payload["n_frames"] = 1
+        payload["image_model_name"] = "GEM_PIX_2"
+        payload["resolution"] = "4k"
     elif model in {"veo-3-1"}:
         task_type_code = "veo_workflow"
         duration = payload.get("duration")

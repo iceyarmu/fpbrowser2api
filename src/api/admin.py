@@ -7,6 +7,7 @@ import ipaddress
 import os
 import re
 import secrets
+import uuid
 import shlex
 import subprocess
 from datetime import datetime
@@ -696,6 +697,13 @@ class AIBrowserAgentRunRequest(BaseModel):
     pure_mode: Optional[bool] = None
     auto_submit: bool = False
     max_steps: int = Field(default=14, ge=1, le=30)
+
+
+class TransferDataToExtensionRequest(BaseModel):
+    text: Optional[str] = Field(default=None, max_length=50000)
+    lines: List[str] = Field(default_factory=list)
+    title: Optional[str] = Field(default=None, max_length=200)
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 # -------------------- auth helper --------------------
@@ -1626,20 +1634,39 @@ async def update_local_proxy_remark(
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     affected = await db.update_proxy_remark(space_pk=int(space_pk), proxy_id=int(proxy_id), remark=str(req.remark or "").strip())
+    # 全局代理列表里代理按 proxy_id 去重展示；如果前端/历史数据携带的 space_pk
+    # 与真实本地记录不一致，按 proxy_id 兜底，避免误报 proxy not found。
+    if affected <= 0:
+        proxy = await db.get_proxy_by_proxy_id(proxy_id=int(proxy_id), include_deleted=True)
+        if proxy:
+            affected = await db.update_proxy_remark(
+                space_pk=int(proxy.space_pk),
+                proxy_id=int(proxy_id),
+                remark=str(req.remark or "").strip(),
+            )
     if affected <= 0:
         raise HTTPException(status_code=404, detail="proxy not found")
     return {"success": True, "message": "代理备注已更新", "affected": affected}
 
 
-@router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/analyze-ip")
-async def analyze_local_proxy_ip(space_pk: int, proxy_id: int, token: str = Depends(verify_admin_token)):
-    """检测代理 IP 风险并回写到本地 proxies 表。"""
+async def _analyze_proxy_ip_by_proxy_id(proxy_id: int, requested_space_pk: Optional[int] = None) -> Dict[str, Any]:
+    """按 proxy_id 纯全局检测代理 IP 风险并回写本地 proxies 表。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
 
-    proxy = await db.get_proxy(space_pk=int(space_pk), proxy_id=int(proxy_id))
+    pid = int(proxy_id)
+    if pid <= 0:
+        raise HTTPException(status_code=400, detail="invalid proxy_id")
+
+    # 代理库在业务上按 proxy_id 全局共用；检测只需要代理自身 IP，
+    # 不应再携带/依赖 space_pk，否则全局代理列表和任务类型页会误报 not found。
+    proxy = await db.get_proxy_by_proxy_id(proxy_id=pid, include_deleted=False)
+    if not proxy:
+        # 如果只剩本地已删除记录，也允许检测本地 IP 画像（该操作不调用指纹浏览器）。
+        proxy = await db.get_proxy_by_proxy_id(proxy_id=pid, include_deleted=True)
     if not proxy:
         raise HTTPException(status_code=404, detail="proxy not found")
+    actual_space_pk = int(proxy.space_pk)
 
     def _pick_ip(*candidates: Optional[str]) -> Optional[str]:
         for c in candidates:
@@ -1719,22 +1746,42 @@ async def analyze_local_proxy_ip(space_pk: int, proxy_id: int, token: str = Depe
     risk_level = str(data.get("riskLevel") or "").strip() or None
     asn_type = str(data.get("asnType") or "").strip() or None
 
-    await db.update_proxy_ip_profile(
-        space_pk=int(space_pk),
-        proxy_id=int(proxy_id),
+    affected = await db.update_proxy_ip_profile_by_proxy_id(
+        proxy_id=pid,
         risk_level=risk_level,
         asn_type=asn_type,
+        include_deleted=True,
     )
+    if affected <= 0:
+        await db.update_proxy_ip_profile(
+            space_pk=actual_space_pk,
+            proxy_id=pid,
+            risk_level=risk_level,
+            asn_type=asn_type,
+        )
 
     return {
         "success": True,
-        "space_pk": int(space_pk),
-        "proxy_id": int(proxy_id),
+        "space_pk": actual_space_pk,
+        "requested_space_pk": requested_space_pk,
+        "proxy_id": pid,
         "ip": ip,
         "risk_level": risk_level,
         "asn_type": asn_type,
         "data": data,
     }
+
+
+@router.post("/api/admin/proxies/{proxy_id}/analyze-ip")
+async def analyze_proxy_ip_global(proxy_id: int, token: str = Depends(verify_admin_token)):
+    """检测代理 IP 风险并回写到本地 proxies 表（纯 proxy_id，全局代理库）。"""
+    return await _analyze_proxy_ip_by_proxy_id(proxy_id=int(proxy_id), requested_space_pk=None)
+
+
+@router.post("/api/admin/spaces/{space_pk}/proxies/{proxy_id}/analyze-ip")
+async def analyze_local_proxy_ip(space_pk: int, proxy_id: int, token: str = Depends(verify_admin_token)):
+    """兼容旧前端路径；实际检测已改为纯 proxy_id，不再依赖 space_pk。"""
+    return await _analyze_proxy_ip_by_proxy_id(proxy_id=int(proxy_id), requested_space_pk=int(space_pk))
 
 
 @router.post("/api/admin/spaces/{space_pk}/sync-proxies")
@@ -4170,9 +4217,12 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
         plan_title = str((info or {}).get("plan_title") or (info or {}).get("membership") or "").strip() or "ChatGPT（Web 账号）"
+        subscription_end = str((info or {}).get("subscription_end") or "").strip() or None
         new_access_token = str((info or {}).get("access_token") or "").strip()
         new_expires = str((info or {}).get("expires") or "").strip() or None
         update_kwargs: Dict[str, Any] = {"mapping_id": mapping_id, "sora_plan_title": plan_title}
+        if subscription_end:
+            update_kwargs["sora_subscription_end"] = subscription_end
         if new_access_token:
             update_kwargs["sora_access_token"] = new_access_token
             update_kwargs["sora_access_expires"] = new_expires
@@ -4181,7 +4231,7 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             "success": True,
             "mapping_id": mapping_id,
             "plan_title": plan_title,
-            "subscription_end": None,
+            "subscription_end": subscription_end,
             "source": (info or {}).get("source") or "extension.membership",
             "raw": (info or {}).get("raw"),
         }
@@ -4455,11 +4505,32 @@ async def convert_sora_session_token_to_access_token(
         target_url = default_target_url or "https://dreamina.capcut.com/ai-tool/video/generate"
 
         try:
-            from ..services.jimeng_task_executor import get_or_create_dreamina_session, dreamina_fetch_sessionid_in_window  # type: ignore
+            from ..services.jimeng_task_executor import get_or_create_dreamina_session  # type: ignore
+            from ..services.browser_extension_interaction import ensure_extension_connected_via_window, submit_extension_task  # type: ignore
 
             dreamina_ctx = get_or_create_dreamina_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
             dreamina_ctx.browser_headless = headless
-            info = await dreamina_fetch_sessionid_in_window(sess=dreamina_ctx, target_url=target_url)
+            client = await ensure_extension_connected_via_window(
+                sess=dreamina_ctx,
+                target_url=target_url,
+                space_id=space_id,
+                window_key=window_key,
+                wait_seconds=10.0,
+                log_file=getattr(dreamina_ctx, "_log_file", None),
+                auto_triger_connection=True,
+            )
+            if client is None:
+                raise RuntimeError(f"浏览器插件未连接：window_key={window_key!r}")
+            async def _noop_progress(_progress: int, _data: Dict[str, Any]) -> None:
+                return None
+            info = await submit_extension_task(
+                space_id=space_id,
+                window_key=window_key,
+                provider="dreamina",
+                payload={"action": "fetch_sessionid", "target_page": target_url, "workflow_kind": "fetch_sessionid"},
+                progress_cb=_noop_progress,
+                timeout_seconds=60.0,
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"自动获取失败：{e}")
 
@@ -4469,10 +4540,6 @@ async def convert_sora_session_token_to_access_token(
             raise HTTPException(status_code=400, detail="自动获取失败：Cookies 中缺少 sessionid")
 
         await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
-        try:
-            await dreamina_ctx.disconnect_playwright_under_bring_lock()
-        except Exception:
-            pass
         return {
             "success": True,
             "mapping_id": mapping_id,
@@ -4588,8 +4655,14 @@ async def manual_open_mapping_window(
         veo_ctx.browser_headless = headless
         veo_ctx.browser_pure_mode = effective_pure
         veo_ctx.idle_close_disabled = True
+        
+        veo_ctx.idle_close_disabled = True
         try:
             veo_ctx._cancel_idle_close()
+        except Exception:
+            pass
+        try:
+            await veo_ctx.close_and_drop()
         except Exception:
             pass
         try:
@@ -4647,6 +4720,10 @@ async def manual_open_mapping_window(
         except Exception:
             pass
         try:
+            await sora_ctx.close_and_drop()
+        except Exception:
+            pass
+        try:
             await sora_ctx.pw_ctx.open_fingerprint_window_only(
                 args=[] if browser_only else sora_ctx.browser_open_args,
                 force_open=sora_ctx.browser_force_open,
@@ -4664,6 +4741,78 @@ async def manual_open_mapping_window(
                 pass
 
     return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": True, "target_url": target_url, "page_url": final_url}
+
+
+def _build_transfer_lines_from_mapping(ctx_row: Dict[str, Any], req: TransferDataToExtensionRequest) -> List[str]:
+    if req.lines:
+        return [str(x or "") for x in req.lines]
+    if req.text:
+        return [str(x) for x in str(req.text or "").splitlines()]
+
+    # 通用传输：不固定卡号/姓名等字段。前端传什么就原样按 key: value 展示。
+    data = dict(req.data or {}) or dict(ctx_row or {})
+    skip = {"raw", "raw_json"}
+    lines: List[str] = []
+    for key in sorted(data.keys()):
+        if str(key) in skip:
+            continue
+        value = data.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, (dict, list, tuple, set)):
+            continue
+        lines.append(f"{key}: {value}")
+    if lines:
+        return lines
+    return []
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/transfer-data")
+async def transfer_mapping_data_to_extension(
+    mapping_id: int,
+    req: TransferDataToExtensionRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """把管理页数据通过已连接的浏览器插件 WebSocket 发到 popup 数据面板。"""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    ctx_row = await db.get_task_type_window_context(mapping_id)
+    if not ctx_row:
+        raise HTTPException(status_code=404, detail="mapping not found")
+    space_id = str(ctx_row.get("space_id") or "").strip()
+    window_key = str(ctx_row.get("window_key") or "").strip()
+    if not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="mapping missing space_id/window_key")
+
+    from ..services.browser_extension_bridge import get_extension_client  # lazy import avoids cycles
+
+    client = await get_extension_client(space_id, window_key)
+    if client is None:
+        raise HTTPException(status_code=404, detail="插件未连接：请先打开/唤起该指纹浏览器窗口并确认插件已注册")
+
+    lines = _build_transfer_lines_from_mapping(ctx_row, req)
+    title = str(req.title or f"窗口 #{ctx_row.get('window_pk') or mapping_id} 数据").strip()
+    request_id = str(uuid.uuid4())
+    payload = {
+        "type": "data.transfer",
+        "request_id": request_id,
+        "payload": {
+            "title": title,
+            "source": "task_types",
+            "mapping_id": mapping_id,
+            "space_id": space_id,
+            "window_key": window_key,
+            "text": "\n".join(lines),
+            "lines": lines,
+            "data": dict(req.data or {}),
+        },
+    }
+    try:
+        async with client.send_lock:
+            await client.websocket.send_json(payload)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"发送到插件失败：{e}")
+    return {"success": True, "mapping_id": mapping_id, "sent": True, "line_count": len(lines), "request_id": request_id}
 
 
 @router.post("/api/admin/task-type-windows/{mapping_id}/manual-close")

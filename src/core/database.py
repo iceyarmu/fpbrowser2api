@@ -3073,12 +3073,23 @@ class Database:
             return result
 
     async def list_all_proxies(self, *, include_deleted: bool = False) -> List[ProxyInfo]:
-        """返回所有空间的代理列表（按 proxy_id 去重，保留最近更新的记录）。"""
+        """返回所有空间的代理列表（按 proxy_id 去重）。
+
+        全局代理面板会传 include_deleted=1 用于展示“已删除”记录；同一个 proxy_id
+        存在多条历史记录时，必须优先保留未删除记录，否则前端拿到已删除那条再点击
+        “检测”会被后端的 deleted=0 条件误判为 proxy not found。
+        """
         async with self._read_conn() as db:
             db.row_factory = aiosqlite.Row
             where = "" if include_deleted else "WHERE deleted = 0"
             cur = await db.execute(
-                f"SELECT * FROM proxies {where} ORDER BY updated_at DESC, id DESC"
+                f"""
+                SELECT * FROM proxies {where}
+                ORDER BY
+                  CASE WHEN deleted = 0 THEN 0 ELSE 1 END ASC,
+                  updated_at DESC,
+                  id DESC
+                """
             )
             rows = await cur.fetchall()
             seen_proxy_ids: set = set()
@@ -3468,6 +3479,41 @@ class Database:
             d.pop("raw_json", None)
             return ProxyInfo(**d)
 
+    async def get_proxy_by_proxy_id(self, *, proxy_id: int, include_deleted: bool = False) -> Optional[ProxyInfo]:
+        """按 proxy_id 全局查找代理。
+
+        代理列表在 UI 中是“全局”去重展示，但一些旧接口路径仍带 space_pk。
+        因此在 space_pk+proxy_id 未命中时，用本方法兜底，避免全局面板误报
+        proxy not found。include_deleted=True 时仍优先返回未删除记录。
+        """
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            deleted_sql = "" if include_deleted else "AND deleted = 0"
+            cur = await db.execute(
+                f"""
+                SELECT * FROM proxies
+                WHERE proxy_id = ?
+                  {deleted_sql}
+                ORDER BY
+                  CASE WHEN deleted = 0 THEN 0 ELSE 1 END ASC,
+                  updated_at DESC,
+                  id DESC
+                LIMIT 1
+                """,
+                (int(proxy_id),),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("raw_json"):
+                try:
+                    d["raw"] = json.loads(d["raw_json"])
+                except Exception:
+                    d["raw"] = None
+            d.pop("raw_json", None)
+            return ProxyInfo(**d)
+
     async def update_proxy_ip_profile(
         self,
         *,
@@ -3489,6 +3535,39 @@ class Database:
                     str(risk_level).strip() if risk_level is not None else None,
                     str(asn_type).strip() if asn_type is not None else None,
                     int(space_pk),
+                    int(proxy_id),
+                ),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
+
+    async def update_proxy_ip_profile_by_proxy_id(
+        self,
+        *,
+        proxy_id: int,
+        risk_level: Optional[str],
+        asn_type: Optional[str],
+        include_deleted: bool = True,
+    ) -> int:
+        """按 proxy_id 全局回写 IP 画像结果。
+
+        同一 proxy_id 可能因为历史同步残留在多个 space_pk 下；IP 风险结果与空间无关，
+        全局更新可以保证“代理列表（全局）”和各处下拉缓存保持一致。
+        """
+        async with self._write_conn() as db:
+            deleted_sql = "" if include_deleted else "AND deleted = 0"
+            cur = await db.execute(
+                f"""
+                UPDATE proxies
+                SET risk_level = ?,
+                    asn_type = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE proxy_id = ?
+                  {deleted_sql}
+                """,
+                (
+                    str(risk_level).strip() if risk_level is not None else None,
+                    str(asn_type).strip() if asn_type is not None else None,
                     int(proxy_id),
                 ),
             )
@@ -3952,17 +4031,33 @@ class Database:
             rows = await cur.fetchall()
             return [TaskType(**dict(r)) for r in rows]
 
-    async def get_window_pool_maintainer_intervals_seconds(self) -> tuple[int, int]:
-        """所有「已启用且开启窗口池」的任务类型上，取两个周期的最小值作为全局 maintainer 间隔。"""
+    async def get_window_pool_maintainer_intervals_seconds(
+        self,
+        *,
+        create_task_handler: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """取「已启用且开启窗口池」任务类型上的最小 maintainer 间隔。
+
+        Args:
+            create_task_handler: 为空时保持原来的全局行为；传入例如 ``veo_workflow`` 时，
+                只统计该执行器对应任务类型，避免 VEO 保活被其它任务类型的更短周期影响。
+        """
+        handler = str(create_task_handler or "").strip()
+        where = "deleted = 0 AND enabled = 1 AND window_pool_enabled != 0"
+        params: List[Any] = []
+        if handler:
+            where += " AND create_task_handler = ?"
+            params.append(handler)
         async with self._read_conn() as db:
             cur = await db.execute(
-                """
+                f"""
                 SELECT
                   MIN(window_pool_reconcile_interval_sec),
                   MIN(window_pool_cloudflare_interval_sec)
                 FROM task_types
-                WHERE deleted = 0 AND enabled = 1 AND window_pool_enabled != 0
-                """
+                WHERE {where}
+                """,
+                params,
             )
             row = await cur.fetchone()
         if not row:
@@ -3987,6 +4082,110 @@ class Database:
             return max(30, min(86400, v))
 
         return _clamp_rec(row[0]), _clamp_cf(row[1])
+
+    async def dreamina_refresh_seconds_until_next_due(
+        self,
+        *,
+        min_remaining_quota: int,
+        default_scan_interval: float = 300.0,
+    ) -> float:
+        """Dreamina 余额刷新：距离下一条 cooldown_until 即将到期还需等待的秒数。
+
+        只查询 dreamina_workflow 的窗口池映射；刷新器会在 cooldown_until 前 1 分钟被唤醒。
+        """
+        threshold = int(min_remaining_quota)
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT CAST((julianday(MIN(m.cooldown_until)) - julianday(datetime('now','localtime', '+1 minute'))) * 86400.0 AS REAL) AS wait_seconds
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                JOIN windows w ON w.id = m.window_pk
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND COALESCE(t.window_pool_enabled, 0) != 0
+                  AND t.create_task_handler = 'dreamina_workflow'
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND b.deleted = 0
+                  AND TRIM(COALESCE(m.sora_access_token, '')) <> ''
+                  AND COALESCE(m.remaining_quota, 0) >= ?
+                  AND m.cooldown_until IS NOT NULL
+                  AND m.cooldown_until > datetime('now','localtime', '+1 minute')
+                """,
+                (threshold,),
+            )
+            row = await cur.fetchone()
+        if not row or row["wait_seconds"] is None:
+            return float(default_scan_interval)
+        try:
+            return max(1.0, float(row["wait_seconds"]))
+        except Exception:
+            return float(default_scan_interval)
+
+    async def dreamina_refresh_list_candidates(
+        self,
+        *,
+        due_only: bool,
+        min_remaining_quota: int,
+    ) -> List[Dict[str, Any]]:
+        """Dreamina 余额刷新：列出需要/可被刷新器扫描的窗口池候选。
+
+        SQL 留在 Database 内，调用方只负责业务调度与刷新动作。
+        """
+        threshold = int(min_remaining_quota)
+        due_clause = "AND m.cooldown_until <= datetime('now','localtime', '+1 minute')" if due_only else ""
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"""
+                SELECT
+                  m.id AS mapping_id,
+                  m.window_pk,
+                  m.remaining_quota,
+                  m.sora_remaining_count,
+                  m.sora_access_token,
+                  m.sora_access_expires,
+                  m.cooldown_until,
+                  m.headless,
+                  m.pure_mode,
+                  t.code AS task_code,
+                  t.concurrency AS task_concurrency,
+                  t.continuous_error_threshold,
+                  t.continuous_error_close_window_threshold,
+                  t.timeout_seconds,
+                  t.create_task_handler,
+                  t.error_retry_count,
+                  t.default_target_url,
+                  w.window_key,
+                  w.proxy_addr AS window_ip,
+                  s.space_id,
+                  b.vendor AS browser_vendor,
+                  b.lan_addr AS browser_base_url,
+                  b.access_key AS browser_access_key
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                JOIN windows w ON w.id = m.window_pk
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND COALESCE(t.window_pool_enabled, 0) != 0
+                  AND t.create_task_handler = 'dreamina_workflow'
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND b.deleted = 0
+                  AND TRIM(COALESCE(m.sora_access_token, '')) <> ''
+                  AND COALESCE(m.remaining_quota, 0) >= ?
+                  AND m.cooldown_until IS NOT NULL
+                  {due_clause}
+                ORDER BY m.cooldown_until ASC, m.remaining_quota ASC, m.updated_at ASC
+                """,
+                (threshold,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
     async def list_task_types_public(self, allowed_task_type_ids: Optional[List[int]] = None) -> List[TaskTypePublic]:
         async with self._read_conn() as db:
@@ -5075,6 +5274,70 @@ class Database:
             )
             row = await cur.fetchone()
             return row is not None
+
+    async def _veo_keepalive_list_candidates(self) -> List[Dict[str, Any]]:
+        """列出 VEO 窗口池中需要由 VEO 保活调度器判断 access_expires 的候选窗口。
+
+        仅返回 window_pool_enabled=true、create_task_handler='veo_workflow'、
+        mapping/window 已启用、窗口已打开且当前没有 inflight 的记录。
+        """
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  m.id AS mapping_id,
+                  m.window_pk,
+                  m.remaining_quota,
+                  m.sora_remaining_count,
+                  m.sora_access_token,
+                  m.sora_access_expires,
+                  m.cooldown_until,
+                  m.error_cooldown_until,
+                  m.inflight_slots,
+                  m.headless,
+                  m.pure_mode,
+                  (
+                    SELECT v.project_id FROM veo_flow_projects v
+                    WHERE v.task_type_window_id = m.id AND v.deleted = 0
+                    ORDER BY v.updated_at DESC, v.id DESC
+                    LIMIT 1
+                  ) AS current_project_id,
+                  t.code AS task_code,
+                  t.concurrency AS task_concurrency,
+                  t.continuous_error_threshold,
+                  t.continuous_error_close_window_threshold,
+                  t.timeout_seconds,
+                  t.create_task_handler,
+                  t.error_retry_count,
+                  t.default_target_url,
+                  w.window_key,
+                  w.window_status,
+                  w.proxy_addr AS window_ip,
+                  s.space_id,
+                  b.vendor AS browser_vendor,
+                  b.lan_addr AS browser_base_url,
+                  b.access_key AS browser_access_key
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                JOIN windows w ON w.id = m.window_pk
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND COALESCE(t.window_pool_enabled, 0) != 0
+                  AND t.create_task_handler = 'veo_workflow'
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND COALESCE(w.window_status, 0) = 1
+                  AND b.deleted = 0
+                  AND TRIM(COALESCE(m.sora_access_token, '')) <> ''
+                  AND TRIM(COALESCE(m.sora_access_expires, '')) <> ''
+                  AND (m.consecutive_errors < t.continuous_error_threshold)
+                ORDER BY m.sora_access_expires ASC, m.updated_at ASC
+                """
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
     async def list_window_pool_target_mapping_ids(
         self,

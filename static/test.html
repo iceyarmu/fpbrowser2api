@@ -97,6 +97,17 @@
                   <option value="4k">4K</option>
                 </select>
               </div>
+              <div class="mb-3">
+                <label class="form-label">图片宽高比 aspect_ratio（可选）</label>
+                <select class="form-select" id="aspectRatio">
+                  <option value="1:1">1:1（默认）</option>
+                  <option value="16:9">16:9</option>
+                  <option value="9:16">9:16</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:4">3:4</option>
+                </select>
+                <div class="text-muted small">会传入 payload.aspect_ratio，并由 GPT image2 按分辨率档位选择实际 size。</div>
+              </div>
               <div class="mb-3 form-check">
                 <input class="form-check-input" type="checkbox" id="headlessMode" />
                 <label class="form-check-label" for="headlessMode">无头模式打开窗口</label>
@@ -158,6 +169,7 @@
         testDuration: `${LS_PREFIX}test.duration`,
         testVideoModel: `${LS_PREFIX}test.video_model`,
         testImageResolution: `${LS_PREFIX}test.image_resolution`,
+        testAspectRatio: `${LS_PREFIX}test.aspect_ratio`,
         testLastTaskId: `${LS_PREFIX}test.last_task_id`,
       };
       function mappingLsKey(taskTypeCode) {
@@ -345,6 +357,10 @@
           const imageResolution = (imageResRaw === "2k" || imageResRaw === "4k") ? imageResRaw : "1k";
           payload.resolution = imageResolution;
           payload.size_tier = imageResolution.toUpperCase();
+          const aspectRatioRaw = (document.getElementById("aspectRatio")?.value || "").trim().replace(/：/g, ":");
+          const allowedAspectRatios = new Set(["16:9", "9:16", "4:3", "3:4", "1:1"]);
+          const aspectRatio = allowedAspectRatios.has(aspectRatioRaw) ? aspectRatioRaw : "1:1";
+          payload.aspect_ratio = aspectRatio;
           if (type === "gpt_workflow" && duration === 1) {
             payload.workflow_kind = "image";
             payload.model = `gpt-image2-${imageResolution}`;
@@ -484,6 +500,20 @@
             const v = (e.target.value || "").trim().toLowerCase();
             if (v === "1k" || v === "2k" || v === "4k") lsSet(LS_KEYS.testImageResolution, v);
             else lsSet(LS_KEYS.testImageResolution, "1k");
+          });
+        }
+
+        // 图片宽高比回填与缓存（传入 payload.aspect_ratio）
+        const aspectRatioEl = document.getElementById("aspectRatio");
+        const normalizeAspectRatioForUi = (raw) => {
+          const v = String(raw || "").trim().replace(/：/g, ":");
+          return ["16:9", "9:16", "4:3", "3:4", "1:1"].includes(v) ? v : "1:1";
+        };
+        const savedAspectRatio = normalizeAspectRatioForUi(lsGet(LS_KEYS.testAspectRatio));
+        if (aspectRatioEl) aspectRatioEl.value = savedAspectRatio;
+        if (aspectRatioEl) {
+          aspectRatioEl.addEventListener("change", (e) => {
+            lsSet(LS_KEYS.testAspectRatio, normalizeAspectRatioForUi(e.target.value));
           });
         }
 

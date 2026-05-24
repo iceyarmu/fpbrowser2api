@@ -197,7 +197,7 @@ async function connectBridge(options = {}) {
       version: chrome.runtime.getManifest().version,
       space_id: cfg.spaceId,
       window_key: cfg.windowKey,
-      capabilities: ["veo", "veo_tokens", "dreamina", "gpt", "network_capture"]
+      capabilities: ["veo", "veo_tokens", "veo_human_activity", "dreamina", "gpt", "network_capture", "transfer_data"]
     }));
     startHeartbeat(socket, mySeq);
   };
@@ -227,6 +227,21 @@ async function connectBridge(options = {}) {
           error: { message: String(e && e.message || e), status_code: e.status_code || 502 }
         });
       });
+    } else if (msg.type === "data.transfer") {
+      const payload = msg.payload || {};
+      const text = String(payload.text || "");
+      const lines = Array.isArray(payload.lines) ? payload.lines.map(x => String(x ?? "")) : (text ? text.split(/\r?\n/) : []);
+      const data = {
+        title: String(payload.title || ""),
+        source: String(payload.source || "python"),
+        text: lines.join("\n"),
+        lines,
+        raw: payload,
+        received_at: new Date().toISOString()
+      };
+      await chrome.storage.local.set({ transfer_data: data, popup_active_tab: "transfer" });
+      await pushLog("info", "data transferred to popup", { lines: lines.length, title: data.title });
+      try { await send({ type: "data.transfer.ok", request_id: msg.request_id || "" }); } catch (_) {}
     } else if (msg.type === "ping") {
       await send({ type: "pong" });
     } else if (msg.type === "heartbeat.ok") {
@@ -317,12 +332,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (type === "popup.getState") {
       const cfg = await getConfig();
-      const got = await chrome.storage.local.get(["runtime_status", "debug_logs"]);
+      const got = await chrome.storage.local.get(["runtime_status", "debug_logs", "transfer_data", "popup_active_tab"]);
       sendResponse({
         ok: true,
         config: cfg,
         status: got.runtime_status || status,
-        logs: Array.isArray(got.debug_logs) ? got.debug_logs : []
+        logs: Array.isArray(got.debug_logs) ? got.debug_logs : [],
+        transferData: got.transfer_data || null,
+        activeTab: got.popup_active_tab || "debug"
       });
       return;
     }
@@ -343,6 +360,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (type === "popup.reconnect") {
       await pushLog("info", "manual reconnect");
       connectBridge({ force: true, reason: "popup.reconnect" }).catch(console.error);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (type === "popup.setActiveTab") {
+      const tab = String(message.tab || "") === "transfer" ? "transfer" : "debug";
+      await chrome.storage.local.set({ popup_active_tab: tab });
+      sendResponse({ ok: true });
+      return;
+    }
+    if (type === "popup.clearTransferData") {
+      await chrome.storage.local.remove(["transfer_data"]);
       sendResponse({ ok: true });
       return;
     }
@@ -368,6 +396,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     connectBridge({ force: true, reason: "storage.changed" }).catch(console.error);
   }
 });
+
+try {
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((e) => {
+      pushLog("warn", "side panel behavior setup failed", { error: String(e && e.message || e) }).catch(() => {});
+    });
+  }
+} catch (_) {}
 
 chrome.runtime.onInstalled.addListener(() => {
   ensurePersistentConnection("runtime.onInstalled").catch(console.error);

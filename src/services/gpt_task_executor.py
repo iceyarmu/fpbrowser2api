@@ -12,6 +12,7 @@ import asyncio
 import base64
 import gzip
 import json
+import os
 import socket
 import ssl
 from datetime import datetime, timedelta, timezone
@@ -27,9 +28,11 @@ from ..core.logger import logger
 from ..core.paths import MONITOR_LOG_FILE
 from .browser_extension_bridge import should_use_extension_executor
 from .browser_extension_interaction import ensure_extension_connected_via_window, submit_extension_task, wait_extension_client
+from .oss_uploader import oss_config_from_setting_section
 from .playwright_broswer_context import append_log, safe_trim
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 from .veo_workflow_executor import (
+    _veo_materialize_image_urls_for_extension,
     _veo_parse_proxy_url,
     _veo_resolve_system_proxy,
     _veo_resolve_window_proxy,
@@ -250,6 +253,49 @@ def _gpt_apply_image2_payload_defaults(payload: Dict[str, Any]) -> Dict[str, Any
     return p
 
 
+def _gpt_extension_oss_upload_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """为浏览器插件下发一次性 OSS 上传参数。
+
+    注意：这些参数只随当前 task.start WebSocket 消息下发，插件侧不会持久化。
+    gpt-image-2 的 1K/2K/4K 都启用：2K/4K 避免大 dataURL 通过 WebSocket 返回导致
+    ``extension client replaced`` / 连接断开；1K 的 ChatGPT estuary/content 链接离开
+    登录页面后无权限访问，也需要在插件页面内下载后上传 OSS。
+    """
+    p = payload or {}
+    if not _gpt_is_image2_payload(p):
+        return {}
+    resolution = _gpt_image2_resolution(p)
+    if resolution not in {"1k", "2k", "4k"}:
+        return {}
+    # 可通过 payload 关闭：gpt_image2_oss_upload=false / extension_oss_upload=false。
+    if not _bool(p.get("gpt_image2_oss_upload", p.get("extension_oss_upload", True)), True):
+        return {}
+
+    oss_cfg = oss_config_from_setting_section((app_config.get_raw_config() or {}).get("oss"))
+    if not oss_cfg.enabled:
+        return {}
+
+    ak = (oss_cfg.access_key_id or os.environ.get("OSS_ACCESS_KEY_ID") or "").strip()
+    sk = (oss_cfg.access_key_secret or os.environ.get("OSS_ACCESS_KEY_SECRET") or "").strip()
+    if not (oss_cfg.endpoint and oss_cfg.region and oss_cfg.bucket and ak and sk):
+        # 配置不完整时不下发，保持旧逻辑；真正上传错误由插件侧抛出小错误，不返回大图。
+        return {}
+
+    return {
+        "enabled": True,
+        "provider": "aliyun_oss",
+        "endpoint": oss_cfg.endpoint,
+        "region": oss_cfg.region,
+        "bucket": oss_cfg.bucket,
+        "public_base_url": oss_cfg.public_base_url,
+        "access_key_id": ak,
+        "access_key_secret": sk,
+        # 插件会在该前缀后追加时间戳、随机串和序号；不要把密钥写入插件 storage。
+        "object_key_prefix": f"gpt_workflow/image/gpt-image-2/{resolution}",
+        "required": True,
+    }
+
+
 def _gpt_collect_reference_urls(payload: Dict[str, Any]) -> List[str]:
     p = payload or {}
     out: List[str] = []
@@ -297,6 +343,117 @@ def _gpt_collect_reference_urls(payload: Dict[str, Any]) -> List[str]:
         if isinstance(raw, list):
             for item in raw:
                 add(item)
+    return out
+
+
+_GPT_REFERENCE_SINGLE_KEYS = (
+    "image",
+    "image_url",
+    "imageUrl",
+    "first_image_url",
+    "firstImageUrl",
+    "last_image_url",
+    "lastImageUrl",
+    "end_image_url",
+    "endImageUrl",
+    "mask_image_url",
+    "mask",
+    "reference_image",
+)
+
+_GPT_REFERENCE_LIST_KEYS = (
+    "images",
+    "image_urls",
+    "imageUrls",
+    "ref_assets",
+    "reference_images",
+    "reference_image_urls",
+    "reference_urls",
+    "input_images",
+    "Ingredients_images",
+    "ingredients_images",
+)
+
+
+def _gpt_rewrite_ref_value_for_extension(value: Any, url_map: Dict[str, str]) -> Any:
+    if isinstance(value, str):
+        raw = value.strip()
+        return url_map.get(raw, value)
+    if isinstance(value, dict):
+        out = dict(value)
+        for key in ("url", "src"):
+            raw = _one_str(out.get(key))
+            if raw in url_map:
+                out[key] = url_map[raw]
+        nested = out.get("image_url")
+        if isinstance(nested, dict):
+            n2 = dict(nested)
+            raw = _one_str(n2.get("url"))
+            if raw in url_map:
+                n2["url"] = url_map[raw]
+                out["image_url"] = n2
+        else:
+            raw = _one_str(nested)
+            if raw in url_map:
+                out["image_url"] = url_map[raw]
+        return out
+    return value
+
+
+_GPT_OSS_ACCELERATE_HOST = "foco-aimh8.oss-accelerate.aliyuncs.com"
+_GPT_OSS_ACCELERATE_SOURCE_HOSTS = (
+    "oss.aimh8.com",
+    "foco-aimh8.oss-cn-hangzhou.aliyuncs.com",
+)
+
+
+def _gpt_rewrite_aimh8_oss_to_accelerate(value: Any) -> Any:
+    """把 aimh8 国内 OSS/CDN 图片地址改为 OSS 传输加速域名。
+
+    2K/4K Codex responses 分支会让 OpenAI/Codex 后端直接拉取 image_url；
+    国内 OSS/CDN 对海外链路容易超时，因此在下发插件前统一改写。
+    """
+    if isinstance(value, str):
+        out = value
+        for host in _GPT_OSS_ACCELERATE_SOURCE_HOSTS:
+            out = out.replace(f"https://{host}", f"https://{_GPT_OSS_ACCELERATE_HOST}")
+            out = out.replace(f"http://{host}", f"https://{_GPT_OSS_ACCELERATE_HOST}")
+        return out
+    if isinstance(value, list):
+        return [_gpt_rewrite_aimh8_oss_to_accelerate(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_gpt_rewrite_aimh8_oss_to_accelerate(item) for item in value)
+    if isinstance(value, dict):
+        return {k: _gpt_rewrite_aimh8_oss_to_accelerate(v) for k, v in value.items()}
+    return value
+
+
+async def _gpt_materialize_reference_urls_for_extension(
+    payload: Dict[str, Any],
+    *,
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+) -> Dict[str, Any]:
+    refs = _gpt_collect_reference_urls(payload)
+    if not refs:
+        return dict(payload or {})
+    localized = await _veo_materialize_image_urls_for_extension(
+        refs,
+        kind="gpt_reference",
+        payload=payload,
+        progress_cb=progress_cb,
+        log_file=log_file,
+    )
+    url_map = {src: dst for src, dst in zip(refs, localized) if src and dst}
+    out = dict(payload or {})
+    for key in _GPT_REFERENCE_SINGLE_KEYS:
+        if key in out:
+            out[key] = _gpt_rewrite_ref_value_for_extension(out.get(key), url_map)
+    for key in _GPT_REFERENCE_LIST_KEYS:
+        raw = out.get(key)
+        if isinstance(raw, list):
+            out[key] = [_gpt_rewrite_ref_value_for_extension(item, url_map) for item in raw]
+    out["reference_urls"] = [url_map.get(u, u) for u in refs]
     return out
 
 
@@ -600,11 +757,157 @@ def _parse_reset_after(raw: Any) -> int:
     if not s:
         return 0
     if s.isdigit():
-        return _int(s, 0)
+        ts = _int(s, 0)
+        # 兼容毫秒时间戳；对外统一保留秒级时间戳。
+        if ts > 10_000_000_000:
+            ts = int(ts / 1000)
+        return ts
+    if s.count(".") == 1 and s.replace(".", "", 1).isdigit():
+        try:
+            ts = float(s)
+            if ts > 10_000_000_000:
+                ts = ts / 1000
+            return int(ts) if ts > 0 else 0
+        except Exception:
+            pass
     dt = _gpt_parse_dt(s)
     if dt is None:
         return 0
     return int(dt.timestamp())
+
+
+def _gpt_dt_to_local_str(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return ""
+    try:
+        if dt.tzinfo is not None:
+            # reset_after 带 +00:00 时，转换为服务端本地时间，保证可直接和
+            # sqlite datetime('now','localtime') 字符串比较。
+            dt = dt.astimezone()
+        return dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _gpt_epoch_to_local_str(raw: Any) -> str:
+    ts = _parse_reset_after(raw)
+    if ts <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _gpt_cooldown_value_to_local_str(raw: Any) -> str:
+    s = _one_str(raw)
+    if not s:
+        return ""
+    if s.isdigit():
+        return _gpt_epoch_to_local_str(s)
+    dt = _gpt_parse_dt(s)
+    if dt is None:
+        # 保留已有可读值，避免把上游/旧数据意外清空。
+        return s
+    return _gpt_dt_to_local_str(dt)
+
+
+def _gpt_image_quota_reset_at_from_payload(data: Any) -> int:
+    """从 GPT balance payload/插件返回值中提取 image_gen 的 reset_after 秒级时间戳。"""
+    d = data if isinstance(data, dict) else {}
+    candidates: List[int] = []
+
+    for key in ("image_quota_reset_at", "quota_reset_at", "reset_at", "reset_after"):
+        ts = _parse_reset_after(d.get(key))
+        if ts > 0:
+            candidates.append(ts)
+
+    limits = d.get("limits_progress") if isinstance(d.get("limits_progress"), list) else []
+    for item in limits:
+        if not isinstance(item, dict) or not _gpt_is_image_quota_feature(item.get("feature_name")):
+            continue
+        ts = _parse_reset_after(item.get("reset_after"))
+        if ts > 0:
+            candidates.append(ts)
+
+    raw = d.get("raw")
+    if isinstance(raw, dict) and raw is not d:
+        ts = _gpt_image_quota_reset_at_from_payload(raw)
+        if ts > 0:
+            candidates.append(ts)
+
+    return min(candidates) if candidates else 0
+
+
+def _gpt_balance_cooldown_until(data: Any) -> str:
+    """返回可写入 task_type_windows.cooldown_until 的本地时间字符串。"""
+    d = data if isinstance(data, dict) else {}
+    ts = _gpt_image_quota_reset_at_from_payload(d)
+    if ts > 0:
+        return _gpt_epoch_to_local_str(ts)
+
+    for key in ("cooldown_until", "image_quota_reset_after", "quota_reset_after"):
+        val = _gpt_cooldown_value_to_local_str(d.get(key))
+        if val:
+            return val
+
+    raw = d.get("raw")
+    if isinstance(raw, dict) and raw is not d:
+        for key in ("cooldown_until", "image_quota_reset_after", "quota_reset_after"):
+            val = _gpt_cooldown_value_to_local_str(raw.get(key))
+            if val:
+                return val
+    return ""
+
+
+def _gpt_time_to_beijing_str(raw: Any) -> str:
+    s = _one_str(raw)
+    if not s:
+        return ""
+    if s.isdigit() or (s.count(".") == 1 and s.replace(".", "", 1).isdigit()):
+        ts = _parse_reset_after(s)
+        if ts <= 0:
+            return ""
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return ""
+    dt = _gpt_parse_dt(s)
+    if dt is None:
+        return s
+    try:
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone(timedelta(hours=8)))
+        return dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _gpt_subscription_end_from_payload(data: Any) -> str:
+    """从插件返回/订阅接口原始响应中提取 active_until，并转换为北京时间字符串。"""
+    d = data if isinstance(data, dict) else {}
+    for key in ("subscription_end", "sora_subscription_end", "active_until", "activeUntil", "expires_at", "current_period_end"):
+        val = _gpt_time_to_beijing_str(d.get(key))
+        if val:
+            return val
+    for key in ("subscription_raw", "subscription"):
+        obj = d.get(key)
+        if isinstance(obj, dict) and obj is not d:
+            val = _gpt_subscription_end_from_payload(obj)
+            if val:
+                return val
+    raw = d.get("raw")
+    if isinstance(raw, dict) and raw is not d:
+        for key in ("subscription", "subscription_raw"):
+            obj = raw.get(key)
+            if isinstance(obj, dict) and obj is not raw:
+                val = _gpt_subscription_end_from_payload(obj)
+                if val:
+                    return val
+        val = _gpt_subscription_end_from_payload(raw)
+        if val:
+            return val
+    return ""
 
 
 def _gpt_membership_from_raw(raw: Any, fallback: str = "") -> str:
@@ -658,11 +961,13 @@ def _gpt_normalize_balance_payload(data: Any, *, access_token: str = "") -> Dict
                 total = _int(d.get(key), 0)
                 break
     plan = _one_str(d.get("plan_type") or d.get("account_plan") or d.get("subscription") or d.get("account_plan_type") or _gpt_plan_from_jwt(access_token))
+    cooldown_until = _gpt_epoch_to_local_str(reset_at) if reset_at > 0 else _gpt_balance_cooldown_until(d)
     return {
         "remaining": max(0, remaining if remaining >= 0 else 0),
         "image_quota_remaining": max(0, remaining if remaining >= 0 else 0),
         "image_quota_total": max(0, total if total >= 0 else 0),
         "image_quota_reset_at": reset_at,
+        "cooldown_until": cooldown_until or None,
         "plan_type": plan or None,
         "membership": plan or None,
         "default_model_slug": _one_str(d.get("default_model_slug") or d.get("default_model")) or None,
@@ -808,7 +1113,7 @@ async def gpt_fetch_balance_via_extension(
         exp = _one_str(tok.get("expires")) or exp
     if not at:
         raise NonPenalizedTaskError("缺少 GPT access_token，无法读取余额", status_code=401)
-    return await submit_extension_task(
+    result = await submit_extension_task(
         space_id=sid,
         window_key=wkey,
         provider="gpt",
@@ -816,6 +1121,18 @@ async def gpt_fetch_balance_via_extension(
         progress_cb=_noop_progress_cb,
         timeout_seconds=max(5.0, float(balance_timeout_seconds or 45.0)),
     )
+    out = dict(result or {})
+    cooldown_until = _gpt_balance_cooldown_until(out)
+    if cooldown_until:
+        out["cooldown_until"] = cooldown_until
+    subscription_end = _gpt_subscription_end_from_payload(out)
+    if subscription_end:
+        out["subscription_end"] = subscription_end
+    if not out.get("image_quota_reset_at"):
+        reset_at = _gpt_image_quota_reset_at_from_payload(out)
+        if reset_at > 0:
+            out["image_quota_reset_at"] = reset_at
+    return out
 
 
 async def gpt_fetch_membership_via_extension(
@@ -856,20 +1173,24 @@ async def gpt_fetch_membership_via_extension(
     at = _one_str(access_token)
     exp = _one_str(access_expires) or None
     if not _gpt_access_token_still_valid(at, exp, margin_seconds=60.0):
-        tok = await gpt_fetch_access_token_via_extension(
-            sess=sess,
-            target_url=target,
-            space_id=sid,
-            window_key=wkey,
-            connect_wait_seconds=0.5,
-            token_timeout_seconds=min(45.0, max(10.0, membership_timeout_seconds)),
-            log_file=log_file,
-            auto_triger_connection=False,
-        )
-        at = _one_str(tok.get("access_token"))
-        exp = _one_str(tok.get("expires")) or exp
-    if not at:
-        raise NonPenalizedTaskError("缺少 GPT access_token，无法读取会员信息", status_code=401)
+        # 会员信息读取会在插件内先调 /api/auth/session 获取 account.id；
+        # 某些账号该接口可能不返回 accessToken，因此这里不能因取不到 token
+        # 提前失败。能取到则带上，取不到也让插件用页面 Cookie 继续尝试订阅接口。
+        try:
+            tok = await gpt_fetch_access_token_via_extension(
+                sess=sess,
+                target_url=target,
+                space_id=sid,
+                window_key=wkey,
+                connect_wait_seconds=0.5,
+                token_timeout_seconds=min(45.0, max(10.0, membership_timeout_seconds)),
+                log_file=log_file,
+                auto_triger_connection=False,
+            )
+            at = _one_str(tok.get("access_token"))
+            exp = _one_str(tok.get("expires")) or exp
+        except Exception as e:
+            append_log(log_file, f"[gpt][membership] access_token prefetch skipped: {safe_trim(str(e), 200)}")
 
     append_log(log_file, "[gpt][membership] fetch membership via extension")
     result = await submit_extension_task(
@@ -888,8 +1209,11 @@ async def gpt_fetch_membership_via_extension(
         out["membership"] = membership
         out["plan_title"] = _one_str(out.get("plan_title") or membership)
         out["plan_type"] = _one_str(out.get("plan_type") or membership)
-    out["access_token"] = at
-    out["expires"] = exp
+    subscription_end = _gpt_subscription_end_from_payload(out)
+    if subscription_end:
+        out["subscription_end"] = subscription_end
+    out["access_token"] = _one_str(out.get("access_token")) or at
+    out["expires"] = _one_str(out.get("expires")) or exp
     out["source"] = _one_str(out.get("source")) or "extension.membership"
     return out
 
@@ -963,7 +1287,6 @@ async def refresh_gpt_balance_via_extension(
                     access_expires = str(row.get("sora_access_expires") or "").strip() or None
         except Exception as e:
             pass
-        print(f"access_token:{access_token} access_expires:{access_expires}");
         result = await gpt_fetch_balance_via_extension(
             sess=sess,
             target_url=target,
@@ -988,6 +1311,9 @@ async def refresh_gpt_balance_via_extension(
             kwargs["cooldown_until"] = str(result.get("cooldown_until"))
         if result.get("membership") or result.get("plan_type"):
             kwargs["sora_plan_title"] = _one_str(result.get("membership") or result.get("plan_type")) or None
+        subscription_end = _gpt_subscription_end_from_payload(result)
+        if subscription_end:
+            kwargs["sora_subscription_end"] = subscription_end
         await db.update_task_type_window(**kwargs)
         try:
             if remaining < 30 and signal_window_pool_replenish is not None:
@@ -1108,7 +1434,6 @@ async def refresh_gpt_balance(ctx: Any) -> int:
         pure_mode=_bool(row.get("pure_mode"), True),
     )
     if app_config.extension_executor_enabled and picked.space_id and picked.window_key and picked.browser_base_url:
-        print(f"-----------------");
         ext_info = await refresh_gpt_balance_via_extension(db=ctx.db, picked=picked, refresh_timeout_seconds=30.0, auto_triger_connection=True)
         print(f"ext_info:{ext_info}");
         if isinstance(ext_info, dict) and (ext_info.get("remaining") is not None or ext_info.get("image_quota_remaining") is not None):
@@ -1124,6 +1449,9 @@ async def refresh_gpt_balance(ctx: Any) -> int:
         kwargs["sora_plan_title"] = _one_str(info.get("membership") or info.get("plan_type")) or None
     if info.get("cooldown_until"):
         kwargs["cooldown_until"] = str(info.get("cooldown_until"))
+    subscription_end = _gpt_subscription_end_from_payload(info)
+    if subscription_end:
+        kwargs["sora_subscription_end"] = subscription_end
     await ctx.db.update_task_type_window(**kwargs)
     return remaining
 
@@ -1140,6 +1468,15 @@ async def gpt_submit_task_via_extension(
     timeout_seconds: float,
 ) -> Dict[str, Any]:
     p = _gpt_apply_image2_payload_defaults(dict(payload or {}))
+    if p.get("gpt_image2_model") == "gpt-image2-1k":
+        p = await _gpt_materialize_reference_urls_for_extension(
+            p,
+            progress_cb=progress_cb,
+            log_file=MONITOR_LOG_FILE,
+        )
+    else:
+        p = _gpt_rewrite_aimh8_oss_to_accelerate(p)
+    print(f"p:{p}");
     kind = "video" if _is_video_payload(p) else "image"
     max_wait = float(p.get("max_wait_seconds") or p.get("gpt_pending_max_wait_seconds") or timeout_seconds or 600.0)
     ext_payload = dict(p)
@@ -1154,9 +1491,12 @@ async def gpt_submit_task_via_extension(
             "count": _gpt_count(p),
             "timeout_seconds": timeout_seconds,
             "max_wait_seconds": max_wait,
-            "poll_interval_seconds": float(p.get("poll_interval_seconds") or p.get("gpt_pending_poll_interval_seconds") or 5.0),
+            "poll_interval_seconds": float(p.get("poll_interval_seconds") or p.get("gpt_pending_poll_interval_seconds") or 10.0),
         }
     )
+    oss_upload = _gpt_extension_oss_upload_config(p)
+    if oss_upload:
+        ext_payload["oss_upload"] = oss_upload
     return await submit_extension_task(
         space_id=space_id,
         window_key=window_key,

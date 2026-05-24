@@ -4,10 +4,12 @@
   <meta charset="utf-8" />
   <title>FPBrowser2API</title>
   <style>
-    body { width: 420px; margin: 0; padding: 12px; font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
+    body { margin: 0; padding: 10px; font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; }
     h1 { font-size: 16px; margin: 0 0 10px; }
     .card { background:#111827; border:1px solid #334155; border-radius:10px; padding:10px; margin-bottom:10px; }
-    .row { display:flex; gap:8px; align-items:center; margin:7px 0; }
+    .row { display:flex; gap:8px; align-items:center; margin:7px 0; min-width:0; }
     label { width:86px; color:#cbd5e1; font-size:12px; }
     input { flex:1; background:#020617; color:#e5e7eb; border:1px solid #475569; border-radius:6px; padding:6px; font-size:12px; }
     input[type="checkbox"] { flex:0; width:16px; height:16px; }
@@ -28,11 +30,35 @@
     .log.warn .lvl { color:#fbbf24; }
     .log.error .lvl { color:#f87171; }
     .hint { color:#94a3b8; font-size:11px; margin-top:4px; }
+    .tabs { display:flex; gap:6px; margin:0 0 10px; min-width:0; }
+    .tab-btn { flex:1 1 0; min-width:0; background:#1e293b; color:#cbd5e1; border:1px solid #334155; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .tab-btn.active { background:#2563eb; color:#fff; border-color:#3b82f6; }
+    .tab-panel { display:none; }
+    .tab-panel.active { display:block; }
+    .transfer-meta { color:#94a3b8; font-size:11px; margin-bottom:8px; word-break:break-all; }
+    .transfer-list { max-height:470px; overflow:auto; display:flex; flex-direction:column; gap:7px; }
+    .transfer-line { display:flex; align-items:flex-start; gap:7px; background:#020617; border:1px solid #1e293b; border-radius:8px; padding:7px; min-width:0; }
+    .transfer-text { flex:1; font-size:12px; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+    .transfer-text a { color:#93c5fd; text-decoration:underline; }
+    .copy-line-btn { flex:0 0 auto; background:#334155; padding:4px 7px; }
+    .empty { color:#94a3b8; font-size:12px; padding:12px; text-align:center; border:1px dashed #334155; border-radius:8px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 10px; }
+    .topbar h1 { margin:0; }
+    #closePanelBtn { background:#475569; padding:5px 9px; }
+    .transfer-actions { display:flex; gap:6px; flex:0 0 auto; }
   </style>
 </head>
 <body>
-  <h1>FPBrowser2API 插件调试</h1>
+  <div class="topbar">
+    <h1>FPBrowser2API 插件调试</h1>
+    <button id="closePanelBtn" type="button">关闭</button>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn" id="tabDebugBtn" data-tab="debug" type="button">Debug</button>
+    <button class="tab-btn" id="tabTransferBtn" data-tab="transfer" type="button">Data Panel</button>
+  </div>
 
+  <div id="debugPanel" class="tab-panel active">
   <div class="card">
     <div class="status">
       <span id="dot" class="dot"></span>
@@ -77,6 +103,22 @@
       <button id="clearBtn" class="danger">清空日志</button>
     </div>
     <div id="logs" class="logs"></div>
+  </div>
+  </div>
+
+  <div id="transferPanel" class="tab-panel">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>Received Data</b>
+        <div class="transfer-actions">
+          <button id="copyAllTransferBtn" class="secondary" type="button">Copy All</button>
+          <button id="clearTransferBtn" class="danger" type="button">Clear</button>
+        </div>
+      </div>
+      <div id="transferMeta" class="transfer-meta"></div>
+      <div id="transferData" class="transfer-list"></div>
+      <div class="hint">Each line can be copied separately. Links are clickable and open in a new page. Data is cached in browser local storage.</div>
+    </div>
   </div>
 
   <script src="popup.js"></script>

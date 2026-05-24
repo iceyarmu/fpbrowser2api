@@ -31,6 +31,7 @@ import ssl
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit, parse_qsl
@@ -52,10 +53,12 @@ from .playwright_broswer_context import (
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 from .browser_extension_bridge import should_use_extension_executor
 from .browser_extension_interaction import submit_extension_task
+from .browser_extension_interaction import ensure_extension_connected_via_window, wait_extension_client
 from .browser_automation_base import FingerprintBrowserAutomationBase
 from .veo_workflow_executor import (
     _build_debug_progress_panel_script,
     _veo_resolve_orientation_str,
+    _veo_materialize_image_for_extension,
 )
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
@@ -125,6 +128,22 @@ def _dreamina_key(vendor: str, base_url: str, space_id: str, window_key: str) ->
 
 def _one_str(v: Any) -> str:
     return str(v or "").strip()
+
+
+def _dreamina_db_bool(value: Any, *, default: bool = False) -> bool:
+    """Parse sqlite/mysql-ish boolean values without treating string "0" as True."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in ("1", "true", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "no", "n", "off", ""):
+        return False
+    return bool(value)
 
 
 def _compact_json(v: Any) -> str:
@@ -394,6 +413,53 @@ def _dreamina_is_seedance20_fast(model_name: str) -> bool:
 
 def _dreamina_is_seedance20_pro(model_name: str) -> bool:
     return "40_pro" in _one_str(model_name)
+
+
+async def _dreamina_materialize_image_refs_for_extension(
+    refs: List[Dict[str, Any]],
+    *,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+) -> List[Dict[str, Any]]:
+    """把 Dreamina 外部参考图下载到 Python 本地，并改写成插件可访问的局域网 URL。
+
+    这里不能直接只取 ref["url"]：Dreamina 解析出来的参考图主字段是
+    ``source``（见 _dreamina_make_image_ref），首尾帧和 omni_reference 都会走
+    这个结构。之前只读 url/image_url/src 会得到空字符串，导致插件仍拿不到本地化
+    后的地址。
+    """
+    out: List[Dict[str, Any]] = []
+    total = len(refs or [])
+    for i, ref in enumerate(refs or []):
+        r = dict(ref or {})
+        src = _one_str(
+            r.get("source")
+            or r.get("url")
+            or r.get("image_url")
+            or r.get("imageUrl")
+            or r.get("src")
+        )
+        if not src:
+            raise NonPenalizedTaskError(f"Dreamina 参考图 {i + 1}/{total} 地址为空，无法本地化给插件", status_code=400)
+        local_url = await _veo_materialize_image_for_extension(
+            src,
+            kind="dreamina_reference",
+            index=i,
+            total=total,
+            progress_cb=progress_cb,
+            log_file=log_file,
+        )
+        # 插件 uploadOneImage 的读取顺序是 url/image_url/source/imageUrl；
+        # 全部改写，确保不会回退到原始公网 URL。
+        r["source"] = local_url
+        r["url"] = local_url
+        r["image_url"] = local_url
+        r["imageUrl"] = local_url
+        r["localized_source_url"] = local_url
+        r["original_source_url"] = src
+        out.append(r)
+    return out
 
 
 # ---- API 调用 ----
@@ -2851,6 +2917,190 @@ async def refresh_dreamina_balance_best_effort(
             e,
         )
 
+
+@dataclass
+class _DreaminaRefreshWindow:
+    mapping_id: int
+    window_pk: int
+    window_key: str
+    task_code: str
+    task_concurrency: int
+    threshold: int
+    close_window_threshold: int
+    timeout_seconds: int
+    create_task_handler: Optional[str]
+    browser_vendor: str
+    browser_base_url: str
+    browser_access_key: Optional[str]
+    space_id: str
+    sora_access_token: Optional[str] = None
+    sora_access_expires: Optional[str] = None
+    default_target_url: Optional[str] = None
+    window_ip: Optional[str] = None
+    headless: bool = False
+    pure_mode: bool = True
+    error_retry_count: int = 0
+
+
+class DreaminaBalanceRefresher:
+    """Dreamina/Jimeng 窗口池余额刷新调度器。
+
+    TaskService 只负责按窗口池开关启动/停止该对象；候选窗口查询由 Database 提供，
+    余额刷新业务留在 Dreamina 执行器内，避免 TaskService 直接包含 Dreamina SQL 与业务细节。
+    """
+
+    def __init__(
+        self,
+        *,
+        db: Database,
+        stop_event: asyncio.Event,
+        signal_window_pool_replenish: Optional[Callable[[], None]] = None,
+        refresh_timeout_seconds: float = 60.0,
+        scan_interval_seconds: float = 300.0,
+        min_remaining_quota: int = _DREAMINA_MIN_CREDIT - _DREAMINA_GIFT_CREDIT,
+    ) -> None:
+        self.db = db
+        self.stop_event = stop_event
+        self.signal_window_pool_replenish = signal_window_pool_replenish
+        self.refresh_timeout_seconds = float(refresh_timeout_seconds or 60.0)
+        self.scan_interval_seconds = float(scan_interval_seconds or 300.0)
+        self.min_remaining_quota = int(min_remaining_quota)
+
+        self.task: Optional[asyncio.Task] = None
+        self.wake = asyncio.Event()
+
+    def start(self) -> None:
+        """启动 Dreamina 余额刷新循环（幂等）。"""
+        if self.task is not None and not self.task.done():
+            self.wake_up()
+            return
+        self.wake_up()  # 启动后立即扫描一次。
+        self.task = asyncio.create_task(self._loop(), name="dreamina_balance_refresher")
+
+    def wake_up(self) -> None:
+        """唤醒刷新循环尽快重新扫描。"""
+        try:
+            self.wake.set()
+        except Exception:
+            pass
+
+    async def stop(self) -> None:
+        """停止刷新循环。"""
+        t = self.task
+        self.task = None
+        self.wake_up()
+        if t is not None and not t.done():
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+    def _row_to_picked(self, row: Dict[str, Any]) -> _DreaminaRefreshWindow:
+        return _DreaminaRefreshWindow(
+            mapping_id=int(row.get("mapping_id") or row.get("id")),
+            window_pk=int(row.get("window_pk") or 0),
+            window_key=str(row.get("window_key") or ""),
+            task_code=str(row.get("task_code") or ""),
+            task_concurrency=int(row.get("task_concurrency") or 1),
+            threshold=int(row.get("continuous_error_threshold") or 3),
+            close_window_threshold=int(row.get("continuous_error_close_window_threshold") or 3),
+            timeout_seconds=int(row.get("timeout_seconds") or 1800),
+            create_task_handler=str(row.get("create_task_handler") or ""),
+            browser_vendor=str(row.get("browser_vendor") or "generic"),
+            browser_base_url=str(row.get("browser_base_url") or ""),
+            browser_access_key=row.get("browser_access_key"),
+            space_id=str(row.get("space_id") or ""),
+            sora_access_token=(str(row.get("sora_access_token") or "").strip() or None),
+            sora_access_expires=(str(row.get("sora_access_expires") or "").strip() or None),
+            default_target_url=row.get("default_target_url"),
+            window_ip=row.get("window_ip"),
+            headless=_dreamina_db_bool(row.get("headless"), default=False),
+            pure_mode=_dreamina_db_bool(row.get("pure_mode"), default=True),
+            error_retry_count=int(row.get("error_retry_count") or 0),
+        )
+
+    async def _dreamina_refresh_list_due_candidates(self) -> List[Dict[str, Any]]:
+        return await self.db.dreamina_refresh_list_candidates(
+            due_only=True,
+            min_remaining_quota=self.min_remaining_quota,
+        )
+
+    async def _dreamina_refresh_seconds_until_next_due(self) -> float:
+        return await self.db.dreamina_refresh_seconds_until_next_due(
+            min_remaining_quota=self.min_remaining_quota,
+            default_scan_interval=self.scan_interval_seconds,
+        )
+
+    async def _refresh_rows(self, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        rows = sorted(rows, key=lambda r: str(r.get("cooldown_until") or ""))
+        logger.info("dreamina balance refresh: due=%d", len(rows))
+        ok = 0
+        fail = 0
+        for row in rows:
+            if self.stop_event.is_set():
+                return
+            try:
+                picked = self._row_to_picked(row)
+                if not picked.sora_access_token:
+                    continue
+                await asyncio.wait_for(
+                    refresh_dreamina_balance(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=self.refresh_timeout_seconds,
+                        signal_window_pool_replenish=self.signal_window_pool_replenish,
+                    ),
+                    timeout=self.refresh_timeout_seconds,
+                )
+                ok += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                fail += 1
+                logger.warning("dreamina balance refresh mapping=%s err=%s", row.get("mapping_id") or row.get("id"), e)
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=random.uniform(0.1, 0.5))
+                return
+            except asyncio.TimeoutError:
+                pass
+        logger.info("dreamina balance refresh done: ok=%d fail=%d", ok, fail)
+
+    async def _loop(self) -> None:
+        """Dreamina 余额刷新独立循环。
+
+        - 启动后立即扫描所有 enabled dreamina_workflow 窗口；
+        - 已到期/即将到期（cooldown_until <= now + 1 minute）的先刷新；
+        - 未到期的计算最近 cooldown_until，并睡到该时间前 1 分钟再刷新；
+        - 不设 80 个上限，符合条件的有多少刷多少。
+        """
+        while not self.stop_event.is_set():
+            try:
+                due_rows = await self._dreamina_refresh_list_due_candidates()
+                if due_rows:
+                    await self._refresh_rows(due_rows)
+                    continue
+                next_wait = await self._dreamina_refresh_seconds_until_next_due()
+                wait = min(max(1.0, next_wait), self.scan_interval_seconds)
+                self.wake.clear()
+                try:
+                    await asyncio.wait_for(self.wake.wait(), timeout=wait)
+                except asyncio.TimeoutError:
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception("dreamina balance refresher loop: %s", e)
+                try:
+                    await asyncio.wait_for(self.stop_event.wait(), timeout=30.0)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+
 # ---- 主入口 ----
 
 _DREAMINA_UI_MODEL_FAST = "Dreamina Seedance 2.0 Fast"
@@ -3660,7 +3910,11 @@ async def dreamina_workflow(
 
     p = dict(payload or {})
     is_image_upload_save = _dreamina_is_single_image_upload_payload(p)
-    prompt = _one_str(p.get("prompt"))
+    # 兼容上游历史拼写错误：有些 payload 写成了 ``promp``。
+    # 归一化后必须显式写回 p，避免交给浏览器插件的 ext_payload 里缺少 prompt。
+    prompt = _one_str(p.get("prompt") or p.get("promp") or p.get("text") or p.get("query"))
+    if prompt and not _one_str(p.get("prompt")):
+        p["prompt"] = prompt
     if not prompt and not is_image_upload_save:
         raise NonPenalizedTaskError("payload.prompt 为空", status_code=400)
 
@@ -3746,12 +4000,39 @@ async def dreamina_workflow(
         "duration": duration,
         "image_count": len(image_refs) + len(prompt_subject_refs),
     })
-    '''
-    if should_use_extension_executor(p):
+    # Dreamina 视频生成（文生视频 / 首尾帧 / 多帧参考图）统一交给浏览器插件执行。
+    # Python 侧只负责参数归一、DB subject 解析，以及将外部参考图下载到本机
+    # /assets/veo_image_cache 后换成插件可从局域网访问的地址；余额刷新仍保留
+    # refresh_quota__dreamina_credits 的 Python 读取方式。
+    if True:
+        store_country_code = ""
+        try:
+            if db is not None:
+                store_country_code = await db.get_window_bound_ip_last_country(space_id=space_id, window_key=window_key)
+        except Exception as e:
+            append_log(log_file, f"[dreamina-store-country] read bound ip last_country failed: {safe_trim(str(e), 200)}")
+        if store_country_code:
+            sess.store_country_code = store_country_code
+        resolution_for_ext = _dreamina_resolve_resolution(p)
+        width_for_ext, height_for_ext = _dreamina_resolution_size(resolution_for_ext, aspect_ratio)
+        original_image_refs = [dict(x) for x in (image_refs or [])]
+        if image_refs:
+            image_refs = await _dreamina_materialize_image_refs_for_extension(
+                image_refs,
+                payload=p,
+                progress_cb=progress_cb,
+                log_file=log_file,
+            )
+            append_log(
+                log_file,
+                f"[dreamina][extension][image-cache] localized refs={len(image_refs)} "
+                f"urls={safe_trim(_compact_json([x.get('localized_source_url') for x in image_refs]), 1000)}",
+            )
         ext_payload = dict(p)
         ext_payload.update(
             {
                 "workflow_kind": "video",
+                "prompt": prompt,
                 "video_mode": video_mode,
                 "reference_mode": reference_mode,
                 "target_page": target_page,
@@ -3760,10 +4041,34 @@ async def dreamina_workflow(
                 "image_refs": image_refs,
                 "prompt_subject_refs": prompt_subject_refs,
                 "prompt_subject_ids": prompt_subject_ids,
+                "prompt_parts": prompt_parts,
+                "prompt_image_tokens": prompt_image_tokens,
+                "original_image_refs": original_image_refs,
+                "model_key": _dreamina_resolve_model(p, has_image=bool(image_refs)),
+                "resolution": resolution_for_ext,
+                "width": width_for_ext,
+                "height": height_for_ext,
+                "store_country_code": store_country_code,
                 "timeout_seconds": timeout_seconds,
             }
         )
         append_log(log_file, f"[dreamina][extension] dispatch video_mode={video_mode!r} refs={len(image_refs)}")
+        try:
+            client = await ensure_extension_connected_via_window(
+                sess=sess,
+                target_url=target_page,
+                space_id=space_id,
+                window_key=window_key,
+                wait_seconds=float(p.get("extension_connect_wait_seconds") or 10.0),
+                log_file=log_file,
+                auto_triger_connection=True,
+            )
+            if client is None:
+                raise NonPenalizedTaskError(f"浏览器插件未连接：window_key={window_key!r}", status_code=503)
+        except NonPenalizedTaskError:
+            raise
+        except Exception as e:
+            raise NonPenalizedTaskError(f"Dreamina 插件连接失败：{safe_trim(str(e), 500)}", status_code=503) from e
         return await submit_extension_task(
             space_id=space_id,
             window_key=window_key,
@@ -3772,8 +4077,6 @@ async def dreamina_workflow(
             progress_cb=progress_cb,
             timeout_seconds=max(60.0, float(timeout_seconds or 600.0)) + 120.0,
         )
-
-    '''
     async with sess.create_lock:
         try:
             sess.idle_close_disabled = True

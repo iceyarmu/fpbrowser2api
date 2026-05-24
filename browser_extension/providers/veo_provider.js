@@ -1,4 +1,4 @@
-import { ensureTab as ensureGenericTab, fetchJson, compactErrorResponse } from "./common.js";
+import { ensureTab as ensureGenericTab, fetchJson, compactErrorResponse, simulateHumanActivity, uploadDataUrlToAliyunOss } from "./common.js";
 
 const URLS = {
   credits: "https://aisandbox-pa.googleapis.com/v1/credits",
@@ -30,7 +30,13 @@ function randSeed(max = 99999) { return 1 + Math.floor(Math.random() * max); }
 const veoTabOpLocks = new Map();
 const VEO_RUN_ID = Symbol("veoRunId");
 const activeVeoTaskRuns = new Map();
+const HUMAN_ACTIVITY_ACTIONS = new Set([
+  "human_activity",
+  "simulate_human_activity"
+]);
 let veoTaskRunSeq = 0;
+let veoHumanActivityPromise = null;
+let veoHumanActivityInfo = null;
 
 function beginVeoTaskRun(msg, runtime) {
   const taskId = String((runtime && runtime.taskId) || (msg && msg.task_id) || "unknown");
@@ -62,6 +68,125 @@ function countOtherActiveVeoTaskRuns(runtime) {
     if (runId !== currentRunId) n++;
   }
   return n;
+}
+
+async function waitForVeoHumanActivityIdle(runtime) {
+  const p = veoHumanActivityPromise;
+  if (!p) return false;
+  try {
+    await runtime.progress(1, {
+      stage: "wait_human_activity",
+      reason: "human_activity_running",
+      human_activity: veoHumanActivityInfo || {}
+    });
+  } catch (_) {}
+  try {
+    await p;
+  } catch (_) {}
+  try {
+    await runtime.progress(1, { stage: "wait_human_activity_done" });
+  } catch (_) {}
+  return true;
+}
+
+async function runVeoHumanActivityAction(msg, runtime) {
+  const p = msg.payload || {};
+  const projectPage = p.project_page || p.target_url || p.veo_url || "https://labs.google/fx";
+  if (activeVeoTaskRuns.size > 0) {
+    try {
+      await runtime.progress(100, {
+        stage: "human_activity_skipped",
+        reason: "veo_task_running",
+        active_veo_tasks: activeVeoTaskRuns.size
+      });
+    } catch (_) {}
+    return {
+      type: "veo_human_activity",
+      skipped: true,
+      reason: "veo_task_running",
+      active_veo_tasks: activeVeoTaskRuns.size
+    };
+  }
+  if (veoHumanActivityPromise) {
+    try {
+      await runtime.progress(100, {
+        stage: "human_activity_skipped",
+        reason: "human_activity_already_running",
+        human_activity: veoHumanActivityInfo || {}
+      });
+    } catch (_) {}
+    return {
+      type: "veo_human_activity",
+      skipped: true,
+      reason: "human_activity_already_running"
+    };
+  }
+
+  const minMs = Math.max(1000, Number(p.human_activity_min_ms || p.min_ms || 10000) || 10000);
+  const maxMs = Math.max(minMs + 1, Number(p.human_activity_max_ms || p.max_ms || 15000) || 15000);
+  const startedAt = Date.now();
+  veoHumanActivityInfo = {
+    task_id: String((msg && msg.task_id) || (runtime && runtime.taskId) || ""),
+    project_page: projectPage,
+    started_at: startedAt,
+    min_ms: minMs,
+    max_ms: maxMs
+  };
+  const activityRuntime = {
+    ...(runtime || {}),
+    progress: async (progress, data = {}) => {
+      try {
+        if (runtime && typeof runtime.progress === "function") {
+          await runtime.progress(progress, data);
+        }
+      } catch (_) {}
+    }
+  };
+
+  veoHumanActivityPromise = (async () => {
+    await activityRuntime.progress(2, { stage: "human_activity_ensure_tab", url: projectPage });
+    const tabId = await ensureVeoProjectTab(projectPage, {
+      navigate: p.navigate !== false,
+      active: p.active !== false
+    });
+    const shouldReload = p.reload !== false && p.reload_page !== false;
+    let reloaded = false;
+    if (shouldReload) {
+      reloaded = await reloadProjectPage(4, tabId, projectPage, activityRuntime, { skipActiveCheck: true });
+    }
+    const result = await simulateHumanActivity(tabId, activityRuntime, minMs, maxMs, {
+      stage: "veo_human_activity",
+      progress: 8,
+      clickInputs: true,
+      scroll: true,
+      moveMouse: true
+    });
+    const elapsedMs = Date.now() - startedAt;
+    await activityRuntime.progress(100, {
+      stage: "human_activity_done",
+      url: projectPage,
+      tab_id: tabId,
+      reloaded,
+      elapsed_ms: elapsedMs,
+      result
+    });
+    return {
+      type: "veo_human_activity",
+      skipped: false,
+      project_page: projectPage,
+      tab_id: tabId,
+      reloaded,
+      elapsed_ms: elapsedMs,
+      result
+    };
+  })();
+
+  try {
+    return await veoHumanActivityPromise;
+  } finally {
+    veoHumanActivityPromise = null;
+    veoHumanActivityInfo = null;
+  }
 }
 
 async function shouldSkipProjectPageRefresh(progress, runtime, stage, url) {
@@ -185,33 +310,6 @@ async function ensureVeoProjectTab(projectPage, { active = true, navigate = true
   return tab.id;
 }
 
-async function simulateHumanActivity(tabId, runtime, minMs = 3000, maxMs = 10000) {
-  const duration = Math.max(1000, Math.floor(minMs + Math.random() * Math.max(1, maxMs - minMs)));
-  try {
-    await runtime.progress(4, { stage: "human_activity", duration_ms: duration });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      args: [duration],
-      func: async (durationMs) => {
-        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-        const end = Date.now() + durationMs;
-        let x = Math.max(20, Math.floor(window.innerWidth * (0.2 + Math.random() * 0.6)));
-        let y = Math.max(20, Math.floor(window.innerHeight * (0.2 + Math.random() * 0.6)));
-        while (Date.now() < end) {
-          x = Math.max(5, Math.min(window.innerWidth - 5, x + Math.floor((Math.random() - 0.5) * 180)));
-          y = Math.max(5, Math.min(window.innerHeight - 5, y + Math.floor((Math.random() - 0.5) * 120)));
-          const el = document.elementFromPoint(x, y) || document.body;
-          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y, movementX: Math.floor((Math.random() - 0.5) * 20), movementY: Math.floor((Math.random() - 0.5) * 20) }));
-          if (Math.random() < 0.35) window.scrollBy({ top: Math.floor((Math.random() - 0.45) * 420), left: 0, behavior: "smooth" });
-          await sleep(180 + Math.random() * 520);
-        }
-      }
-    });
-  } catch (_) {}
-}
-
-
 async function assertProjectPageAccessible(projectPage, runtime) {
   const url = projectPage || "https://labs.google/fx";
   let resp = null;
@@ -245,9 +343,9 @@ async function assertProjectPageAccessible(projectPage, runtime) {
   return { status: resp.status, url: resp.url || url };
 }
 
-async function reloadProjectPage(progress, tabId, projectPage, runtime) {
+async function reloadProjectPage(progress, tabId, projectPage, runtime, options = {}) {
   return await withVeoTabOpLock(tabId, "reload_project_page", async () => {
-    if (await shouldSkipProjectPageRefresh(progress, runtime, "reload_project_page", projectPage)) return false;
+    if (options.skipActiveCheck !== true && await shouldSkipProjectPageRefresh(progress, runtime, "reload_project_page", projectPage)) return false;
     await runtime.progress(progress, { stage: "reload_project_page", url: projectPage });
     try {
       // 单任务时对 project_page 做一次真实刷新；如果还有其它 VEO
@@ -721,16 +819,57 @@ function parseImageResult(resp) {
 
 function parseVideoPoll(resp) {
   let workflowId = "", projectId = "", status = "", videoUrl = "", mediaName = "";
+  let failure = null;
+
+  const rememberFailure = (source, itemStatus, err) => {
+    if (failure) return;
+    if (itemStatus) status = itemStatus;
+    const op = source?.operation || {};
+    const e = err || op.error || source?.error || null;
+    failure = {
+      status: itemStatus || status || source?.status || "",
+      code: e && (e.code ?? e.status ?? ""),
+      message: e && (e.message || e.statusMessage || e.reason || ""),
+      operation: op.name || source?.operationName || "",
+      sceneId: source?.sceneId || "",
+      mediaGenerationId: source?.mediaGenerationId || source?.name || ""
+    };
+  };
+
+  const isFailedStatus = (s) => /(^|_)FAILED($|_)/i.test(String(s || ""));
   const media = Array.isArray(resp?.media) ? resp.media : [];
   for (const item of media) {
     mediaName ||= item.name || "";
     workflowId ||= item.workflowId || "";
     projectId ||= item.projectId || "";
-    status ||= item.mediaMetadata?.mediaStatus?.mediaGenerationStatus || "";
+    const itemStatus = item.mediaMetadata?.mediaStatus?.mediaGenerationStatus || item.status || "";
+    status ||= itemStatus;
     videoUrl ||= item.mediaMetadata?.video?.fifeUrl || firstStringByKey(item, "fifeUrl");
+    const err = item.operation?.error || item.error || item.mediaMetadata?.mediaStatus?.error || null;
+    if (err || isFailedStatus(itemStatus)) rememberFailure(item, itemStatus, err);
+  }
+  const operations = Array.isArray(resp?.operations) ? resp.operations : [];
+  for (const item of operations) {
+    mediaName ||= item.mediaGenerationId || item.operation?.name || "";
+    const itemStatus = item.status || item.mediaGenerationStatus || item.operation?.status || "";
+    status ||= itemStatus;
+    const err = item.operation?.error || item.error || null;
+    if (err || isFailedStatus(itemStatus)) rememberFailure(item, itemStatus, err);
   }
   videoUrl ||= firstStringByKey(resp, "fifeUrl");
-  return { workflowId, projectId, status, videoUrl, mediaName };
+  return { workflowId, projectId, status: (failure && failure.status) || status, videoUrl, mediaName, failed: !!failure, failure };
+}
+
+function formatVideoPollFailure(failure) {
+  const f = failure || {};
+  const parts = [];
+  if (f.status) parts.push(`status=${f.status}`);
+  if (f.code !== undefined && f.code !== null && f.code !== "") parts.push(`code=${f.code}`);
+  if (f.message) parts.push(`message=${f.message}`);
+  if (f.operation) parts.push(`operation=${f.operation}`);
+  if (f.mediaGenerationId) parts.push(`mediaGenerationId=${String(f.mediaGenerationId).slice(0, 120)}`);
+  if (f.sceneId) parts.push(`sceneId=${f.sceneId}`);
+  return parts.join("; ") || "unknown failure";
 }
 
 function parseVideoSubmitWorkflow(resp) {
@@ -921,7 +1060,35 @@ function normalizePaygateTier(tier) {
   return "PAYGATE_TIER_NOT_PAID";
 }
 
-async function upsampleImage2K(tabId, at, p, parsed, runtime) {
+function normalizeImageUpsampleTarget(p) {
+  const rawTarget = String(
+    p.extension_image_upsample_target_resolution ||
+    p.targetResolution ||
+    p.target_resolution ||
+    ""
+  ).trim().toUpperCase();
+  if (rawTarget === "UPSAMPLE_IMAGE_RESOLUTION_4K") {
+    return { label: "4K", targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_4K" };
+  }
+  if (rawTarget === "UPSAMPLE_IMAGE_RESOLUTION_2K") {
+    return { label: "2K", targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_2K" };
+  }
+
+  const label = String(
+    p.extension_image_resolution_label ||
+    p.resolution ||
+    p.image_resolution ||
+    p.veo_image_resolution ||
+    ""
+  ).trim().toLowerCase().replace(/\s+/g, "");
+  if (label === "4k" || label === "4096" || label === "3840" || label === "4k_output" || label === "uhd_4k") {
+    return { label: "4K", targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_4K" };
+  }
+  return { label: "2K", targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_2K" };
+}
+
+async function upsampleImage(tabId, at, p, parsed, runtime) {
+  const target = normalizeImageUpsampleTarget(p);
   const maxRetries = 2;
   let lastErr = "";
   for (let i = 0; i < maxRetries; i++) {
@@ -934,7 +1101,7 @@ async function upsampleImage2K(tabId, at, p, parsed, runtime) {
     const tier = normalizePaygateTier(p.user_paygate_tier || p.userPaygateTier || await fetchVeoUserPaygateTier(tabId, at));
     const body = {
       mediaId: String(parsed.mediaName || "").trim(),
-      targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_2K",
+      targetResolution: target.targetResolution,
       clientContext: {
         recaptchaContext: { token: recaptcha, applicationType: "RECAPTCHA_APPLICATION_TYPE_WEB" },
         sessionId: sessionId(),
@@ -943,7 +1110,7 @@ async function upsampleImage2K(tabId, at, p, parsed, runtime) {
         userPaygateTier: tier
       }
     };
-    await runtime.progress(72, { stage: "upsample_image", target_resolution: "2K", attempt: i + 1, user_paygate_tier: tier });
+    await runtime.progress(72, { stage: "upsample_image", target_resolution: target.label, target_resolution_key: target.targetResolution, attempt: i + 1, user_paygate_tier: tier });
     let ux = null;
     try {
       // upsample 不创建新工作流，遇到并发刷新导致的 transient 空 result 可以安全重试。
@@ -964,11 +1131,11 @@ async function upsampleImage2K(tabId, at, p, parsed, runtime) {
       continue;
     }
     const enc = ux.json?.encodedImage || "";
-    if (ux.status < 400 && enc) return { encodedImage: enc, userPaygateTier: tier };
+    if (ux.status < 400 && enc) return { encodedImage: enc, userPaygateTier: tier, resolutionLabel: target.label, targetResolution: target.targetResolution };
     lastErr = compactErrorResponse(ux) || `status=${ux && ux.status}`;
     await sleep(1500);
   }
-  return { encodedImage: "", error: lastErr };
+  return { encodedImage: "", error: lastErr, resolutionLabel: target.label, targetResolution: target.targetResolution };
 }
 
 async function runImageWorkflow(tabId, p, at, runtime) {
@@ -1055,12 +1222,33 @@ async function runImageWorkflow(tabId, p, at, runtime) {
   let resLabel = p.extension_image_resolution_label || "1K";
   let upsampleOk = false;
   let upsampleError = "";
-  if (p.extension_image_want_2k && parsed.mediaName) {
-    const up = await upsampleImage2K(tabId, at, p, parsed, runtime);
+  let ossUploads = [];
+  if ((p.extension_image_want_upsample || p.extension_image_want_2k) && parsed.mediaName) {
+    const up = await upsampleImage(tabId, at, p, parsed, runtime);
     if (up.encodedImage) {
-      shareUrl = `data:image/jpeg;base64,${up.encodedImage}`;
+      const dataUrl = `data:image/jpeg;base64,${up.encodedImage}`;
       upsampleOk = true;
-      resLabel = "2K";
+      resLabel = up.resolutionLabel || resLabel;
+      const ossCfg = p.oss_upload || p.extension_oss_upload || null;
+      if (ossCfg) {
+        try {
+          await runtime.progress(92, { stage: "oss_upload", target_resolution: resLabel, media_id: parsed.mediaName });
+          const uploaded = await uploadDataUrlToAliyunOss(ossCfg, dataUrl, {
+            objectKeyPrefix: (ossCfg && (ossCfg.object_key_prefix || ossCfg.objectKeyPrefix)) || `veo_workflow/image/upsample/${String(resLabel || "2K").toLowerCase()}`,
+            taskId: p._bridge_task_id || p.task_id || "",
+            resolution: resLabel,
+            contentType: "image/jpeg"
+          });
+          ossUploads = [uploaded];
+          shareUrl = uploaded.url;
+        } catch (e) {
+          upsampleError = `OSS?????${String((e && e.message) || e || "").slice(0, 300)}`;
+          if (ossCfg && ossCfg.required !== false) throw new Error(upsampleError);
+          shareUrl = dataUrl;
+        }
+      } else {
+        shareUrl = dataUrl;
+      }
     } else {
       upsampleError = up.error || "upsample returned empty encodedImage";
       resLabel = "1K";
@@ -1082,6 +1270,9 @@ async function runImageWorkflow(tabId, p, at, runtime) {
     resolution: resLabel,
     upsample_ok: upsampleOk,
     upsample_error: upsampleError || undefined,
+    upsample_url: (ossUploads[0] && ossUploads[0].url) || undefined,
+    upsample_oss_object_key: (ossUploads[0] && ossUploads[0].object_key) || undefined,
+    oss_uploads: ossUploads,
     project_id: projectId,
     generated_media_id: parsed.mediaName,
     generated_workflow_id: parsed.workflowId,
@@ -1103,7 +1294,14 @@ async function pollVideo(tabId, at, operations, runtime, p) {
     if (tx.status >= 400) throw new Error(`VEO video poll failed: ${compactErrorResponse(tx)}`);
     last = parseVideoPoll(tx.json);
     const pct = 25 + Math.min(70, Math.floor((Date.now() - (deadline - maxWait * 1000)) / (maxWait * 1000) * 70));
-    await runtime.progress(pct, { stage: "polling", attempt, status: last.status, workflow_id: last.workflowId });
+    await runtime.progress(pct, {
+      stage: last.failed ? "failed" : "polling",
+      attempt,
+      status: last.status,
+      workflow_id: last.workflowId,
+      error: last.failed ? formatVideoPollFailure(last.failure) : undefined
+    });
+    if (last.failed) throw new Error(`VEO video generation failed: ${formatVideoPollFailure(last.failure)}`);
     if (last.videoUrl) return last;
   }
   throw new Error(`VEO video polling timeout; last=${JSON.stringify(last).slice(0, 300)}`);
@@ -1236,10 +1434,14 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
 }
 
 export async function runVeoTask(msg, runtime) {
+  const p = msg.payload || {};
+  const action = String(p.action || p.workflow_kind || "").trim().toLowerCase();
+  if (HUMAN_ACTIVITY_ACTIONS.has(action)) {
+    return await runVeoHumanActivityAction(msg, runtime);
+  }
   const veoRunId = beginVeoTaskRun(msg, runtime);
   try {
-    const p = msg.payload || {};
-    const action = String(p.action || p.workflow_kind || "").trim();
+    await waitForVeoHumanActivityIdle(runtime);
     if (action === "current_page" || action === "get_current_page" || action === "current_url" || action === "get_current_url") {
       return await fetchVeoCurrentPageTask(msg, runtime);
     }
@@ -1259,7 +1461,7 @@ export async function runVeoTask(msg, runtime) {
       p.archive_workflow = true;
       p.archive_uploaded_workflows = true;
     }
-    if (p.workflow_kind === "balance_refresh" || p.action === "refresh_balance") {
+    if (action === "balance_refresh" || action === "refresh_balance") {
       return await refreshVeoBalanceTask(msg, runtime);
     }
     await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
@@ -1269,10 +1471,17 @@ export async function runVeoTask(msg, runtime) {
     await assertProjectPageAccessible(projectPage, runtime);
     const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
     await reloadProjectPage(3, tabId, projectPage, runtime);
-    await simulateHumanActivity(tabId, runtime, 3000, 10000);
     await runtime.progress(5, { stage: "access_token" });
     const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);
     const at = tokenInfo.access_token;
+    //引入拟人操作
+    await simulateHumanActivity(tabId, runtime, 5000, 15000, {
+      stage: "veo_pre_workflow_human_activity",
+      progress: 5,
+      clickInputs: true,
+      scroll: true,
+      moveMouse: true
+    });
     if (p.workflow_kind === "image" || p.image_mode) {
       return await runImageWorkflow(tabId, p, at, runtime);
     }

@@ -305,7 +305,7 @@ async def trigger_veo_extension_ws_connection_via_window(
         f"launcher={_short_text(annotated_launcher, max_len=350)!r} "
         f"redirect={_short_text(redirect, max_len=250)!r}",
     )
-    await asyncio.sleep(6);
+    await asyncio.sleep(4);
 
     client = await wait_extension_client(sid, wkey, timeout_seconds=max(0.1, float(wait_seconds or 0.1)))
     if client is None:

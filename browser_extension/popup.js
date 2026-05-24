@@ -32,6 +32,61 @@ function renderStatus(st) {
   `;
 }
 
+const TRANSFER_URL_RE = /(https?:\/\/[^\s<>'"]+)/ig;
+
+function linkifyEscapedLine(line) {
+  const raw = String(line ?? "");
+  let out = "";
+  let last = 0;
+  raw.replace(TRANSFER_URL_RE, (m, _g, idx) => {
+    out += esc(raw.slice(last, idx));
+    const href = esc(m);
+    out += `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>`;
+    last = idx + m.length;
+    return m;
+  });
+  out += esc(raw.slice(last));
+  return out;
+}
+
+function getTransferLines(data) {
+  if (Array.isArray(data?.lines)) return data.lines.map(x => String(x ?? ""));
+  const text = String(data?.text || "");
+  return text ? text.split(/\r?\n/) : [];
+}
+
+async function setActiveTab(tab) {
+  const name = tab === "transfer" ? "transfer" : "debug";
+  document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === name));
+  $("debugPanel")?.classList.toggle("active", name === "debug");
+  $("transferPanel")?.classList.toggle("active", name === "transfer");
+  try { await send("popup.setActiveTab", { tab: name }); } catch (_) {}
+}
+
+function renderTransferData(data) {
+  const root = $("transferData");
+  const meta = $("transferMeta");
+  if (!root) return;
+  const lines = getTransferLines(data);
+  if (meta) {
+    const bits = [];
+    if (data?.title) bits.push(data.title);
+    if (data?.source) bits.push(`来源: ${data.source}`);
+    if (data?.received_at) bits.push(`接收: ${data.received_at}`);
+    meta.textContent = bits.join(" · ");
+  }
+  if (!lines.length) {
+    root.innerHTML = `<div class="empty">暂无接收数据</div>`;
+    return;
+  }
+  root.innerHTML = lines.map((line, idx) => `
+    <div class="transfer-line">
+      <div class="transfer-text">${linkifyEscapedLine(line)}</div>
+      <button class="copy-line-btn" data-copy-line="${idx}" type="button">复制</button>
+    </div>
+  `).join("");
+}
+
 function renderLogs(logs) {
   const root = $("logs");
   if (!logs || !logs.length) {
@@ -63,6 +118,11 @@ async function refresh() {
   $("veoArchiveEnabled").checked = cfg.veoArchiveEnabled !== false;
   renderStatus(st);
   renderLogs(resp.logs || []);
+  renderTransferData(resp.transferData || null);
+  const active = resp.activeTab || "debug";
+  document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === active));
+  $("debugPanel")?.classList.toggle("active", active !== "transfer");
+  $("transferPanel")?.classList.toggle("active", active === "transfer");
 }
 
 async function save() {
@@ -88,10 +148,52 @@ async function clearLogs() {
   await refresh();
 }
 
+async function copyText(text) {
+  const t = String(text || "");
+  if (!t) return;
+  if (navigator?.clipboard?.writeText) return navigator.clipboard.writeText(t);
+  const ta = document.createElement("textarea");
+  ta.value = t;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
+
+async function clearTransfer() {
+  await send("popup.clearTransferData");
+  await refresh();
+}
+
+async function copyAllTransfer() {
+  const resp = await send("popup.getState");
+  const lines = getTransferLines(resp?.transferData || null);
+  await copyText(lines.join("\n"));
+}
+
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
+});
+$("transferData")?.addEventListener("click", async (e) => {
+  const btn = e.target?.closest?.("[data-copy-line]");
+  if (!btn) return;
+  const resp = await send("popup.getState");
+  const lines = getTransferLines(resp?.transferData || null);
+  await copyText(lines[Number(btn.dataset.copyLine)] || "");
+  btn.textContent = "已复制";
+  setTimeout(() => { btn.textContent = "复制"; }, 900);
+});
+
 $("saveBtn").addEventListener("click", save);
 $("reconnectBtn").addEventListener("click", reconnect);
 $("refreshBtn").addEventListener("click", refresh);
 $("clearBtn").addEventListener("click", clearLogs);
+$("clearTransferBtn")?.addEventListener("click", clearTransfer);
+$("copyAllTransferBtn")?.addEventListener("click", copyAllTransfer);
+$("closePanelBtn")?.addEventListener("click", () => window.close());
 
 refresh();
 setInterval(refresh, 2000);
