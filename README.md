@@ -1,7 +1,8 @@
-# FPBrowser2API：逆向插件+Python账号保活管理方案
+# FPBrowser2API：插件+Python账号保活管理方案
 
-> 项目主题：逆向框架，支持veo3.1、seedance2.0、omni flash、grok、nana banana、sora2、gpt-image2，QQ交流群：1035463132
-> 利用指纹浏览器管理账号保活 + 插件逆向注入/页面上下文代码执行，实现高并发自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口逆向研究。
+> 项目主题：插件框架，支持veo3.1、seedance2.0、omni flash、grok、nana banana、sora2、gpt-image2，QQ交流群：1035463132
+> 利用指纹浏览器管理账号保活 + 插件调用页面功能，实现多账号管理自动化 AI 视频 & AI 图片生成。当前框架已围绕 Sora、veo3.1 / VEO/Google Flow、Grok、banana2/pro、Seedance2.0 国际站等方向设计；理论上可扩展到任意网站的自动化与接口研究。
+> 注意：本项目非逆向！！只是利用浏览器的功能实现自动化，请勿应用于商业。
 
 ### 操作视频https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2
 
