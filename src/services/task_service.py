@@ -149,6 +149,8 @@ def _remaining_quota_exclusive_floor_for_pick(
     if code == "dreamina_workflow":
         credit_threthold = _DREAMINA_MIN_CREDIT - _DREAMINA_GIFT_CREDIT;
         return _DREAMINA_MIN_CREDIT,credit_threthold
+    if code == "gpt_workflow":
+        return 0,0
     return 3,credit_threthold
 
 
