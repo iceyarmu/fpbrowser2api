@@ -3586,7 +3586,7 @@ def _veo_resolve_extension_video_model_and_aspect(
         balance_i = int(window_balance) if window_balance is not None else int(payload.get("remaining_quota"))
     except Exception:
         balance_i = 0
-    if balance_i > VEO_EXTENSION_ULTRA_BALANCE_THRESHOLD and model_key in VEO_EXTENSION_ULTRA_MODEL_KEYS:
+    if _veo_env_enabled("VEO_EXTENSION_AUTO_ULTRA_ENABLED", False) and balance_i > VEO_EXTENSION_ULTRA_BALANCE_THRESHOLD and model_key in VEO_EXTENSION_ULTRA_MODEL_KEYS:
         model_key = f"{model_key}_ultra"
     return model_key, video_aspect
 
